@@ -1,6 +1,6 @@
-# 🌀 DaSiWa WAN 2.2 Master: Merger & Quantizer (WIP)
+# 🌀 DaSiWa WAN 2.2 Master: Quantizer (WIP)
 
-DaSiWa WAN 2.2 Master is a high-performance industrial toolkit designed for quantizing Wan 2.2 (14B) Video Models. Specifically engineered for systems with 64GB RAM and NVIDIA Ada (40-series) or Blackwell (50-series) GPUs.
+DaSiWa WAN 2.2 Master is a high-performance toolkit designed for quantizing Wan 2.2 (14B) Video Models. Specifically engineered for systems with 64GB RAM and NVIDIA Ada (40-series) or Blackwell (50-series) GPUs.
 
 📦 GGUF MoE Specialist: Native Wan 2.2 GGUF quantization with Self-Healing 5D Expert Injection to preserve video tensor shapes and prevent "gray-screen" outputs.
 
