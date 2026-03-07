@@ -1,4 +1,6 @@
 import psutil, torch, os, subprocess
+from safetensors.torch import load_file, save_file
+import json
 
 def get_sys_info():
     ram = psutil.virtual_memory().percent
@@ -13,3 +15,20 @@ def get_sys_info():
             gpu_load = f"{res.strip()}%"
         except: gpu_load = "ERR%"
     return f"🖥️ CPU: {cpu}% | RAM: {ram}%\\n📟 GPU: {gpu_load} | VRAM: {vram_info}"
+
+def inject_metadata(file_path, metadata_dict):
+    """
+    Overwrites the safetensors file with new metadata.
+    """
+    try:
+        # Load existing tensors (as pointers, not loading whole file into RAM)
+        tensors = load_file(file_path)
+        
+        # Ensure all values in metadata are strings (Safetensors requirement)
+        clean_metadata = {k: str(v) for k, v in metadata_dict.items()}
+        
+        # Save back to the same path
+        save_file(tensors, file_path, metadata=clean_metadata)
+        return True, f"Successfully injected metadata into {os.path.basename(file_path)}"
+    except Exception as e:
+        return False, str(e)

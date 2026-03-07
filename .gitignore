@@ -3,7 +3,7 @@ models/**
 recipes/*.json
 models
 # EXCEPT the example template
-!recipes/example.json
+!recipes/metadata.json
 logs/
 session_recipe.json
 model_structure_report.txt

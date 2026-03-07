@@ -21,10 +21,24 @@ def stop_pipeline():
     gc.collect()
     return "🛑 CONVERSION TERMINATED\n" + "-"*60, "Idle"
 
-def run_conversion(base_model, q_formats):
+def run_conversion(base_model, q_formats, model_name):
     global active_process
+    
+    # Validation: Ensure a name is provided
     if not q_formats:
         yield "❌ ERROR: No export formats selected.", "", "Idle"
+        return
+    
+    if not model_name or model_name.strip() == "":
+        yield "❌ ERROR: Model Display Name is required for metadata injection.", "", "Idle"
+        return
+
+    # Load the JSON recipe template
+    try:
+        with open("recipes/metadata.json", "r") as f:
+            meta_template = f.read()
+    except Exception as e:
+        yield f"❌ ERROR: Could not find recipes/metadata.json: {str(e)}", "", "Idle"
         return
 
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -37,7 +51,8 @@ def run_conversion(base_model, q_formats):
     FIX_5D_PY = os.path.join(ROOT_DIR, "fix_5d_tensors.py")
     
     try:
-        log_acc += f"Source Model: {base_model}\n\n"
+        log_acc += f"Source Model: {base_model}\n"
+        log_acc += f"Display Name: {model_name}\n\n"
         yield log_acc, "", "Processing..."
 
         for idx, fmt in enumerate(q_formats):
@@ -68,11 +83,10 @@ def run_conversion(base_model, q_formats):
 
             # --- SAFETENSORS QUANTIZATION (FP8/INT8/NVFP4) ---
             else:
-                # Clean suffix naming
                 suffix = fmt.lower().replace(" ", "_").split("(")[0].strip()
                 final_path = source_path.replace(".safetensors", f"_{suffix}.safetensors")
                 
-                cmd = ["convert_to_quant", "-i", source_path, "-o", final_path, "--comfy_quant", "--wan"]
+                cmd = ["convert_to_quant", "-i", source_path, "-o", final_path, "--wan"]
                 if "int8" in fmt.lower(): cmd += ["--int8", "--block_size", "128"]
                 elif "nvfp4" in fmt.lower(): cmd += ["--nvfp4"]
                 
@@ -80,6 +94,23 @@ def run_conversion(base_model, q_formats):
                 yield log_acc, "", batch_status
                 active_process = subprocess.Popen(cmd)
                 active_process.wait()
+
+            # --- METADATA INJECTION (Post-Quantization) ---
+            if os.path.exists(final_path) and final_path.endswith('.safetensors'):
+                current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+                try:
+                    # Replace placeholders with current run values
+                    formatted_json = meta_template.replace("{model_name}", model_name).replace("{date}", current_date).replace("{bits}", fmt)
+                    meta_dict = json.loads(formatted_json)
+                    
+                    # Call the utility to rewrite header
+                    success, msg = inject_metadata(final_path, meta_dict)
+                    if success:
+                        log_acc += f"📝 Metadata Injected: {fmt}\n"
+                    else:
+                        log_acc += f"⚠️ Metadata Error: {msg}\n"
+                except Exception as e:
+                    log_acc += f"⚠️ JSON Processing Error: {str(e)}\n"
 
             log_acc += f"✅ FINISHED: {fmt}\n"
             yield log_acc, final_path, batch_status
@@ -91,6 +122,17 @@ def run_conversion(base_model, q_formats):
         yield log_acc + f"\n🔥 ERROR: {str(e)}", "", "Error"
     finally:
         active_process = None
+
+def handle_injection(file_name, json_str):
+    if not file_name:
+        return "❌ Error: No file selected."
+    try:
+        meta = json.loads(json_str)
+        path = os.path.join(MODELS_DIR, file_name)
+        success, msg = inject_metadata(path, meta)
+        return f"✅ {msg}" if success else f"❌ {msg}"
+    except Exception as e:
+        return f"❌ JSON Error: {str(e)}"
 
 # --- UI LAYOUT ---
 with gr.Blocks(title="Conversion Station", css=CSS_STYLE) as demo:
@@ -119,6 +161,19 @@ with gr.Blocks(title="Conversion Station", css=CSS_STYLE) as demo:
                     label="Available Quants",
                     value=["FP8 (SVD)"]
                 )
+            with gr.Column(scale=3):
+                base_dd = gr.Dropdown(label="Select Source Safetensors", allow_custom_value=True)
+                # NEW: Mandatory Model Name field
+                friendly_name = gr.Textbox(label="Model Display Name (Required)", placeholder="e.g. Cinema-Mix-V1")
+
+            with gr.Group():
+                gr.Markdown("### 📝 Metadata Injector")
+                metadata_input = gr.Code(
+                    value='{"author": "Darksidewalker", "model_type": "Wan 2.2 14B I2V"}',
+                    language="json",
+                    label="Metadata JSON"
+                )
+                inject_btn = gr.Button("💉 Inject Metadata to Source")
             
             with gr.Row():
                 run_btn = gr.Button("🧩 START BATCH", variant="primary", elem_classes=["primary-button"])
@@ -140,6 +195,12 @@ with gr.Blocks(title="Conversion Station", css=CSS_STYLE) as demo:
     )
     stop_btn.click(fn=stop_pipeline, outputs=[terminal_box, pipeline_status])
     terminal_box.change(fn=None, js=JS_AUTO_SCROLL, inputs=[terminal_box])
+
+    inject_btn.click(
+    fn=handle_injection,
+    inputs=[base_dd, metadata_input],
+    outputs=[terminal_box]
+    )
 
 if __name__ == "__main__":
     demo.launch()
