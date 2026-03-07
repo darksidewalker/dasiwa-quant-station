@@ -1,6 +1,7 @@
 import psutil, torch, os, subprocess
 from safetensors.torch import load_file, save_file
 import json
+from safetensors import safe_open
 
 def get_sys_info():
     ram = psutil.virtual_memory().percent
@@ -32,3 +33,13 @@ def inject_metadata(file_path, metadata_dict):
         return True, f"Successfully injected metadata into {os.path.basename(file_path)}"
     except Exception as e:
         return False, str(e)
+
+def get_metadata(file_path):
+    """Reads and returns the metadata header from a safetensors file."""
+    if not os.path.exists(file_path):
+        return None, "File not found."
+    try:
+        with safe_open(file_path, framework="pt") as f:
+            return f.metadata(), None
+    except Exception as e:
+        return None, str(e)
