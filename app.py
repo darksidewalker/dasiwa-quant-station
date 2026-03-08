@@ -22,138 +22,141 @@ METADATA_TEMPLATE = {
     "quantization.bits": "{bits}"
 }
 
-# --- HELPER FUNCTIONS ---
+# --- BACKEND 1: GGUF ENGINE (Mirroring Bash Script) ---
 
-def list_files():
-    """Lists available models in the models directory."""
-    m = sorted([f for f in os.listdir(MODELS_DIR) if f.endswith('.safetensors')])
-    return gr.update(choices=m, value=m[0] if m else None)
-
-def update_metadata_preview(name):
-    """Updates the live JSON preview for metadata."""
-    if not name or name == "Enter Name...": name = "Model-Name"
-    curr_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    preview = {}
-    for k, v in METADATA_TEMPLATE.items():
-        preview[k] = v.replace("{model_name}", name).replace("{date}", curr_date).replace("{bits}", "SELECTED_QUANT")
-    return json.dumps(preview, indent=4)
-
-def stop_pipeline():
+def run_gguf_conversion(source_path, formats, model_name, log_acc):
     global active_process
-    if active_process:
-        active_process.kill()
-        active_process = None
-    torch.cuda.empty_cache()
-    gc.collect()
-    return "🛑 Process Terminated by User.\n" + "-"*60, "Idle"
+    ROOT_DIR = os.getcwd()
+    LLAMA_BIN = os.path.join(ROOT_DIR, "llama.cpp", "build", "bin", "llama-quantize")
+    CONVERT_PY = "convert.py"
+    FIX_PY = "fix_5d_tensors.py"
+    
+    base_name = os.path.splitext(os.path.basename(source_path))[0]
+    master_gguf = os.path.join(MODELS_DIR, f"{base_name}.gguf")
 
-def handle_injection(file_name, json_str):
-    if not file_name: return "❌ Select a model first."
-    try:
-        data = json.loads(json_str)
-        path = os.path.join(MODELS_DIR, file_name)
-        success, msg = inject_metadata(path, data)
-        return f"✅ {msg}" if success else f"❌ {msg}"
-    except Exception as e:
-        return f"🔥 JSON Error: {str(e)}"
+    if os.path.exists(master_gguf):
+        log_acc += f"ℹ️ Base GGUF exists: {os.path.basename(master_gguf)} — skipping convert.\n"
+    else:
+        log_acc += f"📦 Converting {os.path.basename(source_path)} -> {os.path.basename(master_gguf)}\n"
+        yield log_acc, "GGUF Base Prep"
+        active_process = subprocess.Popen(["python", CONVERT_PY, "--src", source_path, "--dst", master_gguf])
+        active_process.wait()
+
+    q_map = {
+        "GGUF_Q8_0": "Q8_0", "GGUF_Q6_K": "Q6_K", "GGUF_Q5_K_M": "Q5_K_M",
+        "GGUF_Q4_K_M": "Q4_K_M", "GGUF_Q3_K_S": "Q3_K_S", "GGUF_Q2_K": "Q2_K"
+    }
+
+    for fmt in formats:
+        q_flag = q_map.get(fmt, "Q8_0")
+        out_q = os.path.join(MODELS_DIR, f"{base_name}_{q_flag}.gguf")
+        out_qf = os.path.join(MODELS_DIR, f"{base_name}_{q_flag}-fix.gguf")
+
+        if os.path.exists(out_qf):
+            log_acc += f"ℹ️ Fixed file exists: {os.path.basename(out_qf)} — skipping.\n"
+            continue
+
+        log_acc += f"🔨 Quantizing {q_flag}...\n"
+        yield log_acc, f"Quantizing {q_flag}"
+        active_process = subprocess.Popen([LLAMA_BIN, master_gguf, out_q, q_flag])
+        active_process.wait()
+
+        log_acc += f"🔧 Fixing 5D tensors -> {os.path.basename(out_qf)}\n"
+        yield log_acc, f"Fixing {q_flag}"
+        active_process = subprocess.Popen(["python", FIX_PY, "--src", out_q, "--dst", out_qf])
+        active_process.wait()
+
+        if os.path.exists(out_qf) and os.path.exists(out_q):
+            os.remove(out_q)
+            # Metadata Injection using gguf library
+            success, msg = write_gguf_meta(out_qf, model_name, fmt)
+            log_acc += f"📝 GGUF Meta: {msg}\n✅ Finished {q_flag}\n"
+            
+    return log_acc
+
+# --- BACKEND 2: SAFETENSORS ENGINE ---
+
+def run_safe_conversion(source_path, formats, model_name, options, log_acc):
+    global active_process
+    FLAG_MAP = {
+        "Standard FP8 (ComfyUI)": ["--comfy_quant"],
+        "INT8 Block-wise": ["--int8", "--block_size", "128", "--comfy_quant"],
+        "Blackwell NVFP4": ["--nvfp4", "--comfy_quant"],
+        "Auto-Quality (Heur)": ["--heur"]
+    }
+
+    ULTRA_PRESET = [
+        "--comfy_quant", "--save-quant-metadata", "--wan", 
+        "--lr_schedule", "plateau", "--lr_patience", "2", "--lr_factor", "0.96", 
+        "--lr_min", "9e-9", "--lr_cooldown", "0", "--lr_threshold", "1e-11", 
+        "--num_iter", "9000", "--calib_samples", "45000", 
+        "--lr", "9.916700000002915715e-3", "--top_p", "0.05", 
+        "--min_k", "64", "--max_k", "256", "--early-stop-stall", "20000", 
+        "--early-stop-lr", "1e-8", "--early-stop-loss", "9e-8", "--lr-shape-influence", "3.5"
+    ]
+
+    for fmt in formats:
+        suffix = fmt.lower().replace(" ", "_").split("(")[0].strip()
+        final_path = source_path.replace(".safetensors", f"_{suffix}.safetensors")
+        cmd = ["convert_to_quant", "-i", source_path, "-o", final_path]
+
+        if "Ultra-Quality (Optimizer)" in options:
+            cmd.extend(ULTRA_PRESET)
+        else:
+            if fmt in FLAG_MAP: cmd.extend(FLAG_MAP[fmt])
+            for opt in options:
+                if opt in FLAG_MAP: cmd.extend(FLAG_MAP[opt])
+            if "wan" in source_path.lower(): cmd.append("--wan")
+
+        yield log_acc, f"Safetensors: {fmt}"
+        active_process = subprocess.Popen(cmd)
+        active_process.wait()
+
+        if os.path.exists(final_path) and final_path.endswith('.safetensors'):
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            meta = {k: v.replace("{model_name}", model_name).replace("{date}", current_date).replace("{bits}", fmt) for k, v in METADATA_TEMPLATE.items()}
+            success, msg = inject_metadata(final_path, meta)
+            log_acc += f"📝 Metadata: {msg}\n"
+            
+    return log_acc
+
+# --- READ METADATA (Safetensors + GGUF) ---
 
 def read_selected_metadata(file_name):
     if not file_name: return "❌ Select a model first."
     path = os.path.join(MODELS_DIR, file_name)
+    
+    if file_name.endswith('.gguf'):
+        if not gguf: return "❌ gguf package not installed. Cannot read KV pairs."
+        try:
+            reader = gguf.GGUFReader(path)
+            kv_data = "🔍 GGUF KV PAIRS:\n" + "-"*40 + "\n"
+            for key in reader.fields:
+                val = reader.fields[key]
+                kv_data += f"{key}: {val.parts[val.data[0]] if val.data else 'None'}\n"
+            return kv_data
+        except Exception as e: return f"🔥 GGUF Read Error: {str(e)}"
+
     meta, err = get_metadata(path)
     if err: return f"❌ Error: {err}"
-    return f"🔍 METADATA FOR: {file_name}\n" + "-"*40 + "\n" + json.dumps(meta, indent=4)
+    return f"🔍 SAFETENSORS METADATA:\n" + "-"*40 + "\n" + json.dumps(meta, indent=4)
 
-# --- CORE CONVERSION ENGINE ---
+# --- TRAFFIC CONTROLLER ---
 
-def run_conversion(base_model, q_formats, model_name, custom_options):
-    global active_process
-    
-    # 1. STANDARD FLAG MAPPING
-    FLAG_MAP = {
-        "FP8": ["--comfy_quant"],
-        "INT8 Block-wise": ["--int8", "--block_size", "128", "--comfy_quant"],
-        "NVFP4": ["--nvfp4", "--comfy_quant"],
-        "Fast Mode (Simple)": ["--simple"],
-        "Auto-Quality (Heur)": ["--heur"],
-        "Low Memory Mode": ["--low-memory"]
-    }
-
-    # 2. ULTRA-QUALITY OPTIMIZER PRESET
-    ULTRA_PRESET = [
-        "--comfy_quant", 
-        "--save-quant-metadata", 
-        "--wan", 
-        "--lr_schedule", "plateau", 
-        "--lr_patience", "2", 
-        "--lr_factor", "0.96", 
-        "--lr_min", "9e-9", 
-        "--lr_cooldown", "0", 
-        "--lr_threshold", "1e-11", 
-        "--num_iter", "9000", 
-        "--calib_samples", "45000", 
-        "--lr", "9.916700000002915715e-3", 
-        "--top_p", "0.05", 
-        "--min_k", "64", 
-        "--max_k", "256", 
-        "--early-stop-stall", "20000", 
-        "--early-stop-lr", "1e-8", 
-        "--early-stop-loss", "9e-8", 
-        "--lr-shape-influence", "3.5"
-    ]
-
-    if not q_formats:
-        yield "❌ ERROR: No export formats selected.", "", "Idle"
-        return
-
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    log_acc = f"[{timestamp}] 📦 Q-QUANT STATION ACTIVE\n" + "="*60 + "\n"
+def run_conversion(base_model, q_formats, model_name, extra_options):
+    if not q_formats: yield "❌ No formats.", "", "Idle"; return
+    log_acc = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 🚀 BATCH START\n" + "="*60 + "\n"
     source_path = os.path.join(MODELS_DIR, base_model)
-    
-    try:
-        for idx, fmt in enumerate(q_formats):
-            batch_status = f"Exporting {fmt} ({idx+1}/{len(q_formats)})"
-            suffix = fmt.lower().replace(" ", "_").split("(")[0].strip()
-            final_path = source_path.replace(".safetensors", f"_{suffix}.safetensors")
-            
-            cmd = ["convert_to_quant", "-i", source_path, "-o", final_path]
+    gguf_list = [f for f in q_formats if "GGUF" in f]
+    safe_list = [f for f in q_formats if "GGUF" not in f]
 
-            # --- CASE LOGIC: ULTRA VS STANDARD ---
-            if "Ultra-Quality (Optimizer)" in custom_options:
-                log_acc += "💎 ULTRA MODE ACTIVE: Using surgical optimizer settings...\n"
-                cmd.extend(ULTRA_PRESET)
-            else:
-                # Apply standard selected flags
-                if fmt in FLAG_MAP: cmd.extend(FLAG_MAP[fmt])
-                if custom_options:
-                    for opt in custom_options:
-                        if opt in FLAG_MAP: cmd.extend(FLAG_MAP[opt])
-                # Auto-Wan Detection if not in Ultra
-                if "wan" in base_model.lower(): cmd.append("--wan")
-
-            log_acc += f"🚀 Command: {' '.join(cmd)}\n"
-            yield log_acc, "", batch_status
-            
-            active_process = subprocess.Popen(cmd)
-            active_process.wait()
-
-            # Metadata Injection Step
-            if os.path.exists(final_path) and final_path.endswith('.safetensors'):
-                current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-                meta = {k: v.replace("{model_name}", model_name).replace("{date}", current_date).replace("{bits}", fmt) for k, v in METADATA_TEMPLATE.items()}
-                success, msg = inject_metadata(final_path, meta)
-                log_acc += f"📝 Metadata: {msg}\n"
-
-            log_acc += f"✅ FINISHED: {fmt}\n"
-            yield log_acc, final_path, batch_status
-
-        log_acc += "\n✨ ALL BATCH PROCESSES COMPLETE."
-        yield log_acc, source_path, "Idle"
-
-    except Exception as e:
-        yield log_acc + f"\n🔥 ERROR: {str(e)}", "", "Error"
-    finally:
-        active_process = None
+    if gguf_list:
+        for log, status in run_gguf_conversion(source_path, gguf_list, model_name, log_acc):
+            log_acc = log; yield log_acc, "", status
+    if safe_list:
+        for log, status in run_safe_conversion(source_path, safe_list, model_name, extra_options, log_acc):
+            log_acc = log; yield log_acc, "", status
+    yield log_acc + "\n✨ DONE.", source_path, "Idle"
 
 # --- UI LAYOUT ---
 
