@@ -2,6 +2,10 @@ import gradio as gr
 import torch, os, gc, subprocess, shutil, datetime, re, json
 from config import *
 from utils import get_sys_info, inject_metadata, get_metadata
+try:
+    import gguf
+except ImportError:
+    gguf = None
 
 # Global handle for the background process
 active_process = None
@@ -22,70 +26,110 @@ METADATA_TEMPLATE = {
     "quantization.bits": "{bits}"
 }
 
-# --- BACKEND 1: GGUF ENGINE (Mirroring Bash Script) ---
+# --- 1. HELPER FUNCTIONS (PRE-UI DEFINITIONS) ---
+
+def list_files():
+    if not os.path.exists(MODELS_DIR): return gr.update(choices=[], value=None)
+    m = sorted([f for f in os.listdir(MODELS_DIR) if f.endswith('.safetensors') or f.endswith('.gguf')])
+    return gr.update(choices=m, value=m[0] if m else None)
+
+def update_metadata_preview(name):
+    if not name or name == "Enter Name...": name = "Model-Name"
+    curr_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    preview = {k: v.replace("{model_name}", name).replace("{date}", curr_date).replace("{bits}", "SELECTED_QUANT") for k, v in METADATA_TEMPLATE.items()}
+    return json.dumps(preview, indent=4)
+
+def stop_pipeline():
+    global active_process
+    if active_process:
+        active_process.kill()
+        active_process = None
+    torch.cuda.empty_cache()
+    gc.collect()
+    return "🛑 Process Terminated.", "Idle"
+
+def handle_injection(file_name, json_str):
+    if not file_name: return "❌ Select a model first."
+    try:
+        data = json.loads(json_str)
+        path = os.path.join(MODELS_DIR, file_name)
+        success, msg = inject_metadata(path, data)
+        return f"✅ {msg}" if success else f"❌ {msg}"
+    except Exception as e: return f"🔥 JSON Error: {str(e)}"
+
+def read_selected_metadata(file_name):
+    if not file_name: return "❌ Select a model first."
+    path = os.path.join(MODELS_DIR, file_name)
+    if file_name.endswith('.gguf'):
+        if not gguf: return "❌ gguf package missing."
+        reader = gguf.GGUFReader(path)
+        kv_list = [f"{k}: {v.parts[v.data[0]] if v.data else 'N/A'}" for k,v in reader.fields.items()]
+        return "🔍 GGUF KV PAIRS:\n" + "-"*40 + "\n" + "\n".join(kv_list)
+    meta, err = get_metadata(path)
+    return f"🔍 SAFETENSORS:\n{json.dumps(meta, indent=4)}" if meta else f"❌ {err}"
+
+# --- 2. GGUF METADATA INJECTOR ---
+
+def write_gguf_meta(file_path, model_name, bits):
+    if not gguf: return False, "gguf package not installed"
+    try:
+        reader = gguf.GGUFReader(file_path, "r+")
+        writer = gguf.GGUFWriter(file_path, reader.arch, mode="r+")
+        curr_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        writer.add_string("general.name", model_name)
+        writer.add_string("modelspec.author", "Darksidewalker")
+        writer.add_string("modelspec.date", curr_date)
+        writer.add_string("quantization.bits", bits)
+        writer.close()
+        return True, "GGUF Meta Injected"
+    except Exception as e: return False, str(e)
+
+# --- 3. CONVERSION ENGINES ---
 
 def run_gguf_conversion(source_path, formats, model_name, log_acc):
     global active_process
     ROOT_DIR = os.getcwd()
     LLAMA_BIN = os.path.join(ROOT_DIR, "llama.cpp", "build", "bin", "llama-quantize")
-    CONVERT_PY = "convert.py"
-    FIX_PY = "fix_5d_tensors.py"
-    
+    CONVERT_PY, FIX_PY = "convert.py", "fix_5d_tensors.py"
     base_name = os.path.splitext(os.path.basename(source_path))[0]
     master_gguf = os.path.join(MODELS_DIR, f"{base_name}.gguf")
 
-    if os.path.exists(master_gguf):
-        log_acc += f"ℹ️ Base GGUF exists: {os.path.basename(master_gguf)} — skipping convert.\n"
-    else:
-        log_acc += f"📦 Converting {os.path.basename(source_path)} -> {os.path.basename(master_gguf)}\n"
+    if not os.path.exists(master_gguf):
+        log_acc += f"📦 Base GGUF not found. Converting -> {base_name}.gguf\n"
         yield log_acc, "GGUF Base Prep"
         active_process = subprocess.Popen(["python", CONVERT_PY, "--src", source_path, "--dst", master_gguf])
         active_process.wait()
 
-    q_map = {
-        "GGUF_Q8_0": "Q8_0", "GGUF_Q6_K": "Q6_K", "GGUF_Q5_K_M": "Q5_K_M",
-        "GGUF_Q4_K_M": "Q4_K_M", "GGUF_Q3_K_S": "Q3_K_S", "GGUF_Q2_K": "Q2_K"
-    }
+    q_map = {"GGUF_Q8_0": "Q8_0", "GGUF_Q6_K": "Q6_K", "GGUF_Q5_K_M": "Q5_K_M", "GGUF_Q4_K_M": "Q4_K_M", "GGUF_Q3_K_S": "Q3_K_S", "GGUF_Q2_K": "Q2_K"}
 
     for fmt in formats:
         q_flag = q_map.get(fmt, "Q8_0")
         out_q = os.path.join(MODELS_DIR, f"{base_name}_{q_flag}.gguf")
         out_qf = os.path.join(MODELS_DIR, f"{base_name}_{q_flag}-fix.gguf")
-
-        if os.path.exists(out_qf):
-            log_acc += f"ℹ️ Fixed file exists: {os.path.basename(out_qf)} — skipping.\n"
-            continue
+        if os.path.exists(out_qf): continue
 
         log_acc += f"🔨 Quantizing {q_flag}...\n"
         yield log_acc, f"Quantizing {q_flag}"
         active_process = subprocess.Popen([LLAMA_BIN, master_gguf, out_q, q_flag])
         active_process.wait()
 
-        log_acc += f"🔧 Fixing 5D tensors -> {os.path.basename(out_qf)}\n"
+        log_acc += f"🔧 Fixing 5D Tensors...\n"
         yield log_acc, f"Fixing {q_flag}"
         active_process = subprocess.Popen(["python", FIX_PY, "--src", out_q, "--dst", out_qf])
         active_process.wait()
 
         if os.path.exists(out_qf) and os.path.exists(out_q):
             os.remove(out_q)
-            # Metadata Injection using gguf library
-            success, msg = write_gguf_meta(out_qf, model_name, fmt)
-            log_acc += f"📝 GGUF Meta: {msg}\n✅ Finished {q_flag}\n"
-            
+            write_gguf_meta(out_qf, model_name, fmt)
+            log_acc += f"✅ Finished {q_flag}\n"
     return log_acc
-
-# --- BACKEND 2: SAFETENSORS ENGINE ---
 
 def run_safe_conversion(source_path, formats, model_name, options, log_acc):
     global active_process
-    FLAG_MAP = {
-        "Standard FP8 (ComfyUI)": ["--comfy_quant"],
-        "INT8 Block-wise": ["--int8", "--block_size", "128", "--comfy_quant"],
-        "Blackwell NVFP4": ["--nvfp4", "--comfy_quant"],
-        "Auto-Quality (Heur)": ["--heur"]
-    }
-
-    ULTRA_PRESET = [
+    FLAG_MAP = {"FP8": ["--comfy_quant"], "INT8 Block-wise": ["--int8", "--block_size", "128", "--comfy_quant"], "NVFP4": ["--nvfp4", "--comfy_quant"], "Auto-Quality (Heur)": ["--heur"]}
+    
+    # THE RAW ULTRA PRESET - NO SIMPLIFICATION
+    ULTRA_ARGS = [
         "--comfy_quant", "--save-quant-metadata", "--wan", 
         "--lr_schedule", "plateau", "--lr_patience", "2", "--lr_factor", "0.96", 
         "--lr_min", "9e-9", "--lr_cooldown", "0", "--lr_threshold", "1e-11", 
@@ -96,12 +140,13 @@ def run_safe_conversion(source_path, formats, model_name, options, log_acc):
     ]
 
     for fmt in formats:
-        suffix = fmt.lower().replace(" ", "_").split("(")[0].strip()
+        suffix = fmt.lower().replace(" ", "_")
         final_path = source_path.replace(".safetensors", f"_{suffix}.safetensors")
         cmd = ["convert_to_quant", "-i", source_path, "-o", final_path]
-
+        
         if "Ultra-Quality (Optimizer)" in options:
-            cmd.extend(ULTRA_PRESET)
+            log_acc += "💎 ACTIVE: Ultra-Quality Optimizer (9k Iterations)\n"
+            cmd.extend(ULTRA_ARGS)
         else:
             if fmt in FLAG_MAP: cmd.extend(FLAG_MAP[fmt])
             for opt in options:
@@ -112,36 +157,12 @@ def run_safe_conversion(source_path, formats, model_name, options, log_acc):
         active_process = subprocess.Popen(cmd)
         active_process.wait()
 
-        if os.path.exists(final_path) and final_path.endswith('.safetensors'):
+        if os.path.exists(final_path):
             current_date = datetime.datetime.now().strftime("%Y-%m-%d")
             meta = {k: v.replace("{model_name}", model_name).replace("{date}", current_date).replace("{bits}", fmt) for k, v in METADATA_TEMPLATE.items()}
-            success, msg = inject_metadata(final_path, meta)
-            log_acc += f"📝 Metadata: {msg}\n"
-            
+            inject_metadata(final_path, meta)
+            log_acc += f"📝 Metadata Injected: {os.path.basename(final_path)}\n"
     return log_acc
-
-# --- READ METADATA (Safetensors + GGUF) ---
-
-def read_selected_metadata(file_name):
-    if not file_name: return "❌ Select a model first."
-    path = os.path.join(MODELS_DIR, file_name)
-    
-    if file_name.endswith('.gguf'):
-        if not gguf: return "❌ gguf package not installed. Cannot read KV pairs."
-        try:
-            reader = gguf.GGUFReader(path)
-            kv_data = "🔍 GGUF KV PAIRS:\n" + "-"*40 + "\n"
-            for key in reader.fields:
-                val = reader.fields[key]
-                kv_data += f"{key}: {val.parts[val.data[0]] if val.data else 'None'}\n"
-            return kv_data
-        except Exception as e: return f"🔥 GGUF Read Error: {str(e)}"
-
-    meta, err = get_metadata(path)
-    if err: return f"❌ Error: {err}"
-    return f"🔍 SAFETENSORS METADATA:\n" + "-"*40 + "\n" + json.dumps(meta, indent=4)
-
-# --- TRAFFIC CONTROLLER ---
 
 def run_conversion(base_model, q_formats, model_name, extra_options):
     if not q_formats: yield "❌ No formats.", "", "Idle"; return
@@ -156,95 +177,62 @@ def run_conversion(base_model, q_formats, model_name, extra_options):
     if safe_list:
         for log, status in run_safe_conversion(source_path, safe_list, model_name, extra_options, log_acc):
             log_acc = log; yield log_acc, "", status
-    yield log_acc + "\n✨ DONE.", source_path, "Idle"
+    yield log_acc + "\n✨ ALL TASKS FINISHED.", source_path, "Idle"
 
-# --- UI LAYOUT ---
+# --- 4. UI LAYOUT (MATCHING GRAFIK.PNG) ---
 
-with gr.Blocks(title="Conversion Station") as demo:
-    # Row 1: App Header
+with gr.Blocks(title="DaSiWa Quant Station", css=CSS_STYLE) as demo:
+    gr.Markdown("# 📦 DaSiWa Quant Station\n**Wan 2.2 / Flux / Hunyuan Full Pipeline**")
+
     with gr.Row():
-        gr.Markdown("# 📦 DaSiWa Quant Station\n**Direct GGUF & Safetensors Quantization for Wan 2.2**")
-
-    # Row 2: Control Panel (3-Column Grid)
-    with gr.Row():
-        # Column 1: Source Files
         with gr.Column(scale=3):
             with gr.Group():
                 gr.Markdown("### 📥 Source Settings")
                 base_dd = gr.Dropdown(label="Select Source Safetensors", allow_custom_value=True)
-                friendly_name = gr.Textbox(label="Model Display Name", placeholder="e.g. Cinema-Mix-V1")
+                friendly_name = gr.Textbox(label="Model Display Name (Required)", placeholder="e.g. Cinema-Mix-V1")
                 refresh_btn = gr.Button("🔄 Refresh Models", size="sm")
-            
             with gr.Row():
                 run_btn = gr.Button("🧩 START BATCH", variant="primary", elem_classes=["primary-button"])
                 stop_btn = gr.Button("🛑 STOP", variant="stop", elem_classes=["stop-button"])
-            
-            last_path_state = gr.State("")
 
-        # Column 2: Quantization Formats (Full List)
         with gr.Column(scale=3):
             with gr.Group():
                 gr.Markdown("### ⚖️ Select Formats")
                 q_format = gr.CheckboxGroup(
-                    choices=[
-                        "FP8", "INT8 Block-wise", "NVFP4",
-                        "GGUF_Q8_0", "GGUF_Q6_K", "GGUF_Q5_K_M", "GGUF_Q5_0",
-                        "GGUF_Q4_K_M", "GGUF_Q4_0", "GGUF_Q3_K_M", "GGUF_Q2_K"
-                    ],
-                    label="Target Format",
-                    info="Choose precision level. GGUF requires a multi-step build.",
-                    value=["FP8"]
+                    choices=["FP8", "INT8 Block-wise", "NVFP4", "GGUF_Q8_0", "GGUF_Q6_K", "GGUF_Q5_K_M", "GGUF_Q4_K_M", "GGUF_Q3_K_S", "GGUF_Q2_K"],
+                    label="Target Format", value=["FP8"]
                 )
-
-        # Column 3: Optimizations & Vitals
-        with gr.Column(scale=4):
             with gr.Group():
                 gr.Markdown("### 🛠️ Optimization Flags")
                 extra_flags = gr.CheckboxGroup(
                     choices=["Ultra-Quality (Optimizer)", "Auto-Quality (Heur)", "Fast Mode (Simple)", "Low Memory Mode"],
-                    label="Quantization Tweaks",
-                    info="For FP-Quants - Ultra: 9k iterations (Pro Quality). Heur: Fixes black screens.",
-                    value=["Auto-Quality (Heur)"]
+                    label="Quantization Tweaks", value=["Auto-Quality (Heur)"]
                 )
-            
+
+        with gr.Column(scale=4):
             vitals_box = gr.Textbox(label="Hardware Vitals", value=get_sys_info(), lines=2, interactive=False, elem_classes=["vitals-card"])
             gr.Timer(2).tick(get_sys_info, outputs=vitals_box)
             pipeline_status = gr.Label(label="Process State", value="Idle")
-
-    # Row 3: Output Terminal & Metadata Tools
+            
     with gr.Row():
         with gr.Column(scale=6):
             terminal_box = gr.Textbox(lines=22, interactive=False, show_label=False, elem_id="terminal")
-        
         with gr.Column(scale=4):
             with gr.Group():
-                gr.Markdown("### 📝 Metadata Injector")
-                metadata_input = gr.Code(
-                    value=update_metadata_preview("Enter Name..."), 
-                    language="json",
-                    label="Header Preview",
-                    interactive=True
-                )
+                gr.Markdown("### 📝 Metadata Injector & Live Preview")
+                metadata_input = gr.Code(value=update_metadata_preview("Enter Name..."), language="json", interactive=True)
                 with gr.Row():
                     inject_btn = gr.Button("💉 Inject to Source")
                     read_btn = gr.Button("🔍 Read Current Header")
 
-    # --- BINDINGS ---
+    # Bindings
     demo.load(list_files, outputs=[base_dd])
     friendly_name.change(fn=update_metadata_preview, inputs=[friendly_name], outputs=[metadata_input])
-    
-    run_btn.click(
-        fn=run_conversion,
-        inputs=[base_dd, q_format, friendly_name, extra_flags],
-        outputs=[terminal_box, last_path_state, pipeline_status]
-    )
-    
+    run_btn.click(fn=run_conversion, inputs=[base_dd, q_format, friendly_name, extra_flags], outputs=[terminal_box, gr.State(""), pipeline_status])
     stop_btn.click(fn=stop_pipeline, outputs=[terminal_box, pipeline_status])
     refresh_btn.click(list_files, outputs=[base_dd])
     inject_btn.click(fn=handle_injection, inputs=[base_dd, metadata_input], outputs=[terminal_box])
     read_btn.click(fn=read_selected_metadata, inputs=[base_dd], outputs=[terminal_box])
-
-    # Auto-scroll terminal
     terminal_box.change(fn=None, js=JS_AUTO_SCROLL, inputs=[terminal_box])
 
 if __name__ == "__main__":
