@@ -1,10 +1,24 @@
-import os, torch, psutil
+# config.py
+import os
 
 # --- DIRECTORIES ---
-MODELS_DIR = "models"
-LOGS_DIR = "logs"
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(ROOT_DIR, "models")
+LOGS_DIR = os.path.join(ROOT_DIR, "logs")
+SCRIPTS_DIR = os.path.join(ROOT_DIR, "scripts") 
 
-# --- UI ASSETS ---
+# --- 5D FIX DATA (In Root) ---
+FIX_5D_DATA = os.path.join(ROOT_DIR, "fix_5d_tensors_wan.safetensors")
+
+# --- BINARIES & TOOLS ---
+# Ensure this path is correct for your Linux setup
+LLAMA_BIN = os.path.join(ROOT_DIR, "llama.cpp", "build", "bin", "llama-quantize")
+
+# Scripts inside the /scripts folder
+CONVERT_PY = os.path.join(SCRIPTS_DIR, "convert.py")
+FIX_5D_PY = os.path.join(ROOT_DIR, "fix_5d_tensors.py")
+
+# --- UI ASSETS (Centralized) ---
 CSS_STYLE = """
 #terminal textarea { 
     background-color: #0d1117 !important; 
@@ -18,6 +32,7 @@ CSS_STYLE = """
     color: white !important;
     font-weight: bold !important;
 }
+.stop-button { background: #8b0000 !important; color: white !important; }
 """
 
 JS_AUTO_SCROLL = """
@@ -31,5 +46,8 @@ JS_AUTO_SCROLL = """
 """
 
 def ensure_dirs():
-    for d in [MODELS_DIR, LOGS_DIR]:
-        os.makedirs(d, exist_ok=True)
+    """Initializes the project folder structure."""
+    dirs = [MODELS_DIR, LOGS_DIR]
+    for d in dirs:
+        if not os.path.exists(d):
+            os.makedirs(d, exist_ok=True)
