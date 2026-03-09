@@ -1,5 +1,6 @@
 # core/gguf_engine.py
 import os, subprocess, sys
+import hashlib
 from core.metadata_manager import write_gguf_meta
 from config import CONVERT_PY, FIX_5D_PY, LLAMA_BIN, ROOT_DIR, FIX_5D_DATA
 from utils.file_ops import save_log
@@ -38,17 +39,19 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc):
             yield log_acc, "Error"
             continue
 
-        # 3. 5D Tensor Fix
-        log_acc += f"🔧 Fixing 5D Tensors...\n"
+        # 5D tensor fix
+        file_hash = hashlib.md5(os.path.basename(source_path).encode()).hexdigest()[:8]
+        dynamic_fix_data = os.path.join(ROOT_DIR, f"fix_5d_tensors_wan_{file_hash}.safetensors")
+        
+        log_acc += f"🔧 Fixing 5D Tensors using unique fix file...\n"
         yield log_acc, f"Fixing {q_flag}"
         
-        # Pass the --fix argument explicitly pointing to the root file
         subprocess.run([
             sys.executable, 
             FIX_5D_PY, 
             "--src", out_q, 
             "--dst", out_qf, 
-            "--fix", FIX_5D_DATA
+            "--fix", dynamic_fix_data
         ], cwd=ROOT_DIR)
 
         # 4. Metadata Injection

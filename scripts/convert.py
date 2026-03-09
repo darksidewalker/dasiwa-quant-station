@@ -81,13 +81,18 @@ class ModelHyVid(ModelTemplate):
         )
     ]
 
-    def handle_nd_tensor(self, key, data):
-        # hacky but don't have any better ideas
-        path = f"./fix_5d_tensors_{self.arch}.safetensors" # TODO: somehow get a path here??
+    def handle_nd_tensor(self, key, data, src_path=None):
+        if src_path:
+            file_hash = hashlib.md5(os.path.basename(src_path).encode()).hexdigest()[:8]
+            path = f"./fix_5d_tensors_{self.arch}_{file_hash}.safetensors"
+        else:
+            path = f"./fix_5d_tensors_{self.arch}.safetensors"
+
         if os.path.isfile(path):
-            raise RuntimeError(f"5D tensor fix file already exists! {path}")
+            tqdm.write(f"⚠️ Note: 5D fix file already exists, overwriting: {path}")
+        
         fsd = {key: torch.from_numpy(data)}
-        tqdm.write(f"5D key found in state dict! Manual fix required! - {key} {data.shape}")
+        tqdm.write(f"🎯 5D key found! Saving unique fix file: {path}")
         save_file(fsd, path)
 
 class ModelWan(ModelHyVid):
