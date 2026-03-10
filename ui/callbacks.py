@@ -5,6 +5,8 @@ from core.gguf_engine import run_gguf_conversion
 from core.metadata_manager import update_metadata_preview, read_any_metadata
 from utils.file_ops import list_files, get_full_path
 from config import MODELS_DIR
+from utils.scanner_5d import scan_5d_tensors
+from utils.file_ops import get_full_path
 
 def setup_callbacks(
     base_dd, friendly_name, refresh_btn, run_btn, stop_btn, 
@@ -20,6 +22,13 @@ def setup_callbacks(
         inputs=[friendly_name], 
         outputs=[metadata_input]
     )
+
+    def handle_scan(file_name):
+        if not file_name:
+            return "❌ No model selected for scanning."
+        # Resolve the full path using MODELS_DIR
+        full_path = get_full_path(file_name)
+        return scan_5d_tensors(full_path)
 
     # --- 3. The Main Conversion Logic ---
     def start_process(file_name, model_name, formats, options):
@@ -60,5 +69,11 @@ def setup_callbacks(
     read_btn.click(
         fn=read_any_metadata,
         inputs=[gr.State(MODELS_DIR), base_dd],
+        outputs=[terminal_box]
+    )
+
+    scan_btn.click(
+        fn=handle_scan,
+        inputs=[base_dd],
         outputs=[terminal_box]
     )

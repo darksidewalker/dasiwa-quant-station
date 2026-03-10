@@ -43,7 +43,7 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc):
         file_hash = hashlib.md5(os.path.basename(source_path).encode()).hexdigest()[:8]
         dynamic_fix_data = os.path.join(ROOT_DIR, f"fix_5d_tensors_wan_{file_hash}.safetensors")
         
-        log_acc += f"🔧 Fixing 5D Tensors using unique fix file...\n"
+        log_acc += f"🔧 Fixing 5D Tensors using: {os.path.basename(dynamic_fix_data)}\n"
         yield log_acc, f"Fixing {q_flag}"
         
         subprocess.run([

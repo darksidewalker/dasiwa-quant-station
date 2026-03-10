@@ -65,6 +65,7 @@ def create_ui():
             with gr.Column(scale=4):
                 inject_btn = gr.Button("💉 Inject to Source")
                 read_btn = gr.Button("🔍 Read Current Header")
+                scan_btn = gr.Button("🔎 Scan 5D Tensors", variant="secondary")
 
         # Logic Wiring
         setup_callbacks(
