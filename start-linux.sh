@@ -14,20 +14,31 @@ if [ -f /etc/os-release ]; then
     . /etc/os-release
     echo "🔍 Detected System: $NAME"
 
+    # 1. Install System Build Tools
     case "$ID" in
         arch|manjaro)
             echo "📦 Installing for Arch-based system..."
-            sudo pacman -S --needed --noconfirm base-devel cmake cuda
+            sudo pacman -S --needed --noconfirm base-devel cmake cuda curl
             ;;
         ubuntu|debian|mint)
             echo "📦 Installing for Debian-based system..."
             sudo apt update
-            sudo apt install -y build-essential cmake nvidia-cuda-toolkit
+            sudo apt install -y build-essential cmake nvidia-cuda-toolkit curl
             ;;
         *)
-            echo "⚠️ Unrecognized distribution ($ID). Please install build-essential, cmake, and cuda manually."
+            echo "⚠️ Unrecognized distribution ($ID). Ensure build-essential, cmake, and cuda are manualy installed."
             ;;
     esac
+
+    # 2. Install 'uv' (Python Package Manager)
+    if ! command -v uv &> /dev/null; then
+        echo "⚙️ uv not found. Installing via official script..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        # Source the cargo env to make uv immediately available in this session
+        source $HOME/.cargo/env
+    else
+        echo "✅ uv is already installed."
+    fi
 else
     echo "❌ Could not detect OS via /etc/os-release. Skipping system package install."
 fi
