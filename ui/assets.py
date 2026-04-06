@@ -1,16 +1,30 @@
 # ui/assets.py
 
-METADATA_TEMPLATE = {
-    "modelspec.title": "DaSiWa WAN 2.2 I2V {model_name}",
-    "modelspec.author": "Darksidewalker",
-    "modelspec.description": "Multi-Expert Image-to-Video diffusion model quantized via DaSiWa Station.",
+# Dictionary mapping architectures to their specific metadata fields
+MODEL_METADATA_CONFIGS = {
+    "WAN 2.2": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Multi-Expert Image-to-Video diffusion model quantized via DaSiWa Station.",
+        "modelspec.architecture": "wan_2.2_14b_i2v",
+        "modelspec.implementation": "https://github.com/Wan-Video/Wan2.2",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "image-to-video, moe, diffusion, wan2.2, DaSiWa",
+    },
+    "LTX-2": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "High-fidelity Image-to-Video diffusion model quantized via DaSiWa Station.",
+        "modelspec.architecture": "ltx2.3_22b_ti2v",
+        "modelspec.implementation": "https://github.com/Lightricks/LTX-2",
+        "modelspec.license": "LTX-2 Community License Agreement and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "image-to-video, text-to-video, video-to-video, audio, ltx2, diffusion, DaSiWa",
+    }
+}
+
+COMMON_METADATA = {
     "modelspec.date": "{date}",
-    "modelspec.architecture": "wan_2.2_14b_i2v",
-    "modelspec.implementation": "https://github.com/Wan-Video/Wan2.2",
-    "modelspec.tags": "image-to-video, moe, diffusion, wan2.2, DaSiWa",
-    "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
     "quantization.tool": "https://github.com/darksidewalker/dasiwa-wan2.2-master",
-    "quantization.version": "1.0.0",
     "quantization.bits": "{bits}"
 }
 
@@ -22,20 +36,4 @@ CSS_STYLE = """
     font-size: 13px !important;
 }
 .vitals-card { border: 1px solid #30363d; padding: 15px; border-radius: 8px; background: #0d1117; }
-.primary-button {
-    background: linear-gradient(135deg, #28a745 0%, #1e7e34 100%) !important;
-    color: white !important;
-    font-weight: bold !important;
-}
-.stop-button { background: #8b0000 !important; color: white !important; }
-"""
-
-JS_AUTO_SCROLL = """
-(x) => {
-    const el = document.getElementById('terminal');
-    if (el) {
-        const textarea = el.querySelector('textarea');
-        if (textarea) textarea.scrollTop = textarea.scrollHeight;
-    }
-}
 """

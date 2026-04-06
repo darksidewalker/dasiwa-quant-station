@@ -4,75 +4,122 @@ from core.metadata_manager import inject_metadata, get_current_meta
 from config import CONVERT_PY 
 from utils.file_ops import save_log
 
-def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, options, log_acc):
+def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type, 
+                        optimizer_choice, options, log_acc, low_vram=False, actcal=False):
+
+    # Mapping UI selection to CLI flags
     FLAG_MAP = {
         "FP8": ["--comfy_quant"],
         "INT8 Block-wise": ["--int8", "--scaling_mode", "block", "--comfy_quant"],
         "NVFP4": ["--nvfp4", "--comfy_quant"],
-        "Auto-Quality (Heur)": ["--heur"]
     }
 
-    ULTRA_PARAMS = [
-        "--save-quant-metadata", "--wan", "--optimizer", "adamw",
-        "--num_iter", "9000", "--calib_samples", "45000", 
-        "--lr_schedule", "plateau", "--lr_patience", "2", "--lr_factor", "0.96", 
-        "--lr_min", "9e-9", "--lr_cooldown", "0", "--lr_threshold", "1e-11", 
-        "--lr", "9.916700000002915715e-3", "--top_p", "0.05", 
-        "--min_k", "64", "--max_k", "256", "--early-stop-stall", "20000", 
-        "--early-stop-lr", "1e-8", "--early-stop-loss", "9e-8", "--lr-shape-influence", "3.5"
-    ]
-
     for fmt in formats:
-        suffix = fmt.lower().replace(" ", "_")
-        final_path = source_path.replace(".safetensors", f"_{suffix}.safetensors")
+        # Define output path
+        suffix = fmt.replace(" ", "_").lower()
+        final_path = os.path.join(MODELS_DIR, f"{model_name}_{suffix}.safetensors")
         
-        cmd = ["convert_to_quant", "-i", source_path, "-o", final_path]
+        # Base Command
+        cmd = ["convert_to_quant", "-i", source_path, "-o", final_path, "--save-quant-metadata"]
         
+        # --- 1. HARDWARE & CALIBRATION FLAGS ---
+        if low_vram:
+            cmd.append("--low-memory")
+        
+        # --- 2. FORMAT SPECIFIC FLAGS ---
         if fmt in FLAG_MAP:
             cmd.extend(FLAG_MAP[fmt])
-
-        if options == "Ultra-Quality (Optimizer)":
-            log_acc += f"💎 MODE: Ultra-Optimizer (9000 Iters) + {fmt}\n"
-            cmd.extend(ULTRA_PARAMS)
-        elif options == "Auto-Quality (Heur)":
-            if "--heur" not in cmd:
-                cmd.append("--heur")
-        else:
+        
+        # --- 3. ARCHITECTURE & TWEAK LOGIC ---
+        if options == "Simple":
             cmd.append("--simple")
+            if model_type == "WAN 2.2": cmd.append("--wan")
+            elif model_type == "LTX-2": cmd.append("--ltxv2")
+            
+        elif options == "Auto-Quality (Heur)":
+            cmd.append("--heur")
+            if model_type == "WAN 2.2": cmd.append("--wan")
+            elif model_type == "LTX-2": cmd.append("--ltxv2")
 
-        if "wan" in source_path.lower() and "--wan" not in cmd: 
-            cmd.append("--wan")
+        else: # Ultra-Quality (Optimizer)
+            if model_type == "WAN 2.2":
+                cmd.extend([
+                    "--wan", 
+                    "--optimizer", optimizer_choice,
+                    "--num_iter", "9000", 
+                    "--calib_samples", "10000",
+                    "--lr", "9e-3",
+                    "--lr_schedule", "plateau",
+                    "--early-stop-stall", "20000"
+                ])
+            elif model_type == "LTX-2":
+                cmd.extend([
+                    "--ltxv2", 
+                    "--optimizer", optimizer_choice,
+                    "--num_iter", "9000",
+                    "--calib_samples", "4096",
+                    "--lr", "1.0",
+                    "--lr_schedule", "adaptive", 
+                    "--lr_adaptive_mode", "simple-reset",
+                    "--early-stop-stall", "2000"
+                ])
 
-        log_acc += f"\n▶️ Executing: {' '.join(cmd)}\n"
-        yield log_acc, f"Processing {fmt}..."
+        log_acc += f"\n🛠️ CONFIG: {model_type} | FMT: {fmt} | TWEAK: {options}\n"
+        log_acc += f"▶️ COMMAND: {' '.join(cmd)}\n"
+        yield log_acc, f"Quantizing {fmt}..."
 
+        # Subprocess execution
         process = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
             text=True, bufsize=1, universal_newlines=True
         )
 
         current_line = ""
+        has_finished = False # Flag to prevent multiple 100% lines
+        
         while True:
             char = process.stdout.read(1)
-            if not char and process.poll() is not None: break
+            if not char and process.poll() is not None: 
+                break
             
-            if char == '\n' or char == '\r':
-                clean_line = current_line.strip().lower()
-                if clean_line and not clean_line.startswith("optimizing"):
-                    log_acc += current_line + "\n"
+            if char in ['\n', '\r']:
+                clean_line = current_line.strip()
+                
+                # Identify if this is a spammy optimization line
+                is_progress_spam = any(x in clean_line.lower() for x in ["optimizing", "step", "worse_count", "%|"])
+                
+                # Case 1: Standard logs (Errors, initialization, etc.)
+                if clean_line and not is_progress_spam:
+                    log_acc += clean_line + "\n"
                     yield log_acc, f"Quantizing {fmt}..."
+                
+                # Case 2: The very first 100% line we encounter
+                elif "100%" in clean_line and not has_finished:
+                    log_acc += clean_line + "\n"
+                    yield log_acc, f"Quantization of {fmt} Complete."
+                    has_finished = True # Lock it so no more 100% lines pass through
+
                 current_line = ""
             else:
                 current_line += char
 
         process.wait()
 
+        # --- 4. FINALIZATION & METADATA ---
         if process.returncode == 0 and os.path.exists(final_path):
-            meta = get_current_meta(model_name, fmt)
-            inject_metadata(final_path, meta)
-            log_acc += f"📝 Meta Injected: {os.path.basename(final_path)}\n"
+            # Fetch the fully-formed metadata from the manager
+            # This already contains the correct architecture, title, and license
+            meta = get_current_meta(model_name, model_type, bits=fmt)
+            
+            # Perform the injection
+            success, msg = inject_metadata(final_path, meta)
+            
+            if success:
+                log_acc += f"📝 Meta Injected: {os.path.basename(final_path)}\n"
+            else:
+                log_acc += f"⚠️ Metadata injection failed: {msg}\n"
         else:
-            log_acc += f"❌ Failed or file missing for {fmt}\n"
+            log_acc += f"❌ Quantization Failed. Return code: {process.returncode}\n"
 
     save_log(model_name, log_acc)       
-    yield log_acc, "Finished Safetensors"
+    yield log_acc, "Finished Batch"

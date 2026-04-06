@@ -9,3 +9,4 @@ sentencepiece
 safetensors
 numpy
 tqdm
+prodigy-plus-schedule-free
