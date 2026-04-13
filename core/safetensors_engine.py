@@ -1,6 +1,6 @@
 # core/safetensors_engine.py
 import os, subprocess, sys
-from core.metadata_manager import inject_metadata, get_current_meta
+from core.metadata_manager import inject_metadata, get_current_meta, get_specialized_meta
 from config import CONVERT_PY 
 from utils.file_ops import save_log
 
@@ -107,15 +107,14 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
 
         # --- 4. FINALIZATION & METADATA ---
         if process.returncode == 0 and os.path.exists(final_path):
-            # Fetch the fully-formed metadata from the manager
-            # This already contains the correct architecture, title, and license
-            meta = get_current_meta(model_name, model_type, bits=fmt)
+            # This calls the new logic that merges your LTX23_metadata.json
+            meta = get_specialized_meta(model_type, model_name, final_path, fmt)
             
-            # Perform the injection
+            # Inject the resulting dictionary into the safetensor
             success, msg = inject_metadata(final_path, meta)
             
             if success:
-                log_acc += f"📝 Meta Injected: {os.path.basename(final_path)}\n"
+                log_acc += f"📝 Meta Injected [{model_type}]: {os.path.basename(final_path)}\n"
             else:
                 log_acc += f"⚠️ Metadata injection failed: {msg}\n"
         else:

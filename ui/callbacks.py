@@ -1,8 +1,14 @@
 # ui/callbacks.py
 import gradio as gr
+import json
 from core.safetensors_engine import run_safe_conversion
 from core.gguf_engine import run_gguf_conversion
-from core.metadata_manager import update_metadata_preview, read_any_metadata, inject_metadata
+from core.metadata_manager import (
+    update_metadata_preview, 
+    read_any_metadata, 
+    inject_metadata, 
+    calculate_sha256
+)
 from utils.file_ops import list_files, get_full_path
 from config import MODELS_DIR
 from utils.scanner_5d import scan_5d_tensors
@@ -72,13 +78,20 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
 
     # --- 3. METADATA TOOLS & UTILITIES ---
 
-    def handle_metadata_injection(file_name, json_str):
-        """Parses the UI JSON and injects it into the selected file."""
+    def handle_metadata_injection(file_name, manual_json_str):
+        """Manually injects metadata into a selected source file."""
         if not file_name:
-            return "❌ Error: No file selected in the dropdown."
+            return "❌ No file selected."
+        
+        full_path = get_full_path(file_name)
+        
         try:
-            full_path = get_full_path(file_name)
-            meta_dict = json.loads(json_str)
+            # We parse the JSON currently visible in the UI box
+            meta_dict = json.loads(manual_json_str)
+
+            from core.metadata_manager import calculate_sha256
+            meta_dict["modelspec.hash_sha256"] = calculate_sha256(full_path)
+            
             success, msg = inject_metadata(full_path, meta_dict)
             return f"✅ {msg}" if success else f"❌ {msg}"
         except Exception as e:

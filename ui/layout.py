@@ -21,7 +21,7 @@ def create_ui():
                     refresh_btn = gr.Button("🔄 Refresh Folder", size="sm")
                     
                     model_type = gr.Radio(
-                        choices=["WAN 2.2", "LTX-2"], 
+                        choices=["WAN 2.2", "LTX-2.3"],
                         value="WAN 2.2", 
                         label="Architecture Selection"
                     )

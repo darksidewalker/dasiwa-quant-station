@@ -11,7 +11,7 @@ MODEL_METADATA_CONFIGS = {
         "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
         "modelspec.tags": "image-to-video, moe, diffusion, wan2.2, DaSiWa",
     },
-    "LTX-2": {
+    "LTX-2.3": {
         "modelspec.title": "{model_name}",
         "modelspec.author": "Darksidewalker",
         "modelspec.description": "High-fidelity Image-to-Video diffusion model quantized via DaSiWa Station.",
