@@ -2,46 +2,43 @@
 import psutil
 import torch
 import platform
-import subprocess
 
 def get_sys_info():
     # 1. Physical RAM & CPU
     ram = psutil.virtual_memory().percent
     cpu = psutil.cpu_percent()
     
-    # 2. Swap / Pagefile Logic
+    # 2. OS Name (Avoid "Lin" by using the full name or a cleaner map)
+    os_name = platform.system()
+    if os_name == "Windows": os_name = "Win"
+    elif os_name == "Linux": os_name = "Linux"
+    elif os_name == "Darwin": os_name = "Mac"
+
+    # 3. Swap / Pagefile Logic
     swap = psutil.swap_memory()
     swap_used_gb = swap.used / (1024**3)
     swap_total_gb = swap.total / (1024**3)
     swap_percent = swap.percent
     
-    gpu_load = "N/A"
+    gpu_load = "0%"
     vram_info = "0.0/0.0GB"
     
-    # 3. GPU Logic (NVIDIA, AMD, Intel)
+    # 4. GPU Logic
     if torch.cuda.is_available():
         try:
-            # Gets hardware-level Free/Total VRAM
+            # Memory Info
             free_b, total_b = torch.cuda.mem_get_info()
             used_gb = (total_b - free_b) / (1024**3)
             total_gb = total_b / (1024**3)
             vram_info = f"{used_gb:.1f}/{total_gb:.1f}GB"
             
-            # Get GPU Utilization
-            if "nvidia" in torch.cuda.get_device_name(0).lower():
-                # Attempt to get real load via torch internal
-                gpu_load = f"{torch.cuda.utilization():>3}%"
-            else:
-                gpu_load = "Active"
+            load_val = torch.cuda.utilization()
+            gpu_load = f"{load_val}%"
         except Exception:
-            gpu_load = "ERR%"
+            gpu_load = "Active"
 
-    # 4. Formatting the Output for the UI
-    # Line 1: CPU and Physical RAM
-    # Line 2: Swap / Pagefile (Critical for low-VRAM offloading)
-    # Line 3: GPU & VRAM
     return (
-        f"🖥️ CPU: {cpu:>3}% | RAM: {ram:>3}% | OS: {platform.system()[:3]}\n"
-        f"🔄 SWAP: {swap_percent:>2}% ({swap_used_gb:.1f}/{swap_total_gb:.1f}GB)\n"
-        f"📟 GPU: {gpu_load} | VRAM: {vram_info}"
+        f"🖥️ CPU: {cpu:>3.0f}% | RAM: {ram:>3.0f}% | OS: {os_name}\n"
+        f"🔄 SWAP: {swap_percent:>2.0f}% ({swap_used_gb:.1f}/{swap_total_gb:.1f}GB)\n"
+        f"📟 GPU: {gpu_load:>4} | VRAM: {vram_info}"
     )

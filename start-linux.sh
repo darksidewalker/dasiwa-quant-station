@@ -101,7 +101,7 @@ echo "🍳 Installing Comfy Kitchen [CUBLAS]..."
 uv pip install --refresh "comfy-kitchen[cublas]"
 
 # --- 4. LAUNCH ---
-echo "🚀 Starting DaSiWa WAN 2.2 Master ..."
+echo "🚀 Starting Quant Station ..."
 export VIRTUAL_ENV="$VENV_PATH"
 export PATH="$VENV_PATH/bin:$PATH"
 

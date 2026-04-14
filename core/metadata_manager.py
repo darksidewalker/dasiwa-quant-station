@@ -71,7 +71,7 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8"):
             meta["modelspec.hash_sha256"] = calculate_sha256(final_file_path)
             meta["modelspec.date"] = datetime.datetime.now().strftime("%Y-%m-%d")
             meta["quantization.bits"] = bits
-            meta["quantization.tool"] = "https://github.com/darksidewalker/dasiwa-wan2.2-master"
+            meta["quantization.tool"] = "https://github.com/darksidewalker/dasiwa-quant-station"
             
             # Ensure the spacer exists for future header edits
             if "__spacer" not in meta:
