@@ -130,32 +130,15 @@ def create_ui():
         settings_trigger_inputs = [model_type, friendly_name, extra_flags]
         settings_trigger_outputs = [optimizer_choice, tweak_hint, metadata_input]
 
-        # Connect the changes
+        # Bind the change handler ONCE per component. Previously these three
+        # components were each bound four times (once via this loop and three
+        # times via explicit calls below), causing 4x re-renders per keystroke.
         for component in settings_trigger_inputs:
             component.change(
-                fn=on_settings_change, 
-                inputs=settings_trigger_inputs, 
-                outputs=settings_trigger_outputs
+                fn=on_settings_change,
+                inputs=settings_trigger_inputs,
+                outputs=settings_trigger_outputs,
             )
-
-        # Each of these triggers must send ALL 3 inputs to satisfy the function signature
-        model_type.change(
-            fn=on_settings_change, 
-            inputs=settings_trigger_inputs, 
-            outputs=settings_trigger_outputs
-        )
-
-        friendly_name.change(
-            fn=on_settings_change, 
-            inputs=settings_trigger_inputs, 
-            outputs=settings_trigger_outputs
-        )
-
-        extra_flags.change(
-            fn=on_settings_change, 
-            inputs=settings_trigger_inputs, 
-            outputs=settings_trigger_outputs
-        )
 
         # --- Logic Wiring ---
         # Connects all 17 UI components to the callback handlers in ui/callbacks.py

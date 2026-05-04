@@ -1,5 +1,6 @@
 import os
 import json
+import struct
 import datetime
 import hashlib
 from ui.assets import MODEL_METADATA_CONFIGS, COMMON_METADATA
@@ -10,6 +11,11 @@ try:
     import gguf
 except ImportError:
     gguf = None
+
+
+# Safetensors spec: header JSON is capped at 100MB. We stay well under that.
+_SAFETENSORS_HEADER_MAX = 100 * 1024 * 1024
+_SPACER_KEY = "__spacer"
 
 def calculate_sha256(file_path):
     """Calculates a clean 0x-prefixed SHA256 hash of the target file."""
@@ -90,35 +96,346 @@ def update_metadata_preview(name, architecture="WAN 2.2"):
     meta = get_specialized_meta(architecture, name, "PREVIEW_MODE")
     return json.dumps(meta, indent=4)
 
+def _read_safetensors_header(file_path):
+    """
+    Read the raw safetensors header without loading any tensor data.
+
+    Returns: (header_dict, header_size, header_bytes)
+        header_dict: parsed JSON header (includes tensor specs and __metadata__)
+        header_size: int, byte length of the JSON header (NOT including the 8-byte prefix)
+        header_bytes: the raw header bytes as read from disk
+    """
+    with open(file_path, "rb") as f:
+        size_prefix = f.read(8)
+        if len(size_prefix) != 8:
+            raise ValueError("File too small to be a valid safetensors file")
+        header_size = struct.unpack("<Q", size_prefix)[0]
+        if header_size <= 0 or header_size > _SAFETENSORS_HEADER_MAX:
+            raise ValueError(f"Invalid header size: {header_size}")
+        header_bytes = f.read(header_size)
+        if len(header_bytes) != header_size:
+            raise ValueError("Truncated header")
+    header_dict = json.loads(header_bytes.decode("utf-8"))
+    return header_dict, header_size, header_bytes
+
+
+def _try_inplace_metadata_rewrite(file_path, meta_dict):
+    """
+    Attempt to rewrite the safetensors header in place by swapping only the
+    __metadata__ section. Tensor specs and tensor data are not touched.
+
+    Strategy:
+      1. Read the existing header.
+      2. Build a new header with the same tensor specs but new __metadata__.
+      3. If the new JSON fits in the original byte allocation, pad the
+         __spacer field with whitespace so the total length matches exactly,
+         then write the new 8-byte prefix + JSON over the original.
+      4. If it doesn't fit even after shrinking the spacer to a minimum,
+         return False so the caller falls back to a full rewrite.
+
+    Returns: (success: bool, message: str)
+    """
+    try:
+        header_dict, original_header_size, _ = _read_safetensors_header(file_path)
+    except Exception as e:
+        return False, f"Could not read header: {e}"
+
+    # safetensors stores all values as strings; coerce to keep the format valid.
+    meta_strings = {k: (v if isinstance(v, str) else json.dumps(v))
+                    for k, v in meta_dict.items()}
+
+    # Preserve tensor specs (everything that isn't __metadata__).
+    new_header = {k: v for k, v in header_dict.items() if k != "__metadata__"}
+    new_header["__metadata__"] = dict(meta_strings)
+
+    # Serialize once to measure size. safetensors uses compact JSON (no indent).
+    candidate = json.dumps(new_header, separators=(",", ":"), ensure_ascii=False)
+    candidate_bytes = candidate.encode("utf-8")
+
+    if len(candidate_bytes) > original_header_size:
+        # Try to shrink the spacer field to make room.
+        current_spacer = new_header["__metadata__"].get(_SPACER_KEY, "")
+        overshoot = len(candidate_bytes) - original_header_size
+        if len(current_spacer) >= overshoot:
+            new_spacer_len = len(current_spacer) - overshoot
+            new_header["__metadata__"][_SPACER_KEY] = " " * new_spacer_len
+            candidate = json.dumps(new_header, separators=(",", ":"), ensure_ascii=False)
+            candidate_bytes = candidate.encode("utf-8")
+        if len(candidate_bytes) > original_header_size:
+            return False, "New header exceeds original allocation"
+
+    # Pad up to exactly the original size by extending the spacer.
+    if len(candidate_bytes) < original_header_size:
+        padding_needed = original_header_size - len(candidate_bytes)
+        existing_spacer = new_header["__metadata__"].get(_SPACER_KEY, "")
+        new_header["__metadata__"][_SPACER_KEY] = existing_spacer + " " * padding_needed
+        candidate = json.dumps(new_header, separators=(",", ":"), ensure_ascii=False)
+        candidate_bytes = candidate.encode("utf-8")
+
+        # JSON overhead (the spacer key itself if it didn't exist) can shift the
+        # length by a few bytes. Trim or pad once more to land exactly.
+        delta = original_header_size - len(candidate_bytes)
+        if delta != 0:
+            spacer_now = new_header["__metadata__"][_SPACER_KEY]
+            if delta > 0:
+                new_header["__metadata__"][_SPACER_KEY] = spacer_now + " " * delta
+            else:
+                if len(spacer_now) + delta < 0:
+                    return False, "Could not align header size via spacer"
+                new_header["__metadata__"][_SPACER_KEY] = spacer_now[:delta]
+            candidate = json.dumps(new_header, separators=(",", ":"), ensure_ascii=False)
+            candidate_bytes = candidate.encode("utf-8")
+
+    if len(candidate_bytes) != original_header_size:
+        return False, (
+            f"Could not align header to original size "
+            f"({len(candidate_bytes)} vs {original_header_size})"
+        )
+
+    # Write the new 8-byte length prefix (unchanged value) and the new header.
+    # Tensor data after this region is untouched.
+    try:
+        with open(file_path, "r+b") as f:
+            f.seek(0)
+            f.write(struct.pack("<Q", original_header_size))
+            f.write(candidate_bytes)
+    except Exception as e:
+        return False, f"Write failed: {e}"
+
+    return True, "Header rewritten in place"
+
+
 def inject_metadata(file_path, meta_dict):
-    """Writes metadata dictionary into a Safetensors file header."""
+    """
+    Write metadata into a safetensors file header.
+
+    Fast path: rewrite only the header bytes if the new metadata fits in the
+    original allocation (typical when only updating session fields like title,
+    date, hash). For multi-GB models this avoids reading and rewriting the
+    entire file.
+
+    Slow path: load all tensors and re-save (used when the new header would
+    grow beyond the original allocation, or if the in-place rewrite fails).
+    """
+    ok, msg = _try_inplace_metadata_rewrite(file_path, meta_dict)
+    if ok:
+        return True, f"Metadata Injected (in-place: {msg})"
+
+    # Slow path fallback. Logs the in-place failure reason so it's debuggable.
     try:
         tensors = load_file(file_path)
         save_file(tensors, file_path, metadata=meta_dict)
-        return True, "Metadata Injected Successfully"
+        return True, f"Metadata Injected (full rewrite; in-place skipped: {msg})"
     except Exception as e:
         return False, str(e)
 
+def _gguf_value_for_type(field):
+    """Extract a (value, gguf_value_type) pair from a GGUFReader field."""
+    val_type = field.types[0]
+    return field.contents(), val_type
+
+
+def _gguf_add_existing_field(writer, field):
+    """
+    Carry an existing GGUF metadata field into the new writer using only
+    methods available across gguf library versions. Skips arrays whose subtype
+    we can't reliably forward without `sub_type` kwarg support.
+
+    Returns True if the field was successfully added, False if it was skipped.
+    """
+    name = field.name
+    val_type = field.types[0]
+    value = field.contents()
+
+    # Map of GGUFValueType -> writer method
+    type_dispatch = {
+        gguf.GGUFValueType.UINT8: writer.add_uint8,
+        gguf.GGUFValueType.INT8: writer.add_int8,
+        gguf.GGUFValueType.UINT16: writer.add_uint16,
+        gguf.GGUFValueType.INT16: writer.add_int16,
+        gguf.GGUFValueType.UINT32: writer.add_uint32,
+        gguf.GGUFValueType.INT32: writer.add_int32,
+        gguf.GGUFValueType.FLOAT32: writer.add_float32,
+        gguf.GGUFValueType.UINT64: writer.add_uint64,
+        gguf.GGUFValueType.INT64: writer.add_int64,
+        gguf.GGUFValueType.FLOAT64: writer.add_float64,
+        gguf.GGUFValueType.BOOL: writer.add_bool,
+        gguf.GGUFValueType.STRING: writer.add_string,
+    }
+
+    add_fn = type_dispatch.get(val_type)
+    if add_fn is not None:
+        add_fn(name, value)
+        return True
+
+    # Array case: try to forward via add_array. Some writer versions accept
+    # this directly for typed arrays; others require the sub_type kwarg of
+    # add_key_value. Try add_key_value with sub_type first, then plain
+    # add_array, then give up cleanly.
+    if val_type == gguf.GGUFValueType.ARRAY:
+        sub_type = field.types[-1] if len(field.types) > 1 else None
+        try:
+            writer.add_key_value(name, value, val_type, sub_type=sub_type)
+            return True
+        except TypeError:
+            # Older signature: add_key_value(key, val, vtype) without sub_type
+            try:
+                writer.add_array(name, value)
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    return False
+
+
 def write_gguf_meta(file_path, model_name, architecture, bits="FP8"):
     """
-    Handles metadata for GGUF files.
-    Matches the function name required by core/gguf_engine.py.
+    Inject modelspec.* metadata into an existing GGUF file by reading it,
+    copying tensors and KV pairs to a new file with the additional metadata,
+    and atomically replacing the original.
+
+    The `architecture` argument is the source model architecture string
+    (e.g. "wan", "ltxv") used to look up the right specialized metadata
+    template. The GGUF file's own `general.architecture` value is preserved
+    from the input (set by upstream tools like convert.py / llama-quantize).
+
+    `bits` is a label used in the metadata (e.g. "Q8_0", "FP8") and is not
+    used to recompute the actual on-disk quantization.
+
+    Returns (success: bool, message: str).
     """
     if not gguf:
         return False, "gguf library not installed"
+
+    if not os.path.isfile(file_path):
+        return False, f"File not found: {file_path}"
+
     try:
-        writer = gguf.GGUFWriter(file_path, architecture)
-        meta = get_specialized_meta(architecture, model_name, file_path, bits)
-        
-        writer.add_string("general.name", model_name)
-        for k, v in meta.items():
-            writer.add_string(k, str(v))
-            
-        writer.write_header_only()
-        writer.close()
-        return True, "GGUF Meta Injected"
+        reader = gguf.GGUFReader(file_path, "r")
     except Exception as e:
-        return False, f"GGUF Error: {str(e)}"
+        return False, f"GGUF read failed: {e}"
+
+    # Preserve the GGUF's own architecture (set by upstream tooling).
+    arch_field = reader.get_field(gguf.Keys.General.ARCHITECTURE)
+    if arch_field is None:
+        return False, "Source GGUF has no general.architecture field"
+    gguf_arch_str = str(
+        bytes(arch_field.parts[arch_field.data[-1]]), encoding="utf-8"
+    )
+
+    # Honor any custom alignment used by the source.
+    alignment_field = reader.get_field(gguf.Keys.General.ALIGNMENT)
+    custom_alignment = None
+    if alignment_field is not None:
+        try:
+            custom_alignment = int(alignment_field.parts[alignment_field.data[-1]])
+        except Exception:
+            custom_alignment = None
+
+    # Build the modelspec metadata to merge in.
+    new_meta = get_specialized_meta(architecture, model_name, file_path, bits)
+    # Coerce non-string values to strings (the format we already use elsewhere).
+    new_meta_strings = {
+        k: (v if isinstance(v, str) else json.dumps(v))
+        for k, v in new_meta.items()
+    }
+
+    # Write to a sibling temp file, then atomically replace.
+    dst_dir = os.path.dirname(file_path) or "."
+    tmp_path = os.path.join(
+        dst_dir, f".{os.path.basename(file_path)}.meta.tmp"
+    )
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    try:
+        writer = gguf.GGUFWriter(
+            tmp_path, arch=gguf_arch_str, endianess=reader.endianess
+        )
+    except TypeError:
+        # Older signatures may not accept `endianess` as kwarg
+        writer = gguf.GGUFWriter(tmp_path, arch=gguf_arch_str)
+
+    if custom_alignment is not None:
+        writer.data_alignment = custom_alignment
+
+    # Track which keys we'll override so we don't double-add them.
+    override_keys = set(new_meta_strings.keys())
+    skipped_fields = []
+
+    # GGUFWriter._init_ already calls add_architecture(). Skip that field
+    # and any GGUFWriter virtual fields.
+    for field in reader.fields.values():
+        if field.name == gguf.Keys.General.ARCHITECTURE:
+            continue
+        if field.name.startswith("GGUF."):
+            continue
+        if field.name in override_keys:
+            # Will be added below with the new value
+            continue
+        if not _gguf_add_existing_field(writer, field):
+            skipped_fields.append(f"{field.name} ({field.types})")
+
+    # Add the new modelspec.* / quantization.* fields as strings.
+    for k, v in new_meta_strings.items():
+        try:
+            writer.add_string(k, v)
+        except ValueError:
+            # Duplicated key -- shouldn't happen given override_keys logic, but
+            # if it does, skip rather than crash.
+            pass
+
+    # Register tensor info from source so the output gets a valid tensor
+    # section. Tensor data is streamed below via write_tensor_data.
+    for tensor in reader.tensors:
+        writer.add_tensor_info(
+            tensor.name,
+            tensor.data.shape,
+            tensor.data.dtype,
+            tensor.data.nbytes,
+            tensor.tensor_type,
+        )
+
+    try:
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_ti_data_to_file()
+        for tensor in reader.tensors:
+            try:
+                writer.write_tensor_data(
+                    tensor.data, tensor_endianess=reader.endianess
+                )
+            except TypeError:
+                # Older signature: write_tensor_data(data) only
+                writer.write_tensor_data(tensor.data)
+        writer.close()
+    except Exception as e:
+        try:
+            writer.close()
+        except Exception:
+            pass
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        return False, f"GGUF write failed: {e}"
+
+    # Atomic replace.
+    try:
+        os.replace(tmp_path, file_path)
+    except Exception as e:
+        return False, f"Atomic replace failed: {e}"
+
+    msg = "GGUF Meta Injected"
+    if skipped_fields:
+        msg += f" (skipped {len(skipped_fields)} unforwardable field(s))"
+    return True, msg
 
 def read_any_metadata(MODELS_DIR, file_name):
     """Reads and returns the header metadata from Safetensors or GGUF for the terminal."""
