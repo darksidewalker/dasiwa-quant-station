@@ -48,7 +48,7 @@ def create_ui():
                     gr.Markdown("### ⚖️ 3. Quantization Targets")
                     q_format = gr.CheckboxGroup(
                         choices=[
-                            "FP8", "INT8 Block-wise", "NVFP4", "NVFP4+FP8 Mixed",
+                            "FP8", "INT8 Block-wise", "NVFP4",
                             "GGUF_Q8_0", "GGUF_Q6_K", "GGUF_Q5_K_M", 
                             "GGUF_Q4_K_M", "GGUF_Q3_K_S", "GGUF_Q2_K"
                         ],
@@ -58,9 +58,9 @@ def create_ui():
                     with gr.Row():
                         low_vram = gr.Checkbox(label="Low VRAM Mode", value=False)
                         auto_layer_config = gr.Checkbox(
-                            label="Auto-generate layer config (mixed precision)",
+                            label="Keep sensitive layers in FP8 (mixed precision)",
                             value=True,
-                            info="Builds per-model FP8/NVFP4 split. Disable to use a hand-edited config in /filters."
+                            info="For NVFP4 and INT8 runs: bumps to_v, ffn_down, and other fragile layers to FP8. No effect on FP8 or GGUF runs."
                         )
 
                 with gr.Row():

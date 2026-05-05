@@ -35,7 +35,7 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
         log_acc += "-"*40 + "\n"
         
         # Filter selected formats
-        safe_fmts = [f for f in formats if f in ["FP8", "INT8 Block-wise", "NVFP4", "NVFP4+FP8 Mixed"]]
+        safe_fmts = [f for f in formats if f in ["FP8", "INT8 Block-wise", "NVFP4"]]
         gguf_fmts = [f for f in formats if f.startswith("GGUF_")]
 
         # Execute Safetensors Quantization
