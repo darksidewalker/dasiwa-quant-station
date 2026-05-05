@@ -48,7 +48,7 @@ def create_ui():
                     gr.Markdown("### ⚖️ 3. Quantization Targets")
                     q_format = gr.CheckboxGroup(
                         choices=[
-                            "FP8", "INT8 Block-wise", "NVFP4", 
+                            "FP8", "INT8 Block-wise", "NVFP4", "NVFP4+FP8 Mixed",
                             "GGUF_Q8_0", "GGUF_Q6_K", "GGUF_Q5_K_M", 
                             "GGUF_Q4_K_M", "GGUF_Q3_K_S", "GGUF_Q2_K"
                         ],
@@ -57,6 +57,11 @@ def create_ui():
                     )
                     with gr.Row():
                         low_vram = gr.Checkbox(label="Low VRAM Mode", value=False)
+                        auto_layer_config = gr.Checkbox(
+                            label="Auto-generate layer config (mixed precision)",
+                            value=True,
+                            info="Builds per-model FP8/NVFP4 split. Disable to use a hand-edited config in /filters."
+                        )
 
                 with gr.Row():
                     run_btn = gr.Button("🧩 START BATCH", variant="primary", scale=2)
@@ -130,24 +135,41 @@ def create_ui():
         settings_trigger_inputs = [model_type, friendly_name, extra_flags]
         settings_trigger_outputs = [optimizer_choice, tweak_hint, metadata_input]
 
-        # Bind the change handler ONCE per component. Previously these three
-        # components were each bound four times (once via this loop and three
-        # times via explicit calls below), causing 4x re-renders per keystroke.
+        # Connect the changes
         for component in settings_trigger_inputs:
             component.change(
-                fn=on_settings_change,
-                inputs=settings_trigger_inputs,
-                outputs=settings_trigger_outputs,
+                fn=on_settings_change, 
+                inputs=settings_trigger_inputs, 
+                outputs=settings_trigger_outputs
             )
 
+        # Each of these triggers must send ALL 3 inputs to satisfy the function signature
+        model_type.change(
+            fn=on_settings_change, 
+            inputs=settings_trigger_inputs, 
+            outputs=settings_trigger_outputs
+        )
+
+        friendly_name.change(
+            fn=on_settings_change, 
+            inputs=settings_trigger_inputs, 
+            outputs=settings_trigger_outputs
+        )
+
+        extra_flags.change(
+            fn=on_settings_change, 
+            inputs=settings_trigger_inputs, 
+            outputs=settings_trigger_outputs
+        )
+
         # --- Logic Wiring ---
-        # Connects all 17 UI components to the callback handlers in ui/callbacks.py
+        # Connects all UI components to the callback handlers in ui/callbacks.py
         setup_callbacks(
             base_dd, friendly_name, refresh_btn, run_btn, stop_btn, 
             q_format, pipeline_status, extra_flags, terminal_box, 
             metadata_input, inject_btn, read_btn, 
             scan_btn, model_type, optimizer_choice,
-            low_vram
+            low_vram, auto_layer_config
         )
 
         # Initial folder scan on startup
