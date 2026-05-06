@@ -12,12 +12,14 @@ from core.metadata_manager import (
 from utils.file_ops import list_files, get_full_path
 from config import MODELS_DIR
 from utils.scanner_5d import scan_5d_tensors
+from utils.pattern_audit import audit_patterns
 import os
 
 def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn, 
                    q_format, pipeline_status, extra_flags, terminal_box, 
                    metadata_input, inject_btn, read_btn, scan_btn,
-                   model_type, optimizer_choice, low_vram, auto_layer_config):
+                   model_type, optimizer_choice, low_vram, auto_layer_config,
+                   audit_btn):
     
     # --- 1. MODEL LIST MANAGEMENT ---
     refresh_btn.click(fn=list_files, outputs=[base_dd])
@@ -104,6 +106,15 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
         full_path = get_full_path(file_name)
         return scan_5d_tensors(full_path)
 
+    def handle_audit(file_name, m_type):
+        """Audits the selected model against the layer-config patterns."""
+        if not file_name:
+            return "❌ No model selected for audit."
+        if not file_name.endswith(".safetensors"):
+            return "❌ Pattern audit only works on .safetensors source files."
+        full_path = get_full_path(file_name)
+        return audit_patterns(full_path, m_type)
+
     # Metadata Action Buttons
     inject_btn.click(
         fn=handle_metadata_injection,
@@ -120,6 +131,12 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
     scan_btn.click(
         fn=handle_scan, 
         inputs=[base_dd], 
+        outputs=[terminal_box]
+    )
+
+    audit_btn.click(
+        fn=handle_audit,
+        inputs=[base_dd, model_type],
         outputs=[terminal_box]
     )
 

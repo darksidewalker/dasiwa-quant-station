@@ -1,7 +1,7 @@
 # core/safetensors_engine.py
 import os, subprocess, sys
 from core.metadata_manager import inject_metadata, get_current_meta, get_specialized_meta
-from core.layer_config_builder import build_layer_config
+from core.layer_config_builder import write_layer_config
 from config import CONVERT_PY, ROOT_DIR
 from utils.file_ops import save_log
 
@@ -19,9 +19,10 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         "NVFP4": ["--nvfp4", "--comfy_quant"],
     }
 
-    # Base formats where bumping sensitive layers to FP8 is meaningful.
-    # FP8 is excluded: nothing higher to bump to within convert_to_quant.
-    MIXED_ELIGIBLE = {"NVFP4", "INT8 Block-wise"}
+    # Base formats where the auto layer config is meaningful.
+    # FP8 base: keeps sensitive layers at FP16/BF16 via skip:true
+    # NVFP4 / INT8 base: bumps sensitive layers to FP8
+    LAYER_CONFIG_ELIGIBLE = {"FP8", "NVFP4", "INT8 Block-wise"}
 
     # Architecture flag mapping. Decoupled from strategy so it cannot be
     # accidentally lost when strategy logic changes.
@@ -62,19 +63,19 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         layer_config_path = None
         layer_config_log = []
         
-        if fmt in MIXED_ELIGIBLE and auto_layer_config:
-            layer_config_path, build_log = build_layer_config(
-                source_path, model_type, FILTERS_DIR
+        if fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
+            layer_config_path, build_log = write_layer_config(
+                model_type, fmt, out_dir=FILTERS_DIR
             )
             layer_config_log.extend(build_log)
-        elif fmt in MIXED_ELIGIBLE and not auto_layer_config:
+        elif fmt in LAYER_CONFIG_ELIGIBLE and not auto_layer_config:
+            # Manual config: shared per-architecture file (no per-model files
+            # needed since regex patterns work for any model of that arch).
             arch_slug = model_type.replace(" ", "").replace(".", "").replace("-", "").lower()
-            base = os.path.splitext(os.path.basename(source_path))[0]
-            manual_cfg = os.path.join(FILTERS_DIR, f"{arch_slug}_{base}_layer_config.json")
+            manual_cfg = os.path.join(FILTERS_DIR, f"{arch_slug}_layer_config.json")
             if os.path.exists(manual_cfg):
                 layer_config_path = manual_cfg
                 layer_config_log.append(f"[layer-config] Using manual config: {os.path.basename(manual_cfg)}")
-        # FP8 + auto=True is a deliberate no-op (nothing higher to bump to)
         
         # Apply _mixed suffix only if we actually have a config to attach
         if layer_config_path:
@@ -96,9 +97,8 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             log_acc += line + "\n"
         if layer_config_path:
             cmd.extend(["--layer-config", layer_config_path])
-            log_acc += f"[layer-config] Mixed precision: {fmt} base + FP8 keep-list\n"
             yield log_acc, "Building layer config..."
-        elif fmt in MIXED_ELIGIBLE and auto_layer_config:
+        elif fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
             log_acc += f"WARN: layer config build failed; running pure {fmt}\n"
             yield log_acc, "Layer config failed"
         

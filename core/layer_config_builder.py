@@ -1,186 +1,224 @@
 # core/layer_config_builder.py
 """
-Auto-generates a layer config for mixed NVFP4 + FP8 quantization.
+Builds a layer config for convert_to_quant in-memory each run.
 
-Strategy:
-  1. Run `convert_to_quant --dry-run create-template` to get the
-     authoritative list of layers that will be quantized for this
-     architecture. This list reflects the per-arch flag (--ltxv2 / --wan)
-     so structural layers (norms, embeddings, time/text projections) are
-     already excluded.
-  2. Mutate the template: set `format: "fp8"` on layers matching the
-     keep-FP8 heuristic; leave others as `""` (meaning: use base format
-     from --nvfp4).
-  3. Save and pass via `--layer-config`.
+Verified facts (May 2026, against convert_to_quant/config/layer_config.py):
+  - Layer config keys are interpreted as REGEX patterns ("regex mode")
+  - Every entry must have a real format value; empty "" is rejected
+  - _default also requires a real format
+  - Valid formats: float8_e4m3fn, float8_e4m3fn_blockwise,
+    float8_e4m3fn_rowwise, float8_e4m3fn_block3d, int8_blockwise,
+    int8_tensorwise, mxfp8, nvfp4, hybrid_mxfp8
+  - {"skip": true} on an entry excludes the layer from quantization
+    (kept at source precision, e.g. FP16/BF16)
 
-Schema (verified against real templates, May 2026):
-  {
-    "_default": {"format": ""},
-    "_exclusions": [],
-    "<layer.path.no.weight.suffix>": {
-        "format": "fp8" | "nvfp4" | "" (= base),
-        "_shape": [out, in]
-    },
-    ...
-  }
-  Layer keys include the full prefix (e.g. "model.diffusion_model....")
-  and do NOT include the trailing ".weight".
+Why in-memory and not on-disk:
+  - Patterns are arch-specific, not model-specific (regex covers every layer
+    in a family with one entry), so per-model files would be redundant
+  - Config gets written to a temp file just before subprocess launch
+  - The patterns in this file are the single source of truth
+
+Design:
+  Two pattern groups per architecture:
+
+  ALWAYS_SKIP_PATTERNS:
+    Layers we never want quantized regardless of base format. These mirror
+    what --wan / --ltxv2 already skip via the arch preset. Listed here as
+    defense-in-depth: even if the preset's interaction with --layer-config
+    changes in a future convert_to_quant version, these layers stay safe.
+
+  KEEP_HIGHER_PRECISION_PATTERNS:
+    Sensitive layers (to_v, ffn_down, connectors). Behavior depends on base:
+      - Base = float8_e4m3fn (FP8): mark as {"skip": true} -> stay at FP16
+      - Base = nvfp4 / int8_*  : mark as {"format":"float8_e4m3fn"} -> bump to FP8
 """
 import os
-import re
 import json
-import subprocess
+import tempfile
 
 
-# Heuristic: layers to keep at FP8 when base = NVFP4.
-# Source: City96 keys_hiprec list in convert.py + the img_tensor_get_type
-# bump rules in lcpp.patch (to_v, fused qkv, ffn_down get bumped one tier).
-#
-# Regexes match against the layer key WITHOUT the .weight suffix
-# but WITH the model.diffusion_model. prefix.
-KEEP_FP8_PATTERNS = {
+# Map UI format choice -> _default format string in the layer config
+BASE_FORMAT_FOR_CONFIG = {
+    "FP8": "float8_e4m3fn",
+    "INT8 Block-wise": "int8_blockwise",
+    "NVFP4": "nvfp4",
+}
+
+
+# Layers that should never be quantized for a given architecture.
+# Mirrors --wan / --ltxv2 preset skips. Source: TEST FP8 Simple log
+# ("ltxv2 skip" lines) for LTX-2.3; lcpp.patch quantize-skip rules for both.
+ALWAYS_SKIP_PATTERNS = {
     "LTX-2.3": [
-        # to_v across every attention variant: attn1, attn2, audio_attn1/2,
-        # audio_to_video_attn, video_to_audio_attn, and the connector attns.
-        r"\.to_v$",
-        # FFN down projection (second linear). Matches both ff.net.2 and
-        # audio_ff.net.2.
-        r"\.(audio_)?ff\.net\.2$",
-        # Connector blocks have their own attention dims (per LTX23 metadata
-        # config: connector_attention_head_dim=128, audio_connector=64) and
-        # are sensitive to aggressive quant. Keep all connector linears FP8.
+        # All adaln_single variants (timestep modulation tables).
+        # Catches: adaln_single, audio_adaln_single, audio_prompt_adaln_single,
+        # prompt_adaln_single, and all av_ca_*_adaln_single (gate/scale_shift
+        # variants for the audio-video cross-attention modules).
+        r"adaln_single\.",
+        # All connector blocks (audio + video)
         r"(audio|video)_embeddings_connector\.",
+        # Caption / patchify / proj_out / scale_shift_table per lcpp.patch
+        r"(^|\.)caption_projection\.",
+        r"(^|\.)patchify_proj($|\.)",
+        r"(^|\.)proj_out($|\.)",
+        r"scale_shift_table",
+        # Gate logits for gated attention (apply_gated_attention=true in
+        # LTX23 config). Small tables that determine attention routing -
+        # corrupting these changes which tokens get attended to.
+        r"\.to_gate_logits$",
     ],
     "WAN 2.2": [
-        # Verified May 2026 against wan2_2_i2v_14B high+low templates.
-        # WAN keys are naked (no model.diffusion_model. prefix) and use
-        # split q/k/v/o (never fused qkv). Both noise checkpoints share
-        # this layout exactly.
-        #
-        # to_v across both attention types (40 blocks each = 80 layers)
-        r"\.self_attn\.v$",
-        r"\.cross_attn\.v$",
-        # FFN down projection (ffn.2 = second linear, 40 layers)
-        r"\.ffn\.2$",
-        # Structural layers that --wan keeps in the quantize universe but
-        # are too sensitive for NVFP4 per City96 lcpp.patch (5 + 1 layers)
-        r"^(text_embedding|time_embedding|time_projection)\.",
+        # WAN keys are naked (no model.diffusion_model. prefix) per the
+        # uploaded WAN templates. Use ^ anchors where the family lives at
+        # the top level.
+        r"^modulation\.",
+        r"\.modulation($|\.)",
+        r"^patch_embedding\.",
+        r"^text_embedding\.",
+        r"^time_projection\.",
+        r"^time_embedding\.",
+        r"^img_emb\.",
         r"^head\.",
     ],
 }
 
 
-def _arch_slug(model_type):
-    """'WAN 2.2' -> 'wan22', 'LTX-2.3' -> 'ltx23'."""
-    return model_type.replace(" ", "").replace(".", "").replace("-", "").lower()
+# Sensitive layers: kept at higher precision than the base format.
+# Same heuristic as before (City96 keys_hiprec + lcpp.patch bump rules).
+# Patterns verified against real WAN and LTX-2.3 templates.
+KEEP_HIGHER_PRECISION_PATTERNS = {
+    "LTX-2.3": [
+        # to_v across every attention variant (excluding connector blocks
+        # which are already covered by ALWAYS_SKIP). Negative lookahead
+        # prevents double-matching the same layer with two different rules.
+        r"^(?!.*_embeddings_connector).*\.to_v$",
+        # FFN down projection (ff.net.2 and audio_ff.net.2), excluding
+        # connector layers for the same reason.
+        r"^(?!.*_embeddings_connector).*\.(audio_)?ff\.net\.2$",
+    ],
+    "WAN 2.2": [
+        # WAN uses split q/k/v/o (never fused). to_v in self + cross attn.
+        # WAN's ALWAYS_SKIP doesn't overlap with these patterns.
+        r"\.self_attn\.v$",
+        r"\.cross_attn\.v$",
+        # FFN second linear (down projection)
+        r"\.ffn\.2$",
+    ],
+}
 
 
-def _arch_flag(model_type):
-    return {"WAN 2.2": "--wan", "LTX-2.3": "--ltxv2"}.get(model_type)
-
-
-def _run_template(source_path, model_type, template_path):
-    """Run convert_to_quant --dry-run create-template. Returns (ok, msg)."""
-    flag = _arch_flag(model_type)
-    if not flag:
-        return False, f"Unknown architecture: {model_type}"
-
-    cmd = [
-        "convert_to_quant",
-        "-i", source_path,
-        "--nvfp4",
-        flag,
-        "--dry-run", "create-template",
-        "-o", template_path,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except FileNotFoundError:
-        return False, "convert_to_quant not on PATH"
-    except subprocess.TimeoutExpired:
-        return False, "Template generation timed out"
-    except Exception as e:
-        return False, f"Template subprocess error: {e}"
-
-    if result.returncode != 0:
-        return False, f"rc={result.returncode}: {result.stderr.strip()[:400]}"
-    if not os.path.exists(template_path):
-        return False, "Template flag succeeded but no file written"
-    return True, "ok"
-
-
-def _apply_fp8_overrides(template, regexes):
-    """Mutate template: set format='fp8' on matching layers. Returns counts."""
-    fp8 = 0
-    base = 0
-    for key, entry in template.items():
-        if key.startswith("_") or not isinstance(entry, dict):
-            continue
-        if any(rx.search(key) for rx in regexes):
-            entry["format"] = "fp8"
-            fp8 += 1
-        else:
-            # Leave format="" so it inherits base type from --nvfp4 flag
-            base += 1
-    return fp8, base
-
-
-def build_layer_config(source_path, model_type, filters_dir):
+def build_layer_config_dict(model_type, base_format_ui_label):
     """
-    Build (or reuse) a layer config for mixed NVFP4+FP8 quantization.
+    Build the layer config as a Python dict.
 
-    Returns (config_path: str|None, log_lines: list[str]).
-    Cache key: source basename + arch slug. Regenerates only when missing.
+    Args:
+        model_type: UI architecture label, e.g. "WAN 2.2" or "LTX-2.3"
+        base_format_ui_label: UI format label, e.g. "FP8", "NVFP4", "INT8 Block-wise"
+
+    Returns:
+        (config_dict, summary_dict) where summary contains pattern counts
+        for logging.
+
+    Raises:
+        ValueError if architecture or base format is unknown.
+    """
+    base_fmt = BASE_FORMAT_FOR_CONFIG.get(base_format_ui_label)
+    if base_fmt is None:
+        raise ValueError(
+            f"Unknown base format '{base_format_ui_label}'. "
+            f"Valid: {list(BASE_FORMAT_FOR_CONFIG)}"
+        )
+
+    skip_patterns = ALWAYS_SKIP_PATTERNS.get(model_type)
+    keep_patterns = KEEP_HIGHER_PRECISION_PATTERNS.get(model_type)
+    if skip_patterns is None or keep_patterns is None:
+        raise ValueError(
+            f"No patterns defined for architecture '{model_type}'. "
+            f"Valid: {list(ALWAYS_SKIP_PATTERNS)}"
+        )
+
+    config = {
+        "_default": {"format": base_fmt},
+        "_exclusions": [],
+    }
+
+    # Always-skip patterns get {"skip": true}
+    for pat in skip_patterns:
+        config[pat] = {"skip": True}
+
+    # Sensitive-layer behavior depends on base format
+    if base_fmt == "float8_e4m3fn":
+        # FP8 base: nothing higher to bump to within the format enum.
+        # Keep sensitive layers at source precision (FP16/BF16) via skip.
+        for pat in keep_patterns:
+            config[pat] = {"skip": True}
+        keep_action = "skip (stay at source FP16/BF16)"
+    else:
+        # Lower-bit base (nvfp4, int8_*): bump sensitive layers to FP8.
+        for pat in keep_patterns:
+            config[pat] = {"format": "float8_e4m3fn"}
+        keep_action = "bump to float8_e4m3fn"
+
+    summary = {
+        "base_format": base_fmt,
+        "always_skip_count": len(skip_patterns),
+        "keep_higher_count": len(keep_patterns),
+        "keep_action": keep_action,
+    }
+    return config, summary
+
+
+def write_layer_config(model_type, base_format_ui_label, out_dir=None):
+    """
+    Build the layer config and write it to a temp file.
+
+    Args:
+        model_type: UI architecture label
+        base_format_ui_label: UI format label
+        out_dir: directory for the temp file (defaults to system tmp).
+                 Pass FILTERS_DIR to keep generated configs visible to
+                 the user for debugging.
+
+    Returns:
+        (config_path, log_lines) on success.
+        (None, log_lines) on failure.
     """
     log = []
-    os.makedirs(filters_dir, exist_ok=True)
-
-    arch = _arch_slug(model_type)
-    base = os.path.splitext(os.path.basename(source_path))[0]
-    config_path = os.path.join(filters_dir, f"{arch}_{base}_layer_config.json")
-    template_path = os.path.join(filters_dir, f"{arch}_{base}_template.json")
-
-    if os.path.exists(config_path):
-        log.append(f"[layer-config] Reusing cached: {os.path.basename(config_path)}")
-        return config_path, log
-
-    log.append(f"[layer-config] Generating template for {model_type}...")
-    ok, msg = _run_template(source_path, model_type, template_path)
-    if not ok:
-        log.append(f"[layer-config] create-template failed: {msg}")
-        return None, log
-
     try:
-        with open(template_path) as f:
-            template = json.load(f)
-    except Exception as e:
-        log.append(f"[layer-config] Template JSON load failed: {e}")
+        config, summary = build_layer_config_dict(model_type, base_format_ui_label)
+    except ValueError as e:
+        log.append(f"[layer-config] {e}")
         return None, log
 
-    layer_count = sum(1 for k in template if not k.startswith("_"))
-    log.append(f"[layer-config] Template lists {layer_count} quantizable layers")
-
-    patterns = KEEP_FP8_PATTERNS.get(model_type)
-    if model_type not in KEEP_FP8_PATTERNS:
-        log.append(f"[layer-config] No FP8 patterns defined for {model_type}")
-        return None, log
-
-    regexes = [re.compile(p) for p in patterns]
-    fp8_count, base_count = _apply_fp8_overrides(template, regexes)
-
-    if fp8_count == 0:
-        log.append(
-            "[layer-config] ABORT: 0 layers matched FP8 patterns. "
-            "Patterns are wrong for this model's naming."
-        )
-        return None, log
+    # Use a temp file but in a predictable location for debugging.
+    # Filename includes arch + base format so concurrent runs don't collide.
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        arch_slug = model_type.replace(" ", "").replace(".", "").replace("-", "").lower()
+        fmt_slug = base_format_ui_label.replace(" ", "_").lower()
+        config_path = os.path.join(out_dir, f"_runtime_{arch_slug}_{fmt_slug}.json")
+    else:
+        fd, config_path = tempfile.mkstemp(suffix=".json", prefix="dasiwa_lc_")
+        os.close(fd)
 
     with open(config_path, "w") as f:
-        json.dump(template, f, indent=2)
+        json.dump(config, f, indent=2)
 
     log.append(
-        f"[layer-config] FP8: {fp8_count} layers | "
-        f"NVFP4 (base): {base_count} layers"
+        f"[layer-config] {model_type} | base={summary['base_format']} | "
+        f"skip patterns={summary['always_skip_count']} | "
+        f"sensitive layer action: {summary['keep_action']}"
     )
-    log.append(f"[layer-config] Saved: {os.path.basename(config_path)}")
+    log.append(f"[layer-config] Written: {os.path.basename(config_path)}")
     return config_path, log
+
+
+# Backwards-compat shim for callers that still use the old name.
+# Old signature: build_layer_config(source_path, model_type, filters_dir)
+# Source path is no longer needed (regex covers every model of an arch).
+def build_layer_config(source_path, model_type, filters_dir):
+    """
+    Deprecated entry point. Defaults to NVFP4 base for the legacy mixed mode.
+    Prefer write_layer_config() with an explicit base format.
+    """
+    return write_layer_config(model_type, "NVFP4", out_dir=filters_dir)

@@ -58,9 +58,9 @@ def create_ui():
                     with gr.Row():
                         low_vram = gr.Checkbox(label="Low VRAM Mode", value=False)
                         auto_layer_config = gr.Checkbox(
-                            label="Keep sensitive layers in FP8 (mixed precision)",
+                            label="Keep sensitive layers in higher precision",
                             value=True,
-                            info="For NVFP4 and INT8 runs: bumps to_v, ffn_down, and other fragile layers to FP8. No effect on FP8 or GGUF runs."
+                            info="FP8 base: keeps to_v, ffn_down at FP16/BF16. NVFP4/INT8 base: bumps them to FP8. Always skips structural layers (norms, embeddings, connectors)."
                         )
 
                 with gr.Row():
@@ -104,6 +104,7 @@ def create_ui():
                         read_btn = gr.Button("🔍 Read Current Header")
                         inject_btn = gr.Button("💉 Inject to Source", variant="primary")
                         scan_btn = gr.Button("🔎 Scan 5D Tensors", variant="secondary")
+                        audit_btn = gr.Button("🩺 Audit Patterns", variant="secondary")
 
         # --- RE-ACTIVE UI LOGIC ---
 
@@ -169,7 +170,7 @@ def create_ui():
             q_format, pipeline_status, extra_flags, terminal_box, 
             metadata_input, inject_btn, read_btn, 
             scan_btn, model_type, optimizer_choice,
-            low_vram, auto_layer_config
+            low_vram, auto_layer_config, audit_btn
         )
 
         # Initial folder scan on startup

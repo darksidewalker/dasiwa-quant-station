@@ -1,0 +1,33 @@
+{
+  "_default": {
+    "format": "float8_e4m3fn"
+  },
+  "_exclusions": [],
+  "(^|\\.)adaln_single\\.": {
+    "skip": true
+  },
+  "(^|\\.)audio_adaln_single\\.": {
+    "skip": true
+  },
+  "(audio|video)_embeddings_connector\\.": {
+    "skip": true
+  },
+  "(^|\\.)caption_projection\\.": {
+    "skip": true
+  },
+  "(^|\\.)patchify_proj($|\\.)": {
+    "skip": true
+  },
+  "(^|\\.)proj_out($|\\.)": {
+    "skip": true
+  },
+  "scale_shift_table": {
+    "skip": true
+  },
+  "^(?!.*_embeddings_connector).*\\.to_v$": {
+    "skip": true
+  },
+  "^(?!.*_embeddings_connector).*\\.(audio_)?ff\\.net\\.2$": {
+    "skip": true
+  }
+}
