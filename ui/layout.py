@@ -105,6 +105,19 @@ def create_ui():
                         inject_btn = gr.Button("💉 Inject to Source", variant="primary")
                         scan_btn = gr.Button("🔎 Scan 5D Tensors", variant="secondary")
                         audit_btn = gr.Button("🩺 Audit Patterns", variant="secondary")
+                    with gr.Row():
+                        reference_dd = gr.Dropdown(
+                            label="Reference FP8 (for keep-list comparison)",
+                            interactive=True,
+                            allow_custom_value=True,
+                            scale=3,
+                            info="Place author's FP8 file in models/ and refresh."
+                        )
+                        compare_btn = gr.Button(
+                            "🔬 Compare to Reference",
+                            variant="secondary",
+                            scale=1
+                        )
 
         # --- RE-ACTIVE UI LOGIC ---
 
@@ -170,11 +183,13 @@ def create_ui():
             q_format, pipeline_status, extra_flags, terminal_box, 
             metadata_input, inject_btn, read_btn, 
             scan_btn, model_type, optimizer_choice,
-            low_vram, auto_layer_config, audit_btn
+            low_vram, auto_layer_config, audit_btn,
+            reference_dd, compare_btn
         )
 
-        # Initial folder scan on startup
+        # Initial folder scan on startup - populate both source and reference dropdowns
         from utils.file_ops import list_files
         demo.load(fn=list_files, outputs=[base_dd])
+        demo.load(fn=list_files, outputs=[reference_dd])
 
     return demo

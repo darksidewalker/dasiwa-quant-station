@@ -71,23 +71,27 @@ def _read_layers(safetensors_path):
     return out
 
 
-def _classify_layer(key, skip_rxs, keep_rxs, suspicious_rx, shape):
-    """Return the category for one layer.
+def _classify_layer(key, skip_pats, keep_pats, suspicious_rx, shape):
+    """Return (category, matching_pattern_or_None) for one layer.
+    
+    Pattern lists are passed as (pattern_string, compiled_regex) tuples
+    so we can report which specific rule fired.
     
     Note: convert_to_quant matches regex against the layer name WITHOUT
     the .weight suffix (verified against template format). We strip it
     here so the audit reflects what actually happens at quantization time.
     """
     match_key = key[:-len(".weight")] if key.endswith(".weight") else key
-    if any(rx.search(match_key) for rx in skip_rxs):
-        return "SKIP"
-    if any(rx.search(match_key) for rx in keep_rxs):
-        return "KEEP_HIGH"
-    # Default category - check if suspicious
+    for pat_str, rx in skip_pats:
+        if rx.search(match_key):
+            return "SKIP", pat_str
+    for pat_str, rx in keep_pats:
+        if rx.search(match_key):
+            return "KEEP_HIGH", pat_str
     is_2d_weight = (len(shape) == 2 and key.endswith(".weight"))
     if is_2d_weight and suspicious_rx.search(match_key):
-        return "SUSPICIOUS"
-    return "DEFAULT"
+        return "SUSPICIOUS", None
+    return "DEFAULT", None
 
 
 def _collapse_stem(key):
@@ -101,6 +105,12 @@ def audit_patterns(safetensors_path, model_type):
     """
     Audit a safetensors file against the layer-config patterns.
     Returns a formatted text report ready to display.
+    
+    Report tells you:
+      - Top-line verdict: are patterns sufficient for this model?
+      - Per-pattern coverage: which rules fired and how many layers each caught
+      - Which layers fall to base format (default behavior)
+      - Suspicious unmatched layers that look structurally important
     """
     if not os.path.exists(safetensors_path):
         return f"❌ Error: File not found at {safetensors_path}"
@@ -111,8 +121,10 @@ def audit_patterns(safetensors_path, model_type):
             f"Known: {list(ALWAYS_SKIP_PATTERNS)}"
         )
 
-    skip_rxs = [re.compile(p) for p in ALWAYS_SKIP_PATTERNS[model_type]]
-    keep_rxs = [re.compile(p) for p in KEEP_HIGHER_PRECISION_PATTERNS[model_type]]
+    # Build (pattern_string, compiled_regex) tuples so we can report
+    # which specific rule matched each layer.
+    skip_pats = [(p, re.compile(p)) for p in ALWAYS_SKIP_PATTERNS[model_type]]
+    keep_pats = [(p, re.compile(p)) for p in KEEP_HIGHER_PRECISION_PATTERNS[model_type]]
     suspicious_rx = re.compile("|".join(SUSPICIOUS_PATTERNS))
 
     try:
@@ -123,77 +135,108 @@ def audit_patterns(safetensors_path, model_type):
     if not layers:
         return f"❌ Empty layer list in {os.path.basename(safetensors_path)}"
 
-    # Categorize every layer
+    # Track everything per-pattern + per-category
     categories = Counter()
-    suspicious_examples = []
-    keep_examples = []
-    skip_examples = []
-
-    # Group suspicious layers by stem so output is compact
+    skip_pattern_hits = Counter()    # pattern_string -> count
+    keep_pattern_hits = Counter()
     suspicious_stems = defaultdict(lambda: {"count": 0, "sample": None, "shape": None})
 
     for key, shape, dtype, n_params in layers:
-        cat = _classify_layer(key, skip_rxs, keep_rxs, suspicious_rx, shape)
+        cat, matched_pattern = _classify_layer(
+            key, skip_pats, keep_pats, suspicious_rx, shape
+        )
         categories[cat] += 1
-        if cat == "SUSPICIOUS":
+        if cat == "SKIP":
+            skip_pattern_hits[matched_pattern] += 1
+        elif cat == "KEEP_HIGH":
+            keep_pattern_hits[matched_pattern] += 1
+        elif cat == "SUSPICIOUS":
             stem = _collapse_stem(key)
             entry = suspicious_stems[stem]
             entry["count"] += 1
             if entry["sample"] is None:
                 entry["sample"] = key
                 entry["shape"] = shape
-        elif cat == "KEEP_HIGH" and len(keep_examples) < 4:
-            keep_examples.append(key)
-        elif cat == "SKIP" and len(skip_examples) < 4:
-            skip_examples.append(key)
 
-    # Build report
+    total = len(layers)
     out = []
+
+    # === HEADER ===
     out.append(f"🔍 Pattern Audit: {os.path.basename(safetensors_path)}")
     out.append(f"   Architecture: {model_type}")
-    out.append("-" * 60)
-    out.append(f"Total layers in file: {len(layers)}")
+    out.append("=" * 60)
+
+    # === TOP-LINE VERDICT ===
+    n_suspicious = categories["SUSPICIOUS"]
+    if n_suspicious == 0:
+        out.append("✅ VERDICT: Patterns fully cover this model.")
+        out.append("   Every structural and sensitive layer is matched by an")
+        out.append("   active rule. No changes needed for this architecture.")
+    else:
+        n_families = len(suspicious_stems)
+        out.append(f"⚠️  VERDICT: {n_families} unmatched layer "
+                   f"{'family' if n_families == 1 else 'families'} found "
+                   f"({n_suspicious} layers).")
+        out.append("   These look structurally important but no pattern matches.")
+        out.append("   Review the SUSPICIOUS section below.")
     out.append("")
-    out.append(f"  SKIP (structural)   : {categories['SKIP']:>5}")
-    out.append(f"  KEEP_HIGH (sensitive): {categories['KEEP_HIGH']:>5}")
-    out.append(f"  DEFAULT (base format): {categories['DEFAULT']:>5}")
-    out.append(f"  SUSPICIOUS          : {categories['SUSPICIOUS']:>5}  "
-               f"{'⚠️  REVIEW NEEDED' if categories['SUSPICIOUS'] > 0 else ''}")
+
+    # === SUMMARY ===
+    out.append(f"Total layers in file: {total}")
+    out.append("")
+    out.append(f"  SKIP (matched ALWAYS_SKIP)         : {categories['SKIP']:>5}")
+    out.append(f"  KEEP_HIGH (matched sensitive list) : {categories['KEEP_HIGH']:>5}")
+    out.append(f"  DEFAULT (intentionally at base fmt): {categories['DEFAULT']:>5}")
+    if n_suspicious:
+        out.append(f"  SUSPICIOUS (review needed)         : {n_suspicious:>5}")
     out.append("")
 
-    if skip_examples:
-        out.append("✅ Sample SKIP layers (preserved at FP16/BF16):")
-        for k in skip_examples:
-            out.append(f"   {k}")
-        out.append("")
+    # === ALWAYS_SKIP COVERAGE ===
+    out.append("─" * 60)
+    out.append("ALWAYS_SKIP patterns (structural layers preserved at FP16):")
+    out.append("─" * 60)
+    for pat_str, _ in skip_pats:
+        hits = skip_pattern_hits.get(pat_str, 0)
+        marker = "✓" if hits > 0 else "·"
+        out.append(f"  {marker} [{hits:>4}x] {pat_str}")
+    unused_skip = sum(1 for p, _ in skip_pats if skip_pattern_hits.get(p, 0) == 0)
+    if unused_skip:
+        out.append(f"  Note: {unused_skip} pattern(s) matched 0 layers in this model.")
+    out.append("")
 
-    if keep_examples:
-        out.append("✅ Sample KEEP_HIGH layers (sensitive, get bumped/skipped):")
-        for k in keep_examples:
-            out.append(f"   {k}")
-        out.append("")
+    # === KEEP_HIGHER COVERAGE ===
+    out.append("─" * 60)
+    out.append("KEEP_HIGHER_PRECISION patterns (sensitive layers):")
+    out.append("  On FP8 base: these stay at FP16/BF16 (skip mode)")
+    out.append("  On NVFP4/INT8 base: bumped to FP8")
+    out.append("─" * 60)
+    for pat_str, _ in keep_pats:
+        hits = keep_pattern_hits.get(pat_str, 0)
+        marker = "✓" if hits > 0 else "·"
+        out.append(f"  {marker} [{hits:>4}x] {pat_str}")
+    unused_keep = sum(1 for p, _ in keep_pats if keep_pattern_hits.get(p, 0) == 0)
+    if unused_keep:
+        out.append(f"  Note: {unused_keep} pattern(s) matched 0 layers in this model.")
+    out.append("")
 
+    # === SUSPICIOUS DETAILS (only if any) ===
     if suspicious_stems:
+        out.append("─" * 60)
         out.append("⚠️  SUSPICIOUS layers (look structural but unmatched):")
-        out.append("   These will get the base format. If that's wrong, add a")
-        out.append("   pattern in core/layer_config_builder.py to cover them.")
+        out.append("─" * 60)
+        out.append("These will get the base format. If that's wrong, add a")
+        out.append("pattern in core/layer_config_builder.py to cover them.")
         out.append("")
-        # Sort by count descending
-        sorted_stems = sorted(
-            suspicious_stems.items(),
-            key=lambda kv: -kv[1]["count"]
-        )
-        for stem, info in sorted_stems:
-            out.append(f"   [{info['count']:>3}x] {stem}")
+        for stem, info in sorted(suspicious_stems.items(), key=lambda kv: -kv[1]["count"]):
+            out.append(f"  [{info['count']:>3}x] {stem}")
             out.append(f"          example: {info['sample']}")
             out.append(f"          shape:   {info['shape']}")
         out.append("")
-        out.append("   How to add a pattern: open core/layer_config_builder.py,")
-        out.append("   find the relevant arch in KEEP_HIGHER_PRECISION_PATTERNS")
-        out.append("   or ALWAYS_SKIP_PATTERNS, and add a regex matching the")
-        out.append("   layer name (without the .weight suffix).")
-
-    if categories["SUSPICIOUS"] == 0:
-        out.append("✅ No suspicious unmatched layers. Patterns cover this model.")
+        out.append("How to add a pattern:")
+        out.append("  1. Open core/layer_config_builder.py")
+        out.append("  2. Find ALWAYS_SKIP_PATTERNS or KEEP_HIGHER_PRECISION_PATTERNS")
+        out.append(f"  3. Find the '{model_type}' entry")
+        out.append("  4. Add a regex that matches the layer stems above")
+        out.append("     (without the trailing .weight suffix)")
 
     return "\n".join(out)

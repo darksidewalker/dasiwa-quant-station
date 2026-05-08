@@ -61,11 +61,19 @@ ALWAYS_SKIP_PATTERNS = {
         r"(^|\.)caption_projection\.",
         r"(^|\.)patchify_proj($|\.)",
         r"(^|\.)proj_out($|\.)",
+        # Audio-specific patchify and proj_out (verified via author's
+        # reference FP8 file - they preserve these at BF16).
+        r"(^|\.)audio_patchify_proj($|\.)",
+        r"(^|\.)audio_proj_out($|\.)",
         r"scale_shift_table",
         # Gate logits for gated attention (apply_gated_attention=true in
         # LTX23 config). Small tables that determine attention routing -
         # corrupting these changes which tokens get attended to.
         r"\.to_gate_logits$",
+        # RMS norm scales on Q and K projections (qk_norm: rms_norm in
+        # LTX23 config). 1D tensors so already auto-skipped by --ltxv2,
+        # but the pattern makes audit/comparison reports accurate.
+        r"\.[qk]_norm$",
     ],
     "WAN 2.2": [
         # WAN keys are naked (no model.diffusion_model. prefix) per the

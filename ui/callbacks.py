@@ -13,16 +13,20 @@ from utils.file_ops import list_files, get_full_path
 from config import MODELS_DIR
 from utils.scanner_5d import scan_5d_tensors
 from utils.pattern_audit import audit_patterns
+from utils.keeplist_compare import compare_to_reference
 import os
 
 def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn, 
                    q_format, pipeline_status, extra_flags, terminal_box, 
                    metadata_input, inject_btn, read_btn, scan_btn,
                    model_type, optimizer_choice, low_vram, auto_layer_config,
-                   audit_btn):
+                   audit_btn, reference_dd, compare_btn):
     
     # --- 1. MODEL LIST MANAGEMENT ---
-    refresh_btn.click(fn=list_files, outputs=[base_dd])
+    def refresh_both():
+        update = list_files()
+        return update, update
+    refresh_btn.click(fn=refresh_both, outputs=[base_dd, reference_dd])
 
     # --- 2. THE MAIN CONVERSION LOGIC ---
     # This function is triggered by START BATCH. 
@@ -115,6 +119,15 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
         full_path = get_full_path(file_name)
         return audit_patterns(full_path, m_type)
 
+    def handle_compare(reference_name, m_type):
+        """Compares our pattern decisions against an author's reference FP8."""
+        if not reference_name:
+            return "❌ No reference file selected. Place author's FP8 in models/ and refresh."
+        if not reference_name.endswith(".safetensors"):
+            return "❌ Reference must be a .safetensors file (the author's quantized FP8)."
+        full_path = get_full_path(reference_name)
+        return compare_to_reference(full_path, m_type)
+
     # Metadata Action Buttons
     inject_btn.click(
         fn=handle_metadata_injection,
@@ -137,6 +150,12 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
     audit_btn.click(
         fn=handle_audit,
         inputs=[base_dd, model_type],
+        outputs=[terminal_box]
+    )
+
+    compare_btn.click(
+        fn=handle_compare,
+        inputs=[reference_dd, model_type],
         outputs=[terminal_box]
     )
 

@@ -2,6 +2,7 @@
 import os, subprocess, sys
 from core.metadata_manager import inject_metadata, get_current_meta, get_specialized_meta
 from core.layer_config_builder import write_layer_config
+from utils.arch_detector import verify_architecture_match
 from config import CONVERT_PY, ROOT_DIR
 from utils.file_ops import save_log
 
@@ -51,6 +52,20 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             "--early-stop-stall", "2000",
         ],
     }
+
+    # === ARCHITECTURE VERIFICATION ===
+    # Before doing anything else, verify the source file matches the user's
+    # declared architecture. Mismatch (e.g. LTX file with WAN selected) causes
+    # convert_to_quant to apply the wrong preset, quantizing structural layers
+    # that should be preserved and producing damaged output.
+    log_acc += "🔎 Verifying source architecture...\n"
+    yield log_acc, "Verifying architecture"
+    arch_ok, arch_msg = verify_architecture_match(source_path, model_type)
+    log_acc += f"{arch_msg}\n"
+    if not arch_ok:
+        yield log_acc, "Aborted: architecture mismatch"
+        return
+    yield log_acc, "Architecture verified"
 
     for fmt in formats:
         suffix = fmt.replace(" ", "_").lower()
