@@ -3,10 +3,7 @@
     "format": "float8_e4m3fn"
   },
   "_exclusions": [],
-  "(^|\\.)adaln_single\\.": {
-    "skip": true
-  },
-  "(^|\\.)audio_adaln_single\\.": {
+  "adaln_single\\.": {
     "skip": true
   },
   "(audio|video)_embeddings_connector\\.": {
@@ -22,6 +19,9 @@
     "skip": true
   },
   "scale_shift_table": {
+    "skip": true
+  },
+  "\\.to_gate_logits$": {
     "skip": true
   },
   "^(?!.*_embeddings_connector).*\\.to_v$": {
