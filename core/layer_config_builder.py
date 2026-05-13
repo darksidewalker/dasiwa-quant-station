@@ -45,6 +45,23 @@ BASE_FORMAT_FOR_CONFIG = {
 }
 
 
+# Patterns for baked-in VAE, audio VAE, vocoder, and text-embedding projection
+# layers. These are present when a model ships with its decoder/vocoder baked
+# into the checkpoint (full inference pipeline) rather than transformer-only.
+# They are decode-quality-critical: even the author's FP8 releases keep them
+# at BF16 (verified via Compare to Reference against author's sulphur_dev FP8).
+#
+# Applied to all architectures unconditionally. Patterns are anchored with ^
+# because these prefixes live at the top level of the layer name (no
+# model.diffusion_model. prefix).
+BAKED_VAE_PATTERNS = [
+    r"^vae\.",
+    r"^audio_vae\.",
+    r"^vocoder\.",
+    r"^text_embedding_projection\.",
+]
+
+
 # Layers that should never be quantized for a given architecture.
 # Mirrors --wan / --ltxv2 preset skips. Source: TEST FP8 Simple log
 # ("ltxv2 skip" lines) for LTX-2.3; lcpp.patch quantize-skip rules for both.
@@ -144,6 +161,12 @@ def build_layer_config_dict(model_type, base_format_ui_label):
             f"No patterns defined for architecture '{model_type}'. "
             f"Valid: {list(ALWAYS_SKIP_PATTERNS)}"
         )
+
+    # Merge baked-VAE patterns into the skip list. These apply regardless
+    # of architecture - any VAE/vocoder/text_projection layers present in
+    # the source must stay at source precision. Harmless if not present
+    # in the source (zero matches, zero cost).
+    skip_patterns = list(skip_patterns) + list(BAKED_VAE_PATTERNS)
 
     config = {
         "_default": {"format": base_fmt},

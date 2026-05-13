@@ -24,7 +24,9 @@ from collections import Counter, defaultdict
 from core.layer_config_builder import (
     ALWAYS_SKIP_PATTERNS,
     KEEP_HIGHER_PRECISION_PATTERNS,
+    BAKED_VAE_PATTERNS,
 )
+from utils.arch_detector import verify_architecture_match
 
 # Component name fragments that suggest a layer is a SENSITIVE one we
 # should be matching but might have missed (e.g. due to a rename in a
@@ -121,9 +123,25 @@ def audit_patterns(safetensors_path, model_type):
             f"Known: {list(ALWAYS_SKIP_PATTERNS)}"
         )
 
+    # Verify the file actually matches the declared architecture.
+    # Without this, an LTX file audited under WAN patterns produces a
+    # confusing "every layer is suspicious" report, when the real issue
+    # is that the user has the wrong architecture radio selected.
+    arch_ok, arch_msg = verify_architecture_match(safetensors_path, model_type)
+    if not arch_ok:
+        return (
+            f"🔍 Pattern Audit: {os.path.basename(safetensors_path)}\n"
+            f"   Architecture: {model_type}\n"
+            + "=" * 60 + "\n"
+            + arch_msg
+        )
+
     # Build (pattern_string, compiled_regex) tuples so we can report
     # which specific rule matched each layer.
-    skip_pats = [(p, re.compile(p)) for p in ALWAYS_SKIP_PATTERNS[model_type]]
+    # Include BAKED_VAE_PATTERNS so VAE/vocoder layers (if baked in) show
+    # as SKIP rather than SUSPICIOUS.
+    skip_pattern_strs = list(ALWAYS_SKIP_PATTERNS[model_type]) + list(BAKED_VAE_PATTERNS)
+    skip_pats = [(p, re.compile(p)) for p in skip_pattern_strs]
     keep_pats = [(p, re.compile(p)) for p in KEEP_HIGHER_PRECISION_PATTERNS[model_type]]
     suspicious_rx = re.compile("|".join(SUSPICIOUS_PATTERNS))
 

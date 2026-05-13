@@ -25,6 +25,7 @@ from collections import defaultdict, Counter
 from core.layer_config_builder import (
     ALWAYS_SKIP_PATTERNS,
     KEEP_HIGHER_PRECISION_PATTERNS,
+    BAKED_VAE_PATTERNS,
 )
 
 
@@ -98,7 +99,8 @@ def compare_to_reference(reference_fp8_path, model_type):
             f"Known: {list(ALWAYS_SKIP_PATTERNS)}"
         )
 
-    skip_rxs = [re.compile(p) for p in ALWAYS_SKIP_PATTERNS[model_type]]
+    skip_pattern_strs = list(ALWAYS_SKIP_PATTERNS[model_type]) + list(BAKED_VAE_PATTERNS)
+    skip_rxs = [re.compile(p) for p in skip_pattern_strs]
     keep_rxs = [re.compile(p) for p in KEEP_HIGHER_PRECISION_PATTERNS[model_type]]
 
     try:
