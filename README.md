@@ -36,6 +36,20 @@ chmod +x start-linux.sh
 | NVFP4 | RTX 50-Series | Blackwell native 4-bit; extreme VRAM savings for 14B models.|
 | MXFP8 | RTX 50-Series | Microscaled 8-bit; near-lossless video quality.|
 
+#### 🧬 Architecture Support
+
+The Architecture dropdown selects which `convert_to_quant` preset is applied to the safetensors quantization pass. All 18 upstream presets are exposed, grouped by category. A 19th option, **Not set**, bypasses the preset entirely and runs `convert_to_quant` with no architecture flag, no layer config, and no source-file architecture verification.
+
+| Category | Choices | Status |
+|---|---|---|
+| Video | WAN 2.2, LTX-2.3, Hunyuan Video | WAN 2.2 and LTX-2.3 have hand-tuned layer-config patterns and source-file verification. Hunyuan runs the upstream preset only. |
+| Image | Flux.2, Qwen Image, Z-Image, Z-Image Refiner, Anima | Upstream preset only (no per-arch layer config in this project yet). |
+| Other | Radiance, Distillation Large/Small, NeRF Large/Small | Upstream preset only. |
+| Text | T5-XXL, Qwen 3.5, Mistral, Visual, Generic Text | Upstream preset only. Companion-model use. |
+| None | Not set | No preset, no layer config, no verification. |
+
+For archs without per-arch layer-config patterns, sensitive-layer preservation is handled entirely by the upstream `convert_to_quant` preset (the same skip rules the author ships). The 5D Tensor Scan, Pattern Audit, and Compare-to-Reference tools currently only operate on WAN 2.2 and LTX-2.3 files; selecting another arch in the dropdown when using those tools returns a clear "no patterns defined" error.
+
 ### 📂 Directory Structure
 
     models/: Place your .safetensors base models and LoRAs here.

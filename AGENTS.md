@@ -8,14 +8,17 @@
 - **`config.py`**: Centralized path management (`MODELS_DIR`, `LOGS_DIR`, `LLAMA_BIN`).
 - **`/core`**: 
     - `gguf_engine.py`: Orchestrates `llama-quantize` and 5D tensor fixing.
-    - `safetensors_engine.py`: Interfaces with `convert_to_quant` for safetensors conversion.
+    - `safetensors_engine.py`: Interfaces with `convert_to_quant` for safetensors conversion. Owns the `ARCH_REGISTRY` (single source of truth for the architecture dropdown: CLI flag + ultra-quality optimizer params per arch, including the `"Not set"` no-preset entry).
+    - `layer_config_builder.py`: Per-arch regex patterns for sensitive-layer preservation. Only WAN 2.2 and LTX-2.3 have verified patterns; other archs in the registry fall through cleanly and rely on the upstream `convert_to_quant` preset's own skip rules.
     - `metadata_manager.py`: Handles `modelspec` header injection for both GGUF and Safetensors.
 - **`/ui`**: 
-    - `layout.py`: Visual structure.
+    - `layout.py`: Visual structure. The Architecture dropdown values must exactly match `ARCH_REGISTRY` keys in `safetensors_engine.py`.
     - `callbacks.py`: Event handling and process threading.
-    - `assets.py`: CSS styling and metadata templates.
+    - `assets.py`: CSS styling and `MODEL_METADATA_CONFIGS` (per-arch modelspec templates; keys must match `ARCH_REGISTRY`).
 - **`/utils`**:
+    - `arch_detector.py`: Source-file architecture verification. Only WAN 2.2 and LTX-2.3 have marker patterns; other archs fall through as UNKNOWN with a warning (the engine still runs).
     - `scanner_5d.py`: Validation tool to verify tensor dimensions.
+    - `pattern_audit.py`, `keeplist_compare.py`, `exact_config.py`: WAN-2.2/LTX-2.3-only diagnostic tools (they hard-error on archs without patterns).
     - `system.py`: Real-time hardware monitoring (VRAM/CPU).
 - **`lcpp.patch`**: A mandatory patch for `llama.cpp` to support Wan 2.2's specific architecture.
 
@@ -33,7 +36,9 @@
 5. **Patching:** If modifying the `llama.cpp` integration, refer to `lcpp.patch`. Any changes to the build process must be reflected in `start-linux.sh`.
 
 ## 🔄 Common Workflows
-- **Adding a Quantization Format:** Update the `choices` in `ui/layout.py` and map the flag in the corresponding engine (`gguf_engine.py` or `safetensors_engine.py`).
+- **Adding a Quantization Format:** Update the `choices` in `ui/layout.py` (`q_format` CheckboxGroup) and map the flag in the `FLAG_MAP` dict at the top of `core/safetensors_engine.py` (for safetensors formats) or in `gguf_engine.py` (for GGUF).
+- **Adding an Architecture (safetensors path):** Add one entry to `ARCH_REGISTRY` in `core/safetensors_engine.py` (`{"flag": "--your_flag", "ultra": _ULTRA_DEFAULT}`), one matching entry in the `model_type` Dropdown `choices` in `ui/layout.py`, and one matching entry in `MODEL_METADATA_CONFIGS` in `ui/assets.py`. The three sets of keys must agree exactly. Layer-config patterns (`layer_config_builder.py`) and arch markers (`arch_detector.py`) are optional - omit them and the engine falls through cleanly, relying on the upstream `convert_to_quant` preset.
+- **"Not set" semantics:** Selecting `Not set` in the Architecture dropdown skips three things: architecture-flag append, layer-config building (regex and exact), and source-file architecture verification. The command guard accepts zero arch flags only in this mode.
 - **Debugging:** Check `logs/` for session-specific `.log` files.
 - **UI Tweaks:** Custom styles are located in `ui/assets.py` under `CSS_STYLE`.
 
