@@ -77,13 +77,35 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # --- 1. RESOLVE LAYER CONFIG (deferred path decision) ---
         layer_config_path = None
         layer_config_log = []
-        
-        if fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
+        is_exact_config = False
+
+        # Exact configs (built from a reference FP8) take precedence over
+        # auto/manual regex configs. They live at filters/_exact_*.json
+        # and are produced by utils/exact_config.py from the UI.
+        # We look for one matching the current base format.
+        if fmt in LAYER_CONFIG_ELIGIBLE:
+            fmt_slug = fmt.replace(" ", "_").lower()
+            # Glob for any _exact_*_{fmt_slug}.json file in filters/
+            if os.path.isdir(FILTERS_DIR):
+                for fn in os.listdir(FILTERS_DIR):
+                    if fn.startswith("_exact_") and fn.endswith(f"_{fmt_slug}.json"):
+                        layer_config_path = os.path.join(FILTERS_DIR, fn)
+                        is_exact_config = True
+                        layer_config_log.append(
+                            f"[layer-config] EXACT mode: using {fn}"
+                        )
+                        layer_config_log.append(
+                            f"[layer-config] (Regex-based auto config is bypassed "
+                            f"because an exact config exists.)"
+                        )
+                        break
+
+        if not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
             layer_config_path, build_log = write_layer_config(
                 model_type, fmt, out_dir=FILTERS_DIR
             )
             layer_config_log.extend(build_log)
-        elif fmt in LAYER_CONFIG_ELIGIBLE and not auto_layer_config:
+        elif not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and not auto_layer_config:
             # Manual config: shared per-architecture file (no per-model files
             # needed since regex patterns work for any model of that arch).
             arch_slug = model_type.replace(" ", "").replace(".", "").replace("-", "").lower()
@@ -92,8 +114,12 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                 layer_config_path = manual_cfg
                 layer_config_log.append(f"[layer-config] Using manual config: {os.path.basename(manual_cfg)}")
         
-        # Apply _mixed suffix only if we actually have a config to attach
-        if layer_config_path:
+        # Apply suffix based on which config mode is in use, so the user
+        # can distinguish output files: _exact for reference-derived,
+        # _mixed for regex-based, plain for no-config.
+        if is_exact_config:
+            suffix = f"{suffix}_exact"
+        elif layer_config_path:
             suffix = f"{suffix}_mixed"
         
         final_path = os.path.join(MODELS_DIR, f"{model_name}_{suffix}.safetensors")

@@ -118,6 +118,17 @@ def create_ui():
                             variant="secondary",
                             scale=1
                         )
+                    with gr.Row():
+                        build_exact_btn = gr.Button(
+                            "🎯 Build Exact Config from Reference",
+                            variant="secondary",
+                            scale=2
+                        )
+                        clear_exact_btn = gr.Button(
+                            "🧹 Clear Exact Config",
+                            variant="secondary",
+                            scale=1
+                        )
 
         # --- RE-ACTIVE UI LOGIC ---
 
@@ -184,7 +195,8 @@ def create_ui():
             metadata_input, inject_btn, read_btn, 
             scan_btn, model_type, optimizer_choice,
             low_vram, auto_layer_config, audit_btn,
-            reference_dd, compare_btn
+            reference_dd, compare_btn,
+            build_exact_btn, clear_exact_btn
         )
 
         # Initial folder scan on startup - populate both source and reference dropdowns

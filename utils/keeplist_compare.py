@@ -203,4 +203,57 @@ def compare_to_reference(reference_fp8_path, model_type):
     elif not disagreement_author:
         out.append("✅ No layers missed - we cover everything the author preserves.")
 
+    # === SUGGESTED PATTERNS BLOCK ===
+    # Generate regex patterns from the AUTHOR_KEEPS disagreements that the
+    # user can paste directly into core/layer_config_builder.py. Patterns
+    # are derived from the collapsed stems (block indices already
+    # generalized to .N during _collapse_stem).
+    if disagreement_author:
+        out.append("")
+        out.append("=" * 60)
+        out.append("📋 SUGGESTED PATTERNS")
+        out.append("=" * 60)
+        out.append("Copy these regex patterns into core/layer_config_builder.py")
+        out.append(f"under ALWAYS_SKIP_PATTERNS['{model_type}'] to match the")
+        out.append("author's preservation decisions:")
+        out.append("")
+        # Build patterns from stems, dedup
+        suggested = set()
+        stems = defaultdict(lambda: {"count": 0, "sample": None})
+        for name, dtype in disagreement_author:
+            stem = _collapse_stem(name)
+            stems[stem]["count"] += 1
+            if stems[stem]["sample"] is None:
+                stems[stem]["sample"] = name
+        for stem in stems:
+            # Strip trailing .weight, escape dots, replace .N with \.\d+
+            pat_source = stem
+            if pat_source.endswith(".weight"):
+                pat_source = pat_source[:-len(".weight")]
+            # Strip leading model.diffusion_model. prefix for portability
+            if pat_source.startswith("model.diffusion_model."):
+                pat_source = pat_source[len("model.diffusion_model."):]
+                anchor_prefix = r"(^|\.)"
+            else:
+                # Already prefix-free (e.g. WAN keys) - anchor at start
+                anchor_prefix = r"^"
+            # Escape dots, generalize block indices
+            escaped = pat_source.replace(".N", "<<BLOCKIDX>>").replace(".", r"\.").replace("<<BLOCKIDX>>", r"\.\d+")
+            pattern = f"{anchor_prefix}{escaped}$"
+            suggested.add(pattern)
+
+        # Sort by length (more specific first) for stable output
+        for pat in sorted(suggested):
+            out.append(f'    r"{pat}",')
+        out.append("")
+        out.append(f"Total: {len(suggested)} unique patterns covering "
+                   f"{categories['AUTHOR_KEEPS']} layers.")
+        out.append("")
+        out.append("⚠️  Review before pasting:")
+        out.append("    - Some 'AUTHOR_KEEPS' may be out of scope for your source")
+        out.append("      file (e.g. VAE/vocoder layers if source is transformer-only)")
+        out.append("    - The author may preserve different blocks selectively;")
+        out.append("      our generated regex matches ALL block indices (\\d+)")
+        out.append("    - Test with the Audit Patterns button after adding")
+
     return "\n".join(out)
