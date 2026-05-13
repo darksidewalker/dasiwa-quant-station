@@ -3,7 +3,7 @@ torch
 torchvision
 torchaudio
 psutil
-gradio
+gradio>=5.14
 gguf
 sentencepiece
 safetensors

@@ -1,7 +1,24 @@
 # ui/assets.py
 
-# Dictionary mapping architectures to their specific metadata fields
+# Dictionary mapping architectures to their specific metadata fields.
+# Used by core/metadata_manager.py - do not rename or remove.
+#
+# Keys must match the labels in core.safetensors_engine.ARCH_REGISTRY and
+# ui/layout.py's Architecture dropdown. Archs without an entry here fall
+# back to the WAN 2.2 template via get_current_meta() in metadata_manager.
 MODEL_METADATA_CONFIGS = {
+    "Not set": {
+        # Generic template used when the user declines to declare an
+        # architecture. modelspec.architecture is left as a marker so
+        # downstream tools can tell the field was deliberately unset.
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Model quantized via DaSiWa Station with no architecture preset.",
+        "modelspec.architecture": "unspecified",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "diffusion, DaSiWa",
+    },
     "WAN 2.2": {
         "modelspec.title": "{model_name}",
         "modelspec.author": "Darksidewalker",
@@ -19,7 +36,151 @@ MODEL_METADATA_CONFIGS = {
         "modelspec.implementation": "https://github.com/Lightricks/LTX-2",
         "modelspec.license": "LTX-2 Community License Agreement and Custom License Addendum Distribution Restriction",
         "modelspec.tags": "image-to-video, text-to-video, video-to-video, audio, ltx2, diffusion, DaSiWa",
-    }
+    },
+    "Flux.2": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Flux.2 diffusion model quantized via DaSiWa Station.",
+        "modelspec.architecture": "flux2",
+        "modelspec.implementation": "https://github.com/black-forest-labs/flux2",
+        "modelspec.license": "flux-2-dev-non-commercial-license and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-to-image, diffusion, flux2, DaSiWa",
+    },
+    "Hunyuan Video": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Hunyuan Video diffusion model quantized via DaSiWa Station.",
+        "modelspec.architecture": "hunyuan_video",
+        "modelspec.implementation": "https://github.com/Tencent/HunyuanVideo",
+        "modelspec.license": "tencent-hunyuan-community and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-to-video, diffusion, hunyuan, DaSiWa",
+    },
+    "Qwen Image": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Qwen Image diffusion model quantized via DaSiWa Station.",
+        "modelspec.architecture": "qwen_image",
+        "modelspec.implementation": "https://github.com/QwenLM/Qwen-Image",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-to-image, diffusion, qwen, DaSiWa",
+    },
+    "Z-Image": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Z-Image diffusion model quantized via DaSiWa Station.",
+        "modelspec.architecture": "z_image",
+        "modelspec.implementation": "",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-to-image, diffusion, z-image, DaSiWa",
+    },
+    "Z-Image Refiner": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Z-Image refiner model quantized via DaSiWa Station.",
+        "modelspec.architecture": "z_image_refiner",
+        "modelspec.implementation": "",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-to-image, refiner, diffusion, z-image, DaSiWa",
+    },
+    "Anima": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Anima model quantized via DaSiWa Station.",
+        "modelspec.architecture": "anima",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "diffusion, anima, DaSiWa",
+    },
+    "Radiance": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Radiance model quantized via DaSiWa Station.",
+        "modelspec.architecture": "radiance",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "radiance, DaSiWa",
+    },
+    "Distillation Large": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Distilled (large) model quantized via DaSiWa Station.",
+        "modelspec.architecture": "distillation_large",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "distillation, DaSiWa",
+    },
+    "Distillation Small": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Distilled (small) model quantized via DaSiWa Station.",
+        "modelspec.architecture": "distillation_small",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "distillation, DaSiWa",
+    },
+    "NeRF Large": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "NeRF (large) model quantized via DaSiWa Station.",
+        "modelspec.architecture": "nerf_large",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "nerf, DaSiWa",
+    },
+    "NeRF Small": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "NeRF (small) model quantized via DaSiWa Station.",
+        "modelspec.architecture": "nerf_small",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "nerf, DaSiWa",
+    },
+    "T5-XXL": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "T5-XXL text encoder quantized via DaSiWa Station.",
+        "modelspec.architecture": "t5xxl",
+        "modelspec.implementation": "",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-encoder, t5, DaSiWa",
+    },
+    "Qwen 3.5": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Qwen 3.5 text encoder quantized via DaSiWa Station.",
+        "modelspec.architecture": "qwen35",
+        "modelspec.implementation": "",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-encoder, qwen, DaSiWa",
+    },
+    "Mistral": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Mistral text encoder quantized via DaSiWa Station.",
+        "modelspec.architecture": "mistral",
+        "modelspec.implementation": "",
+        "modelspec.license": "apache-2.0 and Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-encoder, mistral, DaSiWa",
+    },
+    "Visual": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Visual encoder quantized via DaSiWa Station.",
+        "modelspec.architecture": "visual",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "visual-encoder, DaSiWa",
+    },
+    "Generic Text": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "Generic text encoder quantized via DaSiWa Station.",
+        "modelspec.architecture": "generic_text",
+        "modelspec.implementation": "",
+        "modelspec.license": "Custom License Addendum Distribution Restriction",
+        "modelspec.tags": "text-encoder, DaSiWa",
+    },
 }
 
 COMMON_METADATA = {
@@ -28,12 +189,98 @@ COMMON_METADATA = {
     "quantization.bits": "{bits}"
 }
 
+
+# Softer dark palette. Terminal uses a muted teal instead of pure neon green
+# (less eye strain on long quant runs). Borders, backgrounds and accents use
+# GitHub-dark-inspired neutrals.
 CSS_STYLE = """
-#terminal textarea { 
-    background-color: #0d1117 !important; 
-    color: #00ff41 !important; 
-    font-family: 'Fira Code', monospace !important; 
+/* Terminal output: monospace, soft teal on near-black */
+#terminal textarea {
+    background-color: #0d1117 !important;
+    color: #7dd3c0 !important;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace !important;
     font-size: 13px !important;
+    line-height: 1.5 !important;
+    border: 1px solid #21262d !important;
+    border-radius: 6px !important;
 }
-.vitals-card { border: 1px solid #30363d; padding: 15px; border-radius: 8px; background: #0d1117; }
+
+/* Hardware vitals: same monospace family, dim accent */
+#vitals textarea {
+    background-color: #0d1117 !important;
+    color: #8b949e !important;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+    font-size: 12px !important;
+    border: 1px solid #21262d !important;
+    border-radius: 6px !important;
+}
+
+/* JSON editor: lighter than terminal so it reads as editable */
+#meta_editor {
+    border: 1px solid #30363d !important;
+    border-radius: 6px !important;
+}
+
+/* Card-style groups: subtle separation without heavy borders */
+.tool-card {
+    border: 1px solid #21262d !important;
+    border-radius: 8px !important;
+    padding: 12px !important;
+    background: #0d1117 !important;
+    margin-bottom: 8px !important;
+}
+
+/* Status banner */
+#status-banner {
+    border-left: 3px solid #7dd3c0 !important;
+    padding: 8px 12px !important;
+    background: rgba(125, 211, 192, 0.05) !important;
+    border-radius: 4px !important;
+}
+
+/* Section headings - smaller, less shouty than Gradio defaults */
+.section-heading h3 {
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.05em !important;
+    color: #8b949e !important;
+    margin: 0 0 8px 0 !important;
+}
+
+/* Primary action: muted teal instead of default Gradio orange */
+.primary-action {
+    background: linear-gradient(180deg, #2ea043 0%, #238636 100%) !important;
+    color: white !important;
+    font-weight: 600 !important;
+    border: 1px solid rgba(240, 246, 252, 0.1) !important;
+}
+
+/* Destructive action: muted red for STOP */
+.danger-action {
+    background: #21262d !important;
+    color: #f85149 !important;
+    border: 1px solid #f85149 !important;
+}
+.danger-action:hover {
+    background: #f85149 !important;
+    color: white !important;
+}
 """
+
+
+def get_theme():
+    """Returns the configured Gradio theme.
+    Built lazily because gradio import is heavy and not all entry points
+    that touch assets.py need the theme (e.g. metadata utilities)."""
+    import gradio as gr
+    return gr.themes.Default(
+        primary_hue="emerald",
+        secondary_hue="slate",
+        neutral_hue="slate",
+    ).set(
+        body_background_fill_dark="#010409",
+        background_fill_primary_dark="#0d1117",
+        background_fill_secondary_dark="#161b22",
+        border_color_primary_dark="#30363d",
+    )

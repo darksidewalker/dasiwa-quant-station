@@ -25,47 +25,92 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     # NVFP4 / INT8 base: bumps sensitive layers to FP8
     LAYER_CONFIG_ELIGIBLE = {"FP8", "NVFP4", "INT8 Block-wise"}
 
-    # Architecture flag mapping. Decoupled from strategy so it cannot be
-    # accidentally lost when strategy logic changes.
-    ARCH_FLAGS = {
-        "WAN 2.2": "--wan",
-        "LTX-2.3": "--ltxv2",
+    # Architecture registry. Single source of truth for:
+    #   - the CLI flag passed to convert_to_quant
+    #   - the Ultra-Quality optimizer params for that arch
+    # An entry with flag=None means "Not set": no preset is applied,
+    # convert_to_quant runs with its own defaults. In that mode we also
+    # bypass layer-config building and architecture verification, since
+    # neither is meaningful without a declared architecture.
+    #
+    # Flag list verified against convert_to_quant --help output
+    # (silveroxides/convert_to_quant, May 2026).
+    #
+    # Ultra params: WAN and LTX-2.3 are hand-tuned. Other archs have no
+    # measured params yet, so they default to the WAN-style block
+    # (plateau schedule, broad calibration). User can override per-run
+    # via the UI in a future change.
+    _ULTRA_DEFAULT = [
+        "--num_iter", "9000",
+        "--calib_samples", "10000",
+        "--lr", "9e-3",
+        "--lr_schedule", "plateau",
+        "--early-stop-stall", "20000",
+    ]
+    _ULTRA_LTX = [
+        "--num_iter", "9000",
+        "--calib_samples", "4096",
+        "--lr", "1.0",
+        "--lr_schedule", "adaptive",
+        "--lr_adaptive_mode", "simple-reset",
+        "--early-stop-stall", "2000",
+    ]
+
+    ARCH_REGISTRY = {
+        "Not set":           {"flag": None,                  "ultra": _ULTRA_DEFAULT},
+        # Verified-pattern archs (have entries in layer_config_builder,
+        # arch_detector, and assets.MODEL_METADATA_CONFIGS).
+        "WAN 2.2":           {"flag": "--wan",               "ultra": _ULTRA_DEFAULT},
+        "LTX-2.3":           {"flag": "--ltxv2",             "ultra": _ULTRA_LTX},
+        # Other convert_to_quant presets. No verified layer-name patterns
+        # in this project yet, so layer-config is skipped and we rely on
+        # the convert_to_quant preset's own skip rules.
+        "Flux.2":            {"flag": "--flux2",             "ultra": _ULTRA_DEFAULT},
+        "Hunyuan Video":     {"flag": "--hunyuan",           "ultra": _ULTRA_DEFAULT},
+        "Qwen Image":        {"flag": "--qwen",              "ultra": _ULTRA_DEFAULT},
+        "Z-Image":           {"flag": "--zimage",            "ultra": _ULTRA_DEFAULT},
+        "Z-Image Refiner":   {"flag": "--zimage_refiner",    "ultra": _ULTRA_DEFAULT},
+        "Anima":             {"flag": "--anima",             "ultra": _ULTRA_DEFAULT},
+        "Radiance":          {"flag": "--radiance",          "ultra": _ULTRA_DEFAULT},
+        "Distillation Large":{"flag": "--distillation_large","ultra": _ULTRA_DEFAULT},
+        "Distillation Small":{"flag": "--distillation_small","ultra": _ULTRA_DEFAULT},
+        "NeRF Large":        {"flag": "--nerf_large",        "ultra": _ULTRA_DEFAULT},
+        "NeRF Small":        {"flag": "--nerf_small",        "ultra": _ULTRA_DEFAULT},
+        # Text-encoder / non-diffusion presets. Kept available for power
+        # users who want to quantize companion models.
+        "T5-XXL":            {"flag": "--t5xxl",             "ultra": _ULTRA_DEFAULT},
+        "Qwen 3.5":          {"flag": "--qwen35",            "ultra": _ULTRA_DEFAULT},
+        "Mistral":           {"flag": "--mistral",           "ultra": _ULTRA_DEFAULT},
+        "Visual":            {"flag": "--visual",            "ultra": _ULTRA_DEFAULT},
+        "Generic Text":      {"flag": "--generic_text",      "ultra": _ULTRA_DEFAULT},
     }
 
-    # Per-architecture optimizer parameters for Ultra-Quality strategy.
-    # Stored as data, not inlined into branches, so adding a new arch
-    # cannot silently fail to set these.
-    ULTRA_OPTIMIZER_PARAMS = {
-        "WAN 2.2": [
-            "--num_iter", "9000",
-            "--calib_samples", "10000",
-            "--lr", "9e-3",
-            "--lr_schedule", "plateau",
-            "--early-stop-stall", "20000",
-        ],
-        "LTX-2.3": [
-            "--num_iter", "9000",
-            "--calib_samples", "4096",
-            "--lr", "1.0",
-            "--lr_schedule", "adaptive",
-            "--lr_adaptive_mode", "simple-reset",
-            "--early-stop-stall", "2000",
-        ],
-    }
+    # Backwards-compat views derived from the registry. Other code in the
+    # codebase reads these directly (e.g. command guard below).
+    ARCH_FLAGS = {k: v["flag"] for k, v in ARCH_REGISTRY.items()
+                  if v["flag"] is not None}
 
     # === ARCHITECTURE VERIFICATION ===
     # Before doing anything else, verify the source file matches the user's
     # declared architecture. Mismatch (e.g. LTX file with WAN selected) causes
     # convert_to_quant to apply the wrong preset, quantizing structural layers
     # that should be preserved and producing damaged output.
-    log_acc += "🔎 Verifying source architecture...\n"
-    yield log_acc, "Verifying architecture"
-    arch_ok, arch_msg = verify_architecture_match(source_path, model_type)
-    log_acc += f"{arch_msg}\n"
-    if not arch_ok:
-        yield log_acc, "Aborted: architecture mismatch"
-        return
-    yield log_acc, "Architecture verified"
+    #
+    # Skipped when model_type is "Not set" (no preset is declared, so there
+    # is nothing to verify against) or when the arch has no registered
+    # markers in arch_detector (unverified preset; user takes responsibility).
+    if model_type == "Not set":
+        log_acc += "ℹ️  Architecture verification skipped (Not set).\n"
+        yield log_acc, "Architecture: not set"
+    else:
+        log_acc += "🔎 Verifying source architecture...\n"
+        yield log_acc, "Verifying architecture"
+        arch_ok, arch_msg = verify_architecture_match(source_path, model_type)
+        log_acc += f"{arch_msg}\n"
+        if not arch_ok:
+            yield log_acc, "Aborted: architecture mismatch"
+            return
+        yield log_acc, "Architecture verified"
 
     for fmt in formats:
         suffix = fmt.replace(" ", "_").lower()
@@ -79,11 +124,17 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         layer_config_log = []
         is_exact_config = False
 
+        # "Not set" disables every layer-config path: we explicitly chose
+        # to let convert_to_quant run with its own defaults, with no
+        # per-layer overrides from us. Exact configs are also bypassed
+        # because they're keyed to a specific reference architecture.
+        layer_config_enabled = (model_type != "Not set")
+
         # Exact configs (built from a reference FP8) take precedence over
         # auto/manual regex configs. They live at filters/_exact_*.json
         # and are produced by utils/exact_config.py from the UI.
         # We look for one matching the current base format.
-        if fmt in LAYER_CONFIG_ELIGIBLE:
+        if layer_config_enabled and fmt in LAYER_CONFIG_ELIGIBLE:
             fmt_slug = fmt.replace(" ", "_").lower()
             # Glob for any _exact_*_{fmt_slug}.json file in filters/
             if os.path.isdir(FILTERS_DIR):
@@ -100,12 +151,12 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                         )
                         break
 
-        if not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
+        if layer_config_enabled and not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
             layer_config_path, build_log = write_layer_config(
                 model_type, fmt, out_dir=FILTERS_DIR
             )
             layer_config_log.extend(build_log)
-        elif not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and not auto_layer_config:
+        elif layer_config_enabled and not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and not auto_layer_config:
             # Manual config: shared per-architecture file (no per-model files
             # needed since regex patterns work for any model of that arch).
             arch_slug = model_type.replace(" ", "").replace(".", "").replace("-", "").lower()
@@ -113,6 +164,11 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             if os.path.exists(manual_cfg):
                 layer_config_path = manual_cfg
                 layer_config_log.append(f"[layer-config] Using manual config: {os.path.basename(manual_cfg)}")
+        elif not layer_config_enabled and fmt in LAYER_CONFIG_ELIGIBLE:
+            layer_config_log.append(
+                "[layer-config] Skipped: architecture is 'Not set'. "
+                "Running convert_to_quant with no layer overrides."
+            )
         
         # Apply suffix based on which config mode is in use, so the user
         # can distinguish output files: _exact for reference-derived,
@@ -139,17 +195,30 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         if layer_config_path:
             cmd.extend(["--layer-config", layer_config_path])
             yield log_acc, "Building layer config..."
-        elif fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
-            log_acc += f"WARN: layer config build failed; running pure {fmt}\n"
-            yield log_acc, "Layer config failed"
+        elif (fmt in LAYER_CONFIG_ELIGIBLE
+              and auto_layer_config
+              and model_type != "Not set"):
+            # No layer config attached. Could be either:
+            #   - arch has no patterns registered (expected for unverified
+            #     archs - convert_to_quant's preset handles skips), or
+            #   - the builder actually failed (rare, logged above).
+            # The detail is in layer_config_log; the headline note here
+            # stays neutral so unverified archs don't look broken.
+            log_acc += f"NOTE: no layer config attached; running plain {fmt}\n"
+            yield log_acc, "Plain quantization (no layer config)"
         
-        # --- 3. ARCHITECTURE FLAG (unconditional, exactly once) ---
-        arch_flag = ARCH_FLAGS.get(model_type)
-        if arch_flag is None:
+        # --- 3. ARCHITECTURE FLAG ---
+        # Resolved from the registry. "Not set" maps to flag=None, in which
+        # case no architecture flag is appended and convert_to_quant uses
+        # its own defaults.
+        arch_entry = ARCH_REGISTRY.get(model_type)
+        if arch_entry is None:
             log_acc += f"❌ FATAL: Unknown architecture '{model_type}'. Aborting batch.\n"
             yield log_acc, "Aborted: unknown architecture"
             return
-        cmd.append(arch_flag)
+        arch_flag = arch_entry["flag"]
+        if arch_flag is not None:
+            cmd.append(arch_flag)
 
         # --- 4. STRATEGY FLAGS (independent of architecture) ---
         if options == "Simple":
@@ -157,11 +226,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         elif options == "Auto-Quality (Heur)":
             cmd.append("--heur")
         elif options == "Ultra-Quality (Optimizer)":
-            opt_params = ULTRA_OPTIMIZER_PARAMS.get(model_type)
-            if opt_params is None:
-                log_acc += f"❌ FATAL: No Ultra params defined for '{model_type}'. Aborting.\n"
-                yield log_acc, "Aborted: missing Ultra params"
-                return
+            opt_params = arch_entry["ultra"]
             cmd.extend(["--optimizer", optimizer_choice])
             cmd.extend(opt_params)
         else:
@@ -176,15 +241,26 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # convert_to_quant to fall back to its own defaults and quantize
         # tensors the architecture preset would have skipped, producing
         # damaged output that LOOKS valid but is multiple GB lighter).
+        #
+        # "Not set" is an intentional, user-acknowledged version of this
+        # behavior, so the guard allows zero architecture flags in that
+        # mode only.
         guard_errors = []
         all_arch_flags = list(ARCH_FLAGS.values())
         present_arch = [f for f in all_arch_flags if f in cmd]
-        if len(present_arch) == 0:
-            guard_errors.append(f"missing architecture flag (expected one of {all_arch_flags})")
-        elif len(present_arch) > 1:
-            guard_errors.append(f"multiple architecture flags present: {present_arch}")
-        elif cmd.count(arch_flag) != 1:
-            guard_errors.append(f"{arch_flag} appears {cmd.count(arch_flag)} times (expected 1)")
+        if arch_flag is None:
+            # "Not set": zero arch flags is expected; multiple would be a bug.
+            if len(present_arch) > 0:
+                guard_errors.append(
+                    f"unexpected architecture flag(s) with 'Not set': {present_arch}"
+                )
+        else:
+            if len(present_arch) == 0:
+                guard_errors.append(f"missing architecture flag (expected one of {all_arch_flags})")
+            elif len(present_arch) > 1:
+                guard_errors.append(f"multiple architecture flags present: {present_arch}")
+            elif cmd.count(arch_flag) != 1:
+                guard_errors.append(f"{arch_flag} appears {cmd.count(arch_flag)} times (expected 1)")
 
         strategy_flags = ["--simple", "--heur", "--optimizer"]
         present_strategy = [f for f in strategy_flags if f in cmd]
