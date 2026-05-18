@@ -93,17 +93,16 @@ ALWAYS_SKIP_PATTERNS = {
         r"\.[qk]_norm$",
     ],
     "WAN 2.2": [
-        # WAN keys are naked (no model.diffusion_model. prefix) per the
-        # uploaded WAN templates. Use ^ anchors where the family lives at
-        # the top level.
-        r"^modulation\.",
-        r"\.modulation($|\.)",
-        r"^patch_embedding\.",
-        r"^text_embedding\.",
-        r"^time_projection\.",
-        r"^time_embedding\.",
-        r"^img_emb\.",
-        r"^head\.",
+    # Patterns use (^|\.) to match both naked keys and keys still carrying
+    # the model.diffusion_model. prefix, depending on what convert_to_quant
+    # passes to the layer config matcher.
+    r"(^|\.)modulation($|\.)",
+    r"(^|\.)patch_embedding\.",
+    r"(^|\.)text_embedding\.",
+    r"(^|\.)time_projection\.",
+    r"(^|\.)time_embedding\.",
+    r"(^|\.)img_emb\.",
+    r"(^|\.)head\.",
     ],
 }
 
