@@ -34,4 +34,4 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
-fix_5d_tensors_wan.safetensors
+fix_5d_tensors_*

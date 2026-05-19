@@ -16,7 +16,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
         "FP8": ["--comfy_quant"],
-        "INT8 Block-wise": ["--int8", "--scaling_mode", "block", "--comfy_quant"],
+        "INT8 Block-wise": ["--int8", "--scaling_mode", "block", "--block_size", "64", "--comfy_quant"],
         "NVFP4": ["--nvfp4", "--comfy_quant"],
     }
 

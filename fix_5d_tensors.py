@@ -27,7 +27,9 @@ def get_arch_str(reader):
 
 def get_file_type(reader):
     field = reader.get_field("general.file_type")
-    ft = int(field.parts[field.data[-1]])
+    raw = field.parts[field.data[-1]]
+    # Newer gguf versions return a numpy array; extract the scalar.
+    ft = int(raw.item() if hasattr(raw, "item") else raw)
     return gguf.LlamaFileType(ft)
 
 if __name__ == "__main__":
