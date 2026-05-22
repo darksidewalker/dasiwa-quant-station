@@ -101,7 +101,7 @@ class ModelWan(ModelHyVid):
     ]
     keys_hiprec = [".modulation"]
 
-class ModelLTXV(ModelTemplate):
+class ModelLTXV(ModelHyVid):
     arch = "ltxv"
     keys_detect = [
         (
@@ -111,7 +111,9 @@ class ModelLTXV(ModelTemplate):
         )
     ]
     keys_hiprec = [
-        "scale_shift_table" # nn.parameter, can't load from BF16 base quant
+        "scale_shift_table", # nn.parameter, can't load from BF16 base quant
+        "encoder.",
+        "decoder.",
     ]
 
 class ModelSDXL(ModelTemplate):

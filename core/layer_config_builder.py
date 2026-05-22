@@ -59,6 +59,8 @@ BAKED_VAE_PATTERNS = [
     r"^audio_vae\.",
     r"^vocoder\.",
     r"^text_embedding_projection\.",
+    r"^encoder\.",
+    r"^decoder\.",
 ]
 
 
