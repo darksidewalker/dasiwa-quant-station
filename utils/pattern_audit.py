@@ -90,8 +90,14 @@ def _classify_layer(key, skip_pats, keep_pats, suspicious_rx, shape):
     for pat_str, rx in keep_pats:
         if rx.search(match_key):
             return "KEEP_HIGH", pat_str
-    is_2d_weight = (len(shape) == 2 and key.endswith(".weight"))
-    if is_2d_weight and suspicious_rx.search(match_key):
+
+    # Structural check: 2D weights or any large tensor (like embeddings)
+    # that look structural but aren't matched by skip/keep rules.
+    n_params = 1
+    for d in shape: n_params *= d
+    is_weight = key.endswith(".weight")
+    is_large = n_params > 1000000  # Tensors > 1M params are usually structural
+    if (is_weight or is_large) and suspicious_rx.search(match_key):
         return "SUSPICIOUS", None
     return "DEFAULT", None
 

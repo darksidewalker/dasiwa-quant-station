@@ -47,14 +47,14 @@ def _read_dtype_map(safetensors_path):
 
 def _is_quantizable_weight(name, shape_or_none):
     """Filter to weight tensors that would be quantized (2D matmuls).
-    
+
     We compare only on these because:
       - 1D tensors (norms, biases) are never quantized regardless of mode
       - Non-.weight tensors (scales, zeros) are quantization artifacts
     """
-    if not name.endswith(".weight"):
-        return False
-    return True  # shape check happens at call site if needed
+    # Include .weight OR large structural names often used for embeddings
+    structural_keywords = ["embedding", "img_emb", "pos_emb", "modulation"]
+    return name.endswith(".weight") or any(k in name for k in structural_keywords)
 
 
 def _our_classification(layer_key, skip_rxs, keep_rxs):
@@ -108,8 +108,12 @@ def compare_to_reference(reference_fp8_path, model_type):
     except Exception as e:
         return f"🔥 Read error on reference: {e}"
 
-    # Filter to weight tensors only (compare apples to apples)
-    weight_tensors = {k: v for k, v in ref_dtypes.items() if k.endswith(".weight")}
+    # Filter to tensors that are weights OR matched by our patterns.
+    # This ensures we catch large embeddings/modulations that don't end in .weight.
+    weight_tensors = {
+        k: v for k, v in ref_dtypes.items() 
+        if k.endswith(".weight") or any(rx.search(k) for rx in skip_rxs + keep_rxs)
+    }
     if not weight_tensors:
         return f"❌ No .weight tensors found in {os.path.basename(reference_fp8_path)}"
 

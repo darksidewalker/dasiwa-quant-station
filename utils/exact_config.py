@@ -84,7 +84,17 @@ def build_exact_config(reference_fp8_path, base_format_ui_label,
 
     # Filter to weight tensors only (consistent with how the regex
     # builder behaves). Scales, biases, etc. are 1D and auto-handled.
-    weight_tensors = {k: v for k, v in ref_dtypes.items() if k.endswith(".weight")}
+    # NOTE: We include large non-suffix tensors like embeddings/modulations
+    # which are structural and often several gigabytes.
+    weight_tensors = {}
+    with safe_open(reference_fp8_path, framework="pt", device="cpu") as f:
+        for k in f.keys():
+            shape = f.get_slice(k).get_shape()
+            n_params = 1
+            for d in shape: n_params *= d
+            # Capture .weight OR any tensor with > 1M params (embeddings)
+            if k.endswith(".weight") or n_params > 1000000:
+                weight_tensors[k] = ref_dtypes[k]
 
     preserved_in_ref = 0
     preserved_in_scope = 0
