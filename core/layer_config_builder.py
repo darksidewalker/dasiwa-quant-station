@@ -146,7 +146,7 @@ KEEP_HIGHER_PRECISION_PATTERNS = {
         r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_v$",
         # FFN down projection (ff.net.2 and audio_ff.net.2), excluding
         # connector layers for the same reason.
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.(audio_)?ff\.net\.2$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.2$",
     ],
     "WAN 2.2": [
         # WAN uses split q/k/v/o (never fused). to_v in self + cross attn.

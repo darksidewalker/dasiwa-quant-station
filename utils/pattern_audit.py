@@ -44,7 +44,7 @@ SUSPICIOUS_PATTERNS = [
     # FFN down projection variants (sensitive)
     r"\.down_proj$",         # HuggingFace MLP naming
     r"\.ffn\.2$",            # WAN-style FFN
-    r"\.ff\.net\.2$",        # diffusers MLP
+    r"\.(audio_)?ff\.net\.2$",        # diffusers MLP
     r"\.w2$",                # LLaMA-style MLP
     r"\.fc2$",               # generic
     r"\.layer2$",            # generic alt
