@@ -91,6 +91,34 @@ ALWAYS_SKIP_PATTERNS = {
         # LTX23 config). 1D tensors so already auto-skipped by --ltxv2,
         # but the pattern makes audit/comparison reports accurate.
         r"\.[qk]_norm$",
+        # Author preserves first 2 and last 2 blocks for these sensitive projections.
+        # Using (0|1|4[67]) specifically targets the author's preservation logic.
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_k$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_out\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_q$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_v$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_k$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_out\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_q$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_v$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_k$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_out\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_q$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_v$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_k$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_out\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_q$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_v$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.(audio_)?ff\.net\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.(audio_)?ff\.net\.\d+\.proj$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_k$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_out\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_q$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_v$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_k$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_out\.\d+$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_q$",
+        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_v$",
     ],
     "WAN 2.2": [
     # Patterns use (^|\.) to match both naked keys and keys still carrying
@@ -115,10 +143,10 @@ KEEP_HIGHER_PRECISION_PATTERNS = {
         # to_v across every attention variant (excluding connector blocks
         # which are already covered by ALWAYS_SKIP). Negative lookahead
         # prevents double-matching the same layer with two different rules.
-        r"^(?!.*_embeddings_connector).*\.to_v$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_v$",
         # FFN down projection (ff.net.2 and audio_ff.net.2), excluding
         # connector layers for the same reason.
-        r"^(?!.*_embeddings_connector).*\.(audio_)?ff\.net\.2$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.(audio_)?ff\.net\.2$",
     ],
     "WAN 2.2": [
         # WAN uses split q/k/v/o (never fused). to_v in self + cross attn.
@@ -172,10 +200,6 @@ def build_layer_config_dict(model_type, base_format_ui_label):
         "_exclusions": [],
     }
 
-    # Always-skip patterns get {"skip": true}
-    for pat in skip_patterns:
-        config[pat] = {"skip": True}
-
     # Sensitive-layer behavior depends on base format
     if base_fmt == "float8_e4m3fn":
         # FP8 base: nothing higher to bump to within the format enum.
@@ -188,6 +212,11 @@ def build_layer_config_dict(model_type, base_format_ui_label):
         for pat in keep_patterns:
             config[pat] = {"format": "float8_e4m3fn"}
         keep_action = "bump to float8_e4m3fn"
+
+    # Always-skip patterns get {"skip": true}. Added LAST so they override
+    # keep_higher patterns in lower-bit modes (BF16 skip > FP8 bump).
+    for pat in skip_patterns:
+        config[pat] = {"skip": True}
 
     summary = {
         "base_format": base_fmt,
