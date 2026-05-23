@@ -11,7 +11,7 @@ FILTERS_DIR = os.path.join(ROOT_DIR, "filters")
 
 def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type,
                         optimizer_choice, options, log_acc, low_vram=False, actcal=False,
-                        auto_layer_config=True):
+                        auto_layer_config=True, is_full_checkpoint=False):
 
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
@@ -324,7 +324,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # --- 4. FINALIZATION & METADATA ---
         if process.returncode == 0 and os.path.exists(final_path):
             # This calls the new logic that merges your LTX23_metadata.json
-            meta = get_specialized_meta(model_type, model_name, final_path, fmt)
+            meta = get_specialized_meta(model_type, model_name, final_path, fmt, is_full=is_full_checkpoint)
             
             # Inject the resulting dictionary into the safetensor
             success, msg = inject_metadata(final_path, meta)

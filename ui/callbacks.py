@@ -22,7 +22,8 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
                    metadata_input, inject_btn, read_btn, scan_btn,
                    model_type, optimizer_choice, low_vram, auto_layer_config,
                    audit_btn, reference_dd, compare_btn,
-                   build_exact_btn, clear_exact_btn):
+                   build_exact_btn, clear_exact_btn,
+                   full_checkpoint):
     
     # --- 1. MODEL LIST MANAGEMENT ---
     def refresh_both():
@@ -32,7 +33,7 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
 
     # --- 2. THE MAIN CONVERSION LOGIC ---
     # This function is triggered by START BATCH. 
-    def start_process(file_name, model_name, formats, options, m_type, opt_choice, lv, auto_lc):
+    def start_process(file_name, model_name, formats, options, m_type, opt_choice, lv, auto_lc, is_full):
         if not file_name or not model_name:
             yield "❌ Error: Select a source file and enter a model name.", "Error"
             return
@@ -52,7 +53,8 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
                 MODELS_DIR, source_path, safe_fmts, model_name, 
                 m_type, opt_choice, options, log_acc,
                 low_vram=lv,
-                auto_layer_config=auto_lc
+                auto_layer_config=auto_lc,
+                is_full_checkpoint=is_full
             ):
                 log_acc = log
                 yield log_acc, status
@@ -76,7 +78,8 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
             model_type,        # 5
             optimizer_choice,  # 6
             low_vram,          # 7
-            auto_layer_config  # 8
+            auto_layer_config, # 8
+            full_checkpoint    # 9
         ],
         outputs=[terminal_box, pipeline_status]
     )
@@ -96,8 +99,6 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
         try:
             # We parse the JSON currently visible in the UI box
             meta_dict = json.loads(manual_json_str)
-
-            from core.metadata_manager import calculate_sha256
             meta_dict["modelspec.hash_sha256"] = calculate_sha256(full_path)
             
             success, msg = inject_metadata(full_path, meta_dict)
@@ -239,22 +240,4 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
     clear_exact_btn.click(
         fn=handle_clear_exact,
         outputs=[terminal_box]
-    )
-
-    # --- 4. DYNAMIC UI REFRESH ---
-    # Update the metadata preview automatically when the name or architecture changes
-    def update_json_on_ui_change(name, architecture):
-        return update_metadata_preview(name, architecture)
-
-    # These triggers ensure the JSON editor reflects your LTX-2 or WAN choices instantly
-    model_type.change(
-        fn=update_json_on_ui_change,
-        inputs=[friendly_name, model_type],
-        outputs=[metadata_input]
-    )
-    
-    friendly_name.change(
-        fn=update_json_on_ui_change,
-        inputs=[friendly_name, model_type],
-        outputs=[metadata_input]
     )

@@ -76,6 +76,11 @@ def create_ui():
                 label="Display name",
                 placeholder="e.g. TreasureChest-v1",
             )
+            full_checkpoint = gr.Checkbox(
+                label="Full Checkpoint (Inc. VAE)",
+                value=False,
+                info="Check if the source file includes VAE/Audio VAE weights (LTX-2.3 only)."
+            )
 
         # =========================================================
         # MAIN AREA: header + status + pinned terminal + accordions
@@ -288,7 +293,7 @@ def create_ui():
         # =========================================================
         # REACTIVE LOGIC
         # =========================================================
-        def on_settings_change(m_type, name, selection):
+        def on_settings_change(m_type, name, selection, is_full):
             if selection == "Ultra-Quality (Optimizer)":
                 hint = ("<span style='color:#8b949e; font-size:0.85em;'>"
                         "Manual optimizer active (9000 iters)</span>")
@@ -301,10 +306,10 @@ def create_ui():
                 hint = ("<span style='color:#8b949e; font-size:0.85em;'>"
                         "Fast simple quant (no optimization)</span>")
                 opt_update = gr.update(interactive=False)
-            new_json = update_metadata_preview(name, m_type)
+            new_json = update_metadata_preview(name, m_type, is_full=is_full)
             return opt_update, hint, new_json
 
-        settings_inputs = [model_type, friendly_name, extra_flags]
+        settings_inputs = [model_type, friendly_name, extra_flags, full_checkpoint]
         settings_outputs = [optimizer_choice, tweak_hint, metadata_input]
         for component in settings_inputs:
             component.change(
@@ -313,7 +318,7 @@ def create_ui():
                 outputs=settings_outputs,
             )
 
-        # Wire all callbacks (signature unchanged)
+        # Wire all callbacks
         setup_callbacks(
             base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
             q_format, pipeline_status, extra_flags, terminal_box,
@@ -322,6 +327,7 @@ def create_ui():
             low_vram, auto_layer_config, audit_btn,
             reference_dd, compare_btn,
             build_exact_btn, clear_exact_btn,
+            full_checkpoint,
         )
 
         # Initial folder scan populates both source and reference dropdowns

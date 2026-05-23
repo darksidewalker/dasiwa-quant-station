@@ -54,7 +54,7 @@ def get_current_meta(model_name, architecture, bits="FP8"):
             
     return final_meta
 
-def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8"):
+def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8", is_full=False):
     """
     PRIORITY 1: Loads the FULL content of {Arch}_metadata.json from /core.
     PRIORITY 2: Falls back to asset-based template.
@@ -63,7 +63,13 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8"):
     
     # Cleaning logic: "LTX-2.3" -> "LTX23", "WAN 2.2" -> "WAN22"
     clean_arch = architecture.replace("-", "").replace(".", "").replace(" ", "")
+    
     seed_filename = f"{clean_arch}_metadata.json"
+    if is_full:
+        vae_filename = f"{clean_arch}_metadata_vae.json"
+        if os.path.exists(os.path.join(core_dir, vae_filename)):
+            seed_filename = vae_filename
+            
     seed_path = os.path.join(core_dir, seed_filename)
 
     if os.path.exists(seed_path):
@@ -90,10 +96,10 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8"):
     # Fallback to standard assets.py config if JSON seed is missing
     return get_current_meta(model_name, architecture, bits)
 
-def update_metadata_preview(name, architecture="WAN 2.2"):
+def update_metadata_preview(name, architecture="WAN 2.2", is_full=False):
     """Called by UI to generate the preview for the Gradio JSON box."""
     # We pass a placeholder path so SHA256 returns the "WILL BE CALCULATED" string
-    meta = get_specialized_meta(architecture, name, "PREVIEW_MODE")
+    meta = get_specialized_meta(architecture, name, "PREVIEW_MODE", is_full=is_full)
     return json.dumps(meta, indent=4)
 
 def _read_safetensors_header(file_path):
@@ -223,8 +229,11 @@ def inject_metadata(file_path, meta_dict):
 
     # Slow path fallback. Logs the in-place failure reason so it's debuggable.
     try:
+        # Safetensors requires all metadata values to be strings.
+        meta_strings = {k: (v if isinstance(v, str) else json.dumps(v))
+                        for k, v in meta_dict.items()}
         tensors = load_file(file_path)
-        save_file(tensors, file_path, metadata=meta_dict)
+        save_file(tensors, file_path, metadata=meta_strings)
         return True, f"Metadata Injected (full rewrite; in-place skipped: {msg})"
     except Exception as e:
         return False, str(e)
