@@ -299,7 +299,7 @@ def _gguf_add_existing_field(writer, field):
     return False
 
 
-def write_gguf_meta(file_path, model_name, architecture, bits="FP8"):
+def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=False):
     """
     Inject modelspec.* metadata into an existing GGUF file by reading it,
     copying tensors and KV pairs to a new file with the additional metadata,
@@ -344,7 +344,7 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8"):
             custom_alignment = None
 
     # Build the modelspec metadata to merge in.
-    new_meta = get_specialized_meta(architecture, model_name, file_path, bits)
+    new_meta = get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full)
     # Coerce non-string values to strings (the format we already use elsewhere).
     new_meta_strings = {
         k: (v if isinstance(v, str) else json.dumps(v))
@@ -404,7 +404,11 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8"):
     for tensor in reader.tensors:
         writer.add_tensor_info(
             tensor.name,
-            tensor.data.shape,
+            # CRITICAL: Use the logical shape from the tensor object, not the 
+            # numpy data array shape. For quantized tensors, data.shape often 
+            # reflects raw byte/block counts, which causes dimension doubling 
+            # errors during model load (e.g., 4096 becoming 8192).
+            tensor.shape,
             tensor.data.dtype,
             tensor.data.nbytes,
             tensor.tensor_type,

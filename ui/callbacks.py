@@ -62,7 +62,9 @@ def setup_callbacks(base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
         # Execute GGUF Quantization
         if gguf_fmts:
             for log, status in run_gguf_conversion(
-                MODELS_DIR, source_path, gguf_fmts, model_name, log_acc
+                MODELS_DIR, source_path, gguf_fmts, model_name, log_acc,
+                model_type=m_type,
+                is_full=is_full
             ):
                 log_acc = log
                 yield log_acc, status

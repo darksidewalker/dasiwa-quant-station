@@ -173,6 +173,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate F16 GGUF files from single UNET")
     parser.add_argument("--src", required=True, help="Source model ckpt file.")
     parser.add_argument("--dst", help="Output unet gguf file.")
+    parser.add_argument("--arch", help="Specify architecture (e.g. ltxv, wan, flux). Bypasses auto-detection.")
     args = parser.parse_args()
 
     if not os.path.isfile(args.src):
@@ -273,9 +274,20 @@ def handle_tensors(writer, state_dict, model_arch, src_path=None):
         tqdm.write(f"{f'%-{max_name_len + 4}s' % key} {old_dtype} --> {data_qtype.name}, shape = {shape_str}")
         writer.add_tensor(key, data, raw_dtype=data_qtype)
 
-def convert_file(path, dst_path=None, interact=True, overwrite=False):
+def convert_file(path, dst_path=None, interact=True, overwrite=False, arch=None):
     state_dict = load_state_dict(path)
-    model_arch = detect_arch(state_dict)
+
+    model_arch = None
+    if arch:
+        for a_cls in arch_list:
+            if a_cls.arch == arch:
+                model_arch = a_cls()
+                break
+        if model_arch is None:
+            logging.warning(f"Architecture override '{arch}' not found in registry; using auto-detection.")
+
+    if model_arch is None:
+        model_arch = detect_arch(state_dict)
     
     dtypes = [x.dtype for x in state_dict.values()]
     main_dtype = max(set(dtypes), key=dtypes.count)
@@ -311,4 +323,4 @@ def convert_file(path, dst_path=None, interact=True, overwrite=False):
 
 if __name__ == "__main__":
     args = parse_args()
-    convert_file(args.src, args.dst)
+    convert_file(args.src, args.dst, arch=args.arch)

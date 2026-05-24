@@ -23,7 +23,7 @@ _ARCHS_NEEDING_5D_FIX = {"wan", "hyvid"}
 
 
 def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
-                        model_type="WAN 2.2"):
+                        model_type="WAN 2.2", is_full=False):
     base_name = os.path.splitext(os.path.basename(source_path))[0]
     master_gguf = os.path.join(MODELS_DIR, f"{base_name}.gguf")
 
@@ -35,7 +35,12 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
         log_acc += f"📦 Base GGUF missing. Converting {base_name}.gguf...\n"
         log_acc += f"   Architecture: {model_type} (convert.py arch: {convert_arch})\n"
         yield log_acc, "GGUF Base Prep"
-        subprocess.run([sys.executable, CONVERT_PY, "--src", source_path, "--dst", master_gguf], cwd=ROOT_DIR)
+        # Added --arch flag and captured output for better error reporting
+        conv_res = subprocess.run([sys.executable, CONVERT_PY, "--src", source_path, "--dst", master_gguf, "--arch", convert_arch], cwd=ROOT_DIR, capture_output=True, text=True)
+        if conv_res.returncode != 0 or not os.path.exists(master_gguf):
+            log_acc += f"❌ Base GGUF Conversion Failed: {conv_res.stderr}\n"
+            yield log_acc, "Error"
+            return
 
     q_map = {
         "GGUF_Q8_0": "Q8_0", "GGUF_Q6_K": "Q6_K", "GGUF_Q5_K_M": "Q5_K_M",
@@ -110,7 +115,7 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
             log_acc += f"❌ Error: expected output not found: {os.path.basename(final_path)}\n"
             continue
 
-        success, msg = write_gguf_meta(final_path, model_name, model_type, bits=q_flag)
+        success, msg = write_gguf_meta(final_path, model_name, model_type, bits=q_flag, is_full=is_full)
         if success:
             log_acc += f"📝 GGUF Meta Injected: {os.path.basename(final_path)} ({msg})\n"
         else:
