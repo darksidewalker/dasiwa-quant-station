@@ -61,6 +61,12 @@ if __name__ == "__main__":
     def add_extra_key(writer, key, data):
         global added
         data_qtype = gguf.GGMLQuantizationType.F32
+        # TRANSPOSE FIX: GGUFWriter transposes 2D arrays, but loaders only
+        # transpose back if the name ends in .weight. For structural tables,
+        # we pre-transpose so the final GGUF shape matches Torch expectation.
+        if len(data.shape) == 2 and not key.endswith(".weight"):
+            data = data.T.copy()
+
         data = gguf.quants.quantize(data, data_qtype)
         tqdm.write(f"Adding key {key} ({data.shape})")
         writer.add_tensor(key, data, raw_dtype=data_qtype)

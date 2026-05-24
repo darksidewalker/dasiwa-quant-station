@@ -1,6 +1,7 @@
 # (c) City96 || Apache-2.0 (apache.org/licenses/LICENSE-2.0)
 import os
 import gguf
+import re
 import torch
 import logging
 import argparse
@@ -19,7 +20,11 @@ class ModelTemplate:
     keys_detect = []  
     keys_banned = []  
     keys_hiprec = []  
+    keys_skip   = []
     keys_ignore = []  
+
+    def __init__(self):
+        self.nd_tensors = {}
 
     def handle_nd_tensor(self, key, data, src_path=None):
         raise NotImplementedError(f"Tensor detected that exceeds dims supported by C++ code! ({key} @ {data.shape})")
@@ -83,16 +88,8 @@ class ModelHyVid(ModelTemplate):
     ]
 
     def handle_nd_tensor(self, key, data, src_path=None):
-        if src_path:
-            file_hash = hashlib.md5(os.path.basename(src_path).encode()).hexdigest()[:8]
-            path = f"./fix_5d_tensors_{self.arch}_{file_hash}.safetensors"
-        else:
-            path = f"./fix_5d_tensors_{self.arch}.safetensors"
-
-        # Note: We overwrite instead of aborting to allow for re-runs
-        fsd = {key: torch.from_numpy(data)}
-        tqdm.write(f"🎯 5D key found! Saving unique fix file: {path}")
-        save_file(fsd, path)
+        """Stash preserved tensors in memory to be saved as a single batch later."""
+        self.nd_tensors[key] = torch.from_numpy(data)
 
 class ModelWan(ModelHyVid):
     arch = "wan"
@@ -100,6 +97,16 @@ class ModelWan(ModelHyVid):
         ("blocks.0.self_attn.norm_q.weight", "text_embedding.2.weight", "head.modulation",)
     ]
     keys_hiprec = [".modulation"]
+    keys_skip = [
+        r"(^|\.)modulation($|\.)",
+        r"(^|\.)patch_embedding\.",
+        r"(^|\.)text_embedding\.",
+        r"(^|\.)time_projection\.",
+        r"(^|\.)time_embedding\.",
+        r"(^|\.)img_emb\.",
+        r"(^|\.)head\.",
+        r"vae\.", r"audio_vae\.", r"vocoder\.", r"encoder\.", r"decoder\."
+    ]
 
 class ModelLTXV(ModelHyVid):
     arch = "ltxv"
@@ -114,6 +121,18 @@ class ModelLTXV(ModelHyVid):
         "scale_shift_table", # nn.parameter, can't load from BF16 base quant
         "encoder.",
         "decoder.",
+    ]
+    keys_skip = [
+        r"adaln_single\.",
+        r"(audio|video)_embeddings_connector\.",
+        r"(^|\.)caption_projection\.",
+        r"(^|\.)patchify_proj($|\.)",
+        r"(^|\.)proj_out($|\.)",
+        r"(^|\.)audio_patchify_proj($|\.)",
+        r"(^|\.)audio_proj_out($|\.)",
+        r"scale_shift_table",
+        r"\.to_gate_logits$",
+        r"vae\.", r"audio_vae\.", r"vocoder\.", r"encoder\.", r"decoder\."
     ]
 
 class ModelSDXL(ModelTemplate):
@@ -249,7 +268,8 @@ def handle_tensors(writer, state_dict, model_arch, src_path=None):
         data_shape = data.shape
         data_qtype = gguf.GGMLQuantizationType.BF16 if old_dtype == torch.bfloat16 else gguf.GGMLQuantizationType.F16
 
-        if len(data.shape) > MAX_TENSOR_DIMS:
+        # Preservation Logic: Extract 5D tensors OR keys matching skip patterns
+        if len(data.shape) > MAX_TENSOR_DIMS or any(re.search(pat, key) for pat in model_arch.keys_skip):
             model_arch.handle_nd_tensor(key, data, src_path=src_path)
             continue 
 
@@ -297,6 +317,12 @@ def convert_file(path, dst_path=None, interact=True, overwrite=False, arch=None)
     if dst_path is None:
         dst_path = f"{os.path.splitext(path)[0]}-{ftype_name}.gguf"
 
+    # Clean start for sidecar file
+    file_hash = hashlib.md5(os.path.basename(path).encode()).hexdigest()[:8]
+    fix_path = f"./fix_5d_tensors_{model_arch.arch}_{file_hash}.safetensors"
+    if os.path.exists(fix_path):
+        os.remove(fix_path)
+
     if os.path.isfile(dst_path) and not overwrite:
         if not interact: raise OSError("Output exists!")
         input("Output exists enter to continue...")
@@ -307,7 +333,12 @@ def convert_file(path, dst_path=None, interact=True, overwrite=False, arch=None)
         writer.add_file_type(ftype_gguf)
 
     handle_tensors(writer, state_dict, model_arch, src_path=path)
-    
+
+    # Memory-efficient save: Write all preserved tensors at once.
+    if model_arch.nd_tensors:
+        save_file(model_arch.nd_tensors, fix_path)
+        tqdm.write(f"🎯 Successfully preserved {len(model_arch.nd_tensors)} structural tensors: {fix_path}")
+
     writer.write_header_to_file(path=dst_path)
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file(progress=True)

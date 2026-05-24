@@ -16,10 +16,9 @@ _UI_ARCH_TO_CONVERT_ARCH = {
 }
 
 # Architectures that produce 5D tensors during convert.py and therefore need
-# fix_5d_tensors.py to run after llama-quantize. LTX-2.3 does NOT have 5D
-# tensors (verified: ModelLTXV inherits from ModelTemplate, not ModelHyVid,
-# and has no handle_nd_tensor override), so it skips the fix step.
-_ARCHS_NEEDING_5D_FIX = {"wan", "hyvid"}
+# fix_5d_tensors.py to run after llama-quantize. LTX-2.3 VAE and connectors
+# are now also protected via the sidecar strategy.
+_ARCHS_NEEDING_5D_FIX = {"wan", "hyvid", "ltxv"}
 
 
 def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,

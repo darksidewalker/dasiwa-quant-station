@@ -402,13 +402,22 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
     # Register tensor info from source so the output gets a valid tensor
     # section. Tensor data is streamed below via write_tensor_data.
     for tensor in reader.tensors:
+        # Determine the shape to pass to add_tensor_info.
+        # For quantized types, GGUFWriter expects the "byte shape" (the shape of 
+        # the raw quantized data) because it will internally call 
+        # quant_shape_from_byte_shape to compute the logical shape.
+        # For non-quantized types (F32, F16, BF16), it expects the logical shape.
+        # Using logical shape for F16/BF16 prevents "dimension doubling" errors.
+        is_quantized = tensor.tensor_type not in (
+            gguf.GGMLQuantizationType.F32, 
+            gguf.GGMLQuantizationType.F16,
+            getattr(gguf.GGMLQuantizationType, 'BF16', 30)
+        )
+        t_shape = tensor.data.shape if is_quantized else tensor.shape
+
         writer.add_tensor_info(
             tensor.name,
-            # CRITICAL: Use the logical shape from the tensor object, not the 
-            # numpy data array shape. For quantized tensors, data.shape often 
-            # reflects raw byte/block counts, which causes dimension doubling 
-            # errors during model load (e.g., 4096 becoming 8192).
-            tensor.shape,
+            t_shape,
             tensor.data.dtype,
             tensor.data.nbytes,
             tensor.tensor_type,
