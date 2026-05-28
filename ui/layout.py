@@ -19,7 +19,10 @@ machinery. All component variable names are preserved.
 """
 import gradio as gr
 from core.metadata_manager import update_metadata_preview
+from config import MODELS_DIR
 from utils.system import get_sys_info
+from utils.file_listing import get_model_list
+from utils.file_ops import list_dirs
 from ui.callbacks import setup_callbacks
 
 
@@ -37,6 +40,12 @@ def create_ui():
             )
 
             gr.Markdown("### Source", elem_classes=["section-heading"])
+            models_dir_dd = gr.Dropdown(
+                label="Model Directory",
+                choices=[],
+                value=MODELS_DIR,
+                interactive=True,
+            )
             base_dd = gr.Dropdown(
                 label="Safetensors file",
                 interactive=True,
@@ -320,6 +329,7 @@ def create_ui():
 
         # Wire all callbacks
         setup_callbacks(
+            models_dir_dd,
             base_dd, friendly_name, refresh_btn, run_btn, stop_btn,
             q_format, pipeline_status, extra_flags, terminal_box,
             metadata_input, inject_btn, read_btn,
@@ -330,11 +340,15 @@ def create_ui():
             full_checkpoint,
         )
 
-        # Initial folder scan populates both source and reference dropdowns
-        from utils.file_ops import list_files
-        def refresh_both_init():
-            update = list_files()
-            return update, update
-        demo.load(fn=refresh_both_init, outputs=[base_dd, reference_dd])
+        # Initial population: directories dropdown, then file dropdowns
+        demo.load(fn=list_dirs, inputs=[], outputs=[models_dir_dd])
+
+        def refresh_both_init(m_path):
+            update = get_model_list(m_path)
+            return gr.update(choices=update), gr.update(choices=update)
+        demo.load(fn=refresh_both_init, inputs=[models_dir_dd], outputs=[base_dd, reference_dd])
+
+        # Ensure refresh button also refreshes available directories
+        refresh_btn.click(fn=list_dirs, inputs=[], outputs=[models_dir_dd])
 
     return demo

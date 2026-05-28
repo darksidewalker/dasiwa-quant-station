@@ -21,6 +21,29 @@ def list_files():
 
     return gr.update(choices=files, value=files[0] if files else None)
 
+def list_dirs(base_dir=None):
+    """Return a gr.update for subdirectories under base_dir.
+
+    If base_dir is None, uses MODELS_DIR from config when available.
+    """
+    from config import MODELS_DIR
+    if base_dir is None:
+        base_dir = MODELS_DIR
+
+    if not os.path.exists(base_dir):
+        return gr.update(choices=[], value=None)
+
+    dirs = sorted([
+        os.path.join(base_dir, d) for d in os.listdir(base_dir)
+        if os.path.isdir(os.path.join(base_dir, d))
+    ])
+
+    # include the base_dir itself as an option
+    if base_dir not in dirs:
+        dirs.insert(0, base_dir)
+
+    return gr.update(choices=dirs, value=dirs[0] if dirs else base_dir)
+
 def get_full_path(file_name):
     return os.path.join(MODELS_DIR, file_name)
 

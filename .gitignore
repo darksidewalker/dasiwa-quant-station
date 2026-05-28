@@ -35,3 +35,4 @@ Thumbs.db
 .vscode/
 *.swp
 fix_5d_tensors_*
+.ggufy_sens_*.json

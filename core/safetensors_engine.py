@@ -179,6 +179,9 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             suffix = f"{suffix}_mixed"
         
         final_path = os.path.join(MODELS_DIR, f"{model_name}_{suffix}.safetensors")
+
+        # Ensure target directory exists (handles cases where model_name contains subfolders)
+        os.makedirs(os.path.dirname(final_path), exist_ok=True)
         
         # --- 2. BUILD COMMAND ---
         cmd = ["convert_to_quant", "-i", source_path, "-o", final_path, "--save-quant-metadata"]

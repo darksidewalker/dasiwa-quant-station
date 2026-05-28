@@ -7,13 +7,13 @@
 - **`app.py`**: Entry point. Initializes folders and launches the Gradio UI.
 - **`config.py`**: Centralized path management (`MODELS_DIR`, `LOGS_DIR`, `LLAMA_BIN`).
 - **`/core`**: 
-    - `gguf_engine.py`: Orchestrates `llama-quantize` and 5D tensor fixing.
+    - `gguf_engine.py`: Orchestrates `ggufy` conversion. Handles metadata architecture mapping and custom sensitivity map generation for video-tensor preservation.
     - `safetensors_engine.py`: Interfaces with `convert_to_quant` for safetensors conversion. Owns the `ARCH_REGISTRY` (single source of truth for the architecture dropdown: CLI flag + ultra-quality optimizer params per arch, including the `"Not set"` no-preset entry).
     - `layer_config_builder.py`: Per-arch regex patterns for sensitive-layer preservation. Only WAN 2.2 and LTX-2.3 have verified patterns; other archs in the registry fall through cleanly and rely on the upstream `convert_to_quant` preset's own skip rules.
     - `metadata_manager.py`: Handles `modelspec` header injection for both GGUF and Safetensors.
 - **`/ui`**: 
-    - `layout.py`: Visual structure. The Architecture dropdown values must exactly match `ARCH_REGISTRY` keys in `safetensors_engine.py`.
-    - `callbacks.py`: Event handling and process threading.
+    - `layout.py`: Visual structure. The Architecture dropdown values must exactly match `ARCH_REGISTRY` keys in `safetensors_engine.py`. The `Model Directory` control is now a directory-dropdown that lists `MODELS_DIR` and its subfolders (see `utils/file_ops.list_dirs`).
+    - `callbacks.py`: Event handling and process threading; callbacks now expect a directory-dropdown (`models_dir_dd`) and refresh file lists accordingly.
     - `assets.py`: CSS styling and `MODEL_METADATA_CONFIGS` (per-arch modelspec templates; keys must match `ARCH_REGISTRY`).
 - **`/utils`**:
     - `arch_detector.py`: Source-file architecture verification. Only WAN 2.2 and LTX-2.3 have marker patterns; other archs fall through as UNKNOWN with a warning (the engine still runs).
@@ -29,11 +29,11 @@
 - **Virtual Env:** Default location is `.venv/` in the project root.
 
 ## 🚦 Critical Rules for AI Agents
-1. **The 5D Tensor Fix:** In GGUF workflows, `llama-quantize` often flattens tensors. You **must** ensure the `fix_5d_tensors.py` script is called after any GGUF quantization to restore the model's 5D structure.
+1. **GGUFY Conversion:** GGUF quantization is handled via the `ggufy` binary. It preserves 5D tensor structures by using generated sensitivity maps that assign high scores (100) to structural layers.
 2. **Metadata Injection:** Never consider a quantization "complete" without calling `metadata_manager.py`. The `modelspec` tags are required for compatibility with downstream tools.
 3. **Subprocess Handling:** Use `subprocess.Popen` with `yield` for long-running tasks to keep the Gradio terminal updated. Do not use blocking `subprocess.run` for the main quantization loop.
 4. **Path Safety:** Always reference directories via `config.py`. Do not assume the agent's working directory is the root; use absolute paths derived from `ROOT_DIR`.
-5. **Patching:** If modifying the `llama.cpp` integration, refer to `lcpp.patch`. Any changes to the build process must be reflected in `start-linux.sh`.
+5. **GGUFY Binary:** The engine expects `ggufy` at `bin/ggufy`. Ensure `start-linux.sh` is used to maintain the correct binary for the system architecture.
 
 ## 🔄 Common Workflows
 - **Adding a Quantization Format:** Update the `choices` in `ui/layout.py` (`q_format` CheckboxGroup) and map the flag in the `FLAG_MAP` dict at the top of `core/safetensors_engine.py` (for safetensors formats) or in `gguf_engine.py` (for GGUF).

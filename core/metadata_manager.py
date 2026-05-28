@@ -476,6 +476,7 @@ def read_any_metadata(MODELS_DIR, file_name):
     if not file_name: 
         return "❌ No file selected."
     
+    MODELS_DIR = os.path.expanduser(MODELS_DIR)
     path = os.path.join(MODELS_DIR, file_name)
     if not os.path.exists(path):
         return f"❌ File not found at: {path}"
