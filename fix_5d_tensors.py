@@ -74,12 +74,6 @@ if __name__ == "__main__":
     def add_extra_key(writer, key, data):
         global added
         data_qtype = gguf.GGMLQuantizationType.F32
-        # TRANSPOSE FIX: GGUFWriter transposes 2D arrays, but loaders only
-        # transpose back if the name ends in .weight. For structural tables,
-        # we pre-transpose so the final GGUF shape matches Torch expectation.
-        if len(data.shape) == 2 and not key.endswith(".weight"):
-            data = data.T.copy()
-
         data = gguf.quants.quantize(data, data_qtype)
         tqdm.write(f"Adding key {key} ({data.shape})")
         writer.add_tensor(key, data, raw_dtype=data_qtype)
@@ -87,7 +81,15 @@ if __name__ == "__main__":
 
     # main loop to add missing 5D tensor(s)
     for tensor in tqdm(reader.tensors):
-        writer.add_tensor(tensor.name, tensor.data, raw_dtype=tensor.tensor_type)
+        # GGUFReader provides shapes in GGUF-order [inner, ..., outer].
+        # GGUFWriter expects Torch-order [outer, ..., inner].
+        # We must reverse the reader's shape here to prevent dimension flipping in the final file.
+        writer.add_tensor(
+            tensor.name, 
+            tensor.data, 
+            raw_dtype=tensor.tensor_type, 
+            raw_shape=tensor.shape[::-1]
+        )
         key5d = tensor.name.replace(".bias", ".weight")
         if key5d in sd5d.keys():
             add_extra_key(writer, key5d, sd5d[key5d])

@@ -89,7 +89,9 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
                     with safe_open(source_path, framework="pt", device="cpu") as f:
                         for k in f.keys():
                             shape = f.get_slice(k).get_shape()
-                            if len(shape) >= 5:
+                            # Extract 5D tensors AND critical 2D structural tables 
+                            # (scale_shift, embeddings) that are often mangled by standard converters.
+                            if len(shape) >= 5 or any(x in k for x in ["scale_shift_table", "pos_embed", "img_emb"]):
                                 tensors_5d[k] = f.get_tensor(k)
                     
                     if tensors_5d:
