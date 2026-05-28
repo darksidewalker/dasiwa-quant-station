@@ -3,6 +3,8 @@ import os, subprocess, sys
 import hashlib
 from core.metadata_manager import write_gguf_meta
 from config import CONVERT_PY, FIX_5D_PY, LLAMA_BIN, ROOT_DIR, FIX_5D_DATA
+from safetensors import safe_open
+from safetensors.torch import save_file
 from utils.file_ops import save_log
 
 
@@ -79,13 +81,34 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
             )
 
             if not os.path.exists(dynamic_fix_data):
-                log_acc += (
-                    f"❌ 5D fix data missing: {os.path.basename(dynamic_fix_data)}\n"
-                    f"   The base conversion step did not produce a 5D fix file. "
-                    f"Re-run the conversion or verify the source model.\n"
-                )
-                yield log_acc, "Error"
-                continue
+                log_acc += f"🔧 5D fix data missing. Attempting surgical recovery from source...\n"
+                yield log_acc, "Recovering 5D tensors"
+                
+                try:
+                    tensors_5d = {}
+                    with safe_open(source_path, framework="pt", device="cpu") as f:
+                        for k in f.keys():
+                            shape = f.get_slice(k).get_shape()
+                            if len(shape) >= 5:
+                                tensors_5d[k] = f.get_tensor(k)
+                    
+                    if tensors_5d:
+                        # Ensure compatibility with fix_5d_tensors.py/NumPy by casting to FP32.
+                        # This prevents "unsupported ScalarType BFloat16" errors.
+                        tensors_5d = {k: v.to(torch.float32) for k, v in tensors_5d.items()}
+                        save_file(tensors_5d, dynamic_fix_data)
+                        log_acc += f"✅ Successfully re-extracted {len(tensors_5d)} 5D tensors to sidecar.\n"
+                    else:
+                        log_acc += "⚠️ No 5D tensors found in source. Skipping fix step for this model.\n"
+                        # If no 5D tensors exist in source, the fix step isn't actually needed
+                        needs_5d_fix = False 
+                except Exception as e:
+                    log_acc += (
+                        f"❌ 5D recovery failed: {str(e)}\n"
+                        f"   Could not re-extract metadata from {os.path.basename(source_path)}.\n"
+                    )
+                    yield log_acc, "Error"
+                    continue
 
             log_acc += f"🔧 Fixing 5D Tensors using: {os.path.basename(dynamic_fix_data)}\n"
             yield log_acc, f"Fixing {q_flag}"

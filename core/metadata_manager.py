@@ -330,9 +330,9 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
     arch_field = reader.get_field(gguf.Keys.General.ARCHITECTURE)
     if arch_field is None:
         return False, "Source GGUF has no general.architecture field"
-    gguf_arch_str = str(
-        bytes(arch_field.parts[arch_field.data[-1]]), encoding="utf-8"
-    )
+    
+    # Robustly extract architecture string using contents()
+    gguf_arch_str = arch_field.parts[-1].tobytes().decode("utf-8").strip("\x00")
 
     # Honor any custom alignment used by the source.
     alignment_field = reader.get_field(gguf.Keys.General.ALIGNMENT)
@@ -402,18 +402,30 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
     # Register tensor info from source so the output gets a valid tensor
     # section. Tensor data is streamed below via write_tensor_data.
     for tensor in reader.tensors:
-        # Determine the shape to pass to add_tensor_info.
-        # For quantized types, GGUFWriter expects the "byte shape" (the shape of 
-        # the raw quantized data) because it will internally call 
-        # quant_shape_from_byte_shape to compute the logical shape.
-        # For non-quantized types (F32, F16, BF16), it expects the logical shape.
-        # Using logical shape for F16/BF16 prevents "dimension doubling" errors.
+        # Determine if the tensor uses a quantized type that requires physical byte-shape conversion.
+        # Non-quantized types (F32, F16, BF16) use logical shapes in GGUFWriter.
         is_quantized = tensor.tensor_type not in (
-            gguf.GGMLQuantizationType.F32, 
+            gguf.GGMLQuantizationType.F32,
             gguf.GGMLQuantizationType.F16,
             getattr(gguf.GGMLQuantizationType, 'BF16', 30)
         )
-        t_shape = tensor.data.shape if is_quantized else tensor.shape
+
+        if is_quantized:
+            # For quantized tensors, GGUFWriter.add_tensor_info expects the "byte shape"
+            # in Torch-order [outer, ..., inner_bytes].
+            # GGUFReader.shape is GGUF-order [inner_logical, outer, ...].
+            outer_dims = tensor.shape[1:]
+            
+            prod_outer = 1
+            for d in outer_dims:
+                prod_outer *= d
+            
+            # Calculate the physical bytes occupied by a single "row" (the contiguous dimension)
+            bytes_per_row = tensor.data.nbytes // prod_outer
+            t_shape = list(outer_dims[::-1]) + [bytes_per_row]
+        else:
+            # For standard types, just reverse the GGUF-order shape to Torch-order.
+            t_shape = tensor.shape[::-1]
 
         writer.add_tensor_info(
             tensor.name,
@@ -472,9 +484,39 @@ def read_any_metadata(MODELS_DIR, file_name):
     if file_name.lower().endswith(".gguf"):
         if not gguf: return "❌ 'gguf' library missing."
         try:
-            reader = gguf.GGUFReader(path)
-            kv_pairs = [f"{key}: {field.parts[field.data[0]]}" for key, field in reader.fields.items()]
-            return f"🔍 GGUF HEADER: {file_name}\n" + "-"*40 + "\n" + "\n".join(kv_pairs)
+            reader = gguf.GGUFReader(path, "r")
+            lines = [f"🔍 GGUF DIAGNOSTIC: {file_name}", "="*60]
+            
+            # Metadata Summary
+            lines.append(f"  Endianness : {reader.endianess.name}")
+            lines.append(f"  KV Pairs   : {len(reader.fields)}")
+            lines.append(f"  Tensors    : {len(reader.tensors)}")
+            
+            lines.append("\n📊 KEY-VALUE DATA:")
+            for key, field in reader.fields.items():
+                try:
+                    val, _ = _gguf_value_for_type(field)
+                    lines.append(f"  {key:<40}: {val}")
+                except Exception:
+                    lines.append(f"  {key:<40}: [Unparseable Binary Data]")
+
+            # Tensor Audit - Useful for verifying the 5D self-healing logic
+            lines.append("\n🧠 TENSOR AUDIT (Top structural layers):")
+            has_5d = False
+            for tensor in reader.tensors:
+                dim_count = len(tensor.shape)
+                if dim_count >= 5: has_5d = True
+                
+                # Display structural tensors (weights or high-dim)
+                if dim_count > 2 or tensor.name.endswith(".weight"):
+                    shape_str = "x".join(map(str, tensor.shape))
+                    marker = " ⭐ 5D" if dim_count >= 5 else ""
+                    lines.append(f"  {tensor.name:<45} | {shape_str:>15} | {tensor.tensor_type.name}{marker}")
+            
+            if not has_5d:
+                lines.append("\nℹ️  No 5D tensors detected. Verify if self-healing was applied.")
+                
+            return "\n".join(lines)
         except Exception as e:
             return f"🔥 GGUF Read Error: {str(e)}"
 

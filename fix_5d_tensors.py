@@ -22,14 +22,15 @@ def get_args():
     return args
 
 def get_arch_str(reader):
-    field = reader.get_field("general.architecture")
-    return str(field.parts[field.data[-1]], encoding="utf-8")
+    field = reader.get_field(gguf.Keys.General.ARCHITECTURE)
+    if not field: return "unknown"
+    return field.parts[-1].tobytes().decode("utf-8").strip("\x00")
 
 def get_file_type(reader):
-    field = reader.get_field("general.file_type")
-    raw = field.parts[field.data[-1]]
-    # Newer gguf versions return a numpy array; extract the scalar.
-    ft = int(raw.item() if hasattr(raw, "item") else raw)
+    field = reader.get_field(gguf.Keys.General.FILE_TYPE)
+    if not field: return gguf.LlamaFileType.MOSTLY_F16
+    val = field.contents()
+    ft = int(val[0] if isinstance(val, list) else val)
     return gguf.LlamaFileType(ft)
 
 if __name__ == "__main__":
@@ -49,13 +50,25 @@ if __name__ == "__main__":
         raise OSError(f"No 5D tensor fix file: {args.fix}")
 
     sd5d = load_file(args.fix)
-    sd5d = {k:v.numpy() for k,v in sd5d.items()}
+    # NumPy does not support BFloat16 via the PyTorch bridge. We cast to Float32 
+    # here to ensure the data can be processed by GGUFWriter.
+    sd5d = {k: v.to(torch.float32).numpy() for k, v in sd5d.items()}
     print("5D tensors:", sd5d.keys())
 
     # prep output
     writer = gguf.GGUFWriter(path=None, arch=arch)
-    writer.add_quantization_version(gguf.GGML_QUANT_VERSION)
-    writer.add_file_type(file_type)
+    
+    # Carry over all non-tensor metadata from the source to prevent "Could not detect model type"
+    # and ensure other standard GGUF keys are preserved.
+    for key, field in reader.fields.items():
+        if key == gguf.Keys.General.ARCHITECTURE:
+            continue # Already handled by GGUFWriter constructor
+        if key.startswith("GGUF."):
+            continue # Virtual fields handled by writer
+        
+        val_type = field.types[0]
+        value = field.contents()
+        writer.add_key_value(key, value, val_type)
 
     added = []
     def add_extra_key(writer, key, data):
