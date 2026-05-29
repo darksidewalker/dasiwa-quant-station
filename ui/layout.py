@@ -189,7 +189,7 @@ def create_ui():
                 with gr.Column(scale=1):
                     gr.Markdown("### Options", elem_classes=["section-heading"])
                     auto_layer_config = gr.Checkbox(
-                        label="Keep sensitive layers high-precision",
+                        label="Keep curated sensitive layers high-precision",
                         value=False,
                         info="FP8 base: stays at FP16. NVFP4/INT8: bumped to FP8.",
                     )
