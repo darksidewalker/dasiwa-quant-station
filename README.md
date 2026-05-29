@@ -66,9 +66,8 @@ Quantization:
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [silveroxides/convert_to_quant](https://github.com/silveroxides/convert_to_quant)
 - [City96](https://github.com/city96/ComfyUI-GGUF/tree/main/tools)
-
+- [ggufy](https://github.com/qskousen/ggufy)
 Utilities and UI:
 - Gradio (UI library) — UI components and patterns used in the app UI.
 - [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) for Blackwell/NVFP4 support.
 
-Note: The UI has been streamlined to use a directory-dropdown pattern to avoid upload semantics; consult `ui/layout.py`, `ui/callbacks.py`, and `utils/file_ops.py` for exact wiring.
