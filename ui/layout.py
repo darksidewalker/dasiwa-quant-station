@@ -163,12 +163,31 @@ def create_ui():
                     gr.Markdown("### Formats", elem_classes=["section-heading"])
                     q_format = gr.CheckboxGroup(
                         choices=[
-                            "FP8", "INT8 Block-wise", "NVFP4",
-                            "GGUF_Q8_0", "GGUF_Q6_K", "GGUF_Q5_K_M",
-                            "GGUF_Q4_K_M", "GGUF_Q3_K_S", "GGUF_Q2_K"
+                            ("Safetensors: FP8", "FP8"),
+                            ("Safetensors: NVFP4", "NVFP4"),
+                            ("Safetensors: INT8 Block-wise", "INT8 Block-wise"),
+                            ("GGUF: F32", "GGUF_F32"),
+                            ("GGUF: BF16", "GGUF_BF16"),
+                            ("GGUF: F16", "GGUF_F16"),
+                            ("GGUF: Q8_0", "GGUF_Q8_0"),
+                            ("GGUF: Q8_1", "GGUF_Q8_1"),
+                            ("GGUF: Q8_K", "GGUF_Q8_K"),
+                            ("GGUF: Q6_K", "GGUF_Q6_K"),
+                            ("GGUF: Q5_0", "GGUF_Q5_0"),
+                            ("GGUF: Q5_1", "GGUF_Q5_1"),
+                            ("GGUF: Q5_K", "GGUF_Q5_K"),
+                            ("GGUF: Q4_0", "GGUF_Q4_0"),
+                            ("GGUF: Q4_1", "GGUF_Q4_1"),
+                            ("GGUF: Q4_K", "GGUF_Q4_K"),
+                            ("GGUF: Q3_K", "GGUF_Q3_K"),
+                            ("GGUF: Q2_K", "GGUF_Q2_K"),
+                            ("GGUF: Q1_0", "GGUF_Q1_0"),
                         ],
                         label="Target formats",
                         value=["FP8"],
+                        info="Choose one or more target formats. GGUF options use native ggufy datatype names.",
+                        elem_id="q_format",
+                        elem_classes=["compact-checkboxgroup"],
                     )
 
                 # Right: options + run buttons

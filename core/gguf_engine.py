@@ -66,8 +66,16 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
     convert_arch = _UI_ARCH_TO_CONVERT_ARCH.get(model_type, "wan")
 
     q_map = {
-        "GGUF_Q8_0": "q8_0", "GGUF_Q6_K": "q6_k", "GGUF_Q5_K_M": "q5_k",
-        "GGUF_Q4_K_M": "q4_k", "GGUF_Q3_K": "q3_k", "GGUF_Q2_K": "q2_k"
+        "GGUF_F32": "f32",
+        "GGUF_BF16": "bf16",
+        "GGUF_F16": "f16",
+        "GGUF_Q8_0": "q8_0",
+        "GGUF_Q6_K": "q6_k",
+        "GGUF_Q5_K": "q5_k",
+        "GGUF_Q4_K": "q4_k",
+        "GGUF_Q3_K": "q3_k",
+        "GGUF_Q2_K": "q2_k",
+        "GGUF_Q1_0": "q1_0",
     }
 
     # 1. Sanitize and Normalize All Paths

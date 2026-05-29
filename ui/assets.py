@@ -230,6 +230,28 @@ CSS_STYLE = """
     margin-bottom: 8px !important;
 }
 
+/* Compact ggufy/safetensors target format selector */
+#q_format fieldset {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px !important;
+}
+
+#q_format label {
+    font-size: 0.78rem !important;
+    line-height: 1.2 !important;
+    padding: 5px 7px !important;
+}
+
+#q_format input[type="checkbox"] {
+    transform: scale(0.88);
+    margin-right: 5px !important;
+}
+
+#q_format .gradio-checkbox {
+    padding: 3px 5px !important;
+}
+
 /* Status banner */
 #status-banner {
     border-left: 3px solid #7dd3c0 !important;
