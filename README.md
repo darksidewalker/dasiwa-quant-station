@@ -62,11 +62,13 @@ UI changes (current):
 - The app operates on file paths inside the host's `models/` tree; you do not upload files through the UI.
 
 ### 🤝 Credits
+
 Quantization: 
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [silveroxides/convert_to_quant](https://github.com/silveroxides/convert_to_quant)
 - [City96](https://github.com/city96/ComfyUI-GGUF/tree/main/tools)
 - [ggufy](https://github.com/qskousen/ggufy)
+
 Utilities and UI:
 - Gradio (UI library) — UI components and patterns used in the app UI.
 - [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) for Blackwell/NVFP4 support.
