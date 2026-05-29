@@ -42,9 +42,10 @@ def create_ui():
             gr.Markdown("### Source", elem_classes=["section-heading"])
             models_dir_dd = gr.Dropdown(
                 label="Model Directory",
-                choices=[],
+                choices=[MODELS_DIR],
                 value=MODELS_DIR,
                 interactive=True,
+                allow_custom_value=True,
             )
             base_dd = gr.Dropdown(
                 label="Safetensors file",
@@ -138,7 +139,7 @@ def create_ui():
             with gr.Row():
                 # Left: strategy + optimizer
                 with gr.Column(scale=1):
-                    gr.Markdown("### Strategy", elem_classes=["section-heading"])
+                    gr.Markdown("### Strategy (Safetensors)", elem_classes=["section-heading"])
                     extra_flags = gr.Radio(
                         choices=[
                             "Ultra-Quality (Optimizer)",
@@ -170,21 +171,15 @@ def create_ui():
                             ("GGUF: BF16", "GGUF_BF16"),
                             ("GGUF: F16", "GGUF_F16"),
                             ("GGUF: Q8_0", "GGUF_Q8_0"),
-                            ("GGUF: Q8_1", "GGUF_Q8_1"),
-                            ("GGUF: Q8_K", "GGUF_Q8_K"),
                             ("GGUF: Q6_K", "GGUF_Q6_K"),
-                            ("GGUF: Q5_0", "GGUF_Q5_0"),
-                            ("GGUF: Q5_1", "GGUF_Q5_1"),
                             ("GGUF: Q5_K", "GGUF_Q5_K"),
-                            ("GGUF: Q4_0", "GGUF_Q4_0"),
-                            ("GGUF: Q4_1", "GGUF_Q4_1"),
                             ("GGUF: Q4_K", "GGUF_Q4_K"),
                             ("GGUF: Q3_K", "GGUF_Q3_K"),
                             ("GGUF: Q2_K", "GGUF_Q2_K"),
                             ("GGUF: Q1_0", "GGUF_Q1_0"),
                         ],
                         label="Target formats",
-                        value=["FP8"],
+                        value=[],
                         info="Choose one or more target formats. GGUF options use native ggufy datatype names.",
                         elem_id="q_format",
                         elem_classes=["compact-checkboxgroup"],
@@ -195,7 +190,7 @@ def create_ui():
                     gr.Markdown("### Options", elem_classes=["section-heading"])
                     auto_layer_config = gr.Checkbox(
                         label="Keep sensitive layers high-precision",
-                        value=True,
+                        value=False,
                         info="FP8 base: stays at FP16. NVFP4/INT8: bumped to FP8.",
                     )
                     low_vram = gr.Checkbox(

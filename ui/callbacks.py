@@ -67,6 +67,10 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
             yield f"❌ Error: Selected source file does not exist: {source_path}\n", "Error"
             return
 
+        if not formats:
+            yield "❌ Error: No target format selected. Pick at least one target format before starting.", "Error"
+            return
+
         log_acc = f"🚀 Initializing Pipeline for: {model_name}\n"
         log_acc += f"📦 Target Architecture: {m_type}\n"
         log_acc += "-"*40 + "\n"
