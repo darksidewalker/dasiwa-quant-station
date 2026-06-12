@@ -4,6 +4,8 @@ DaSiWa Quant Station is a local quantization workbench for video diffusion model
 
 It is built around the practical pain points of WAN 2.2 and LTX-2.3 style video checkpoints: preserving 5D/video-critical tensors, keeping full-checkpoint companion modules safe, injecting modelspec metadata, and avoiding INT8 paths that look valid but produce corrupted video.
 
+![Quant Station Preview](assets/DaSiWa-QuantStation.webp)
+
 ## Highlights
 
 - **Modern local UI:** Go server with HTML/CSS/JS frontend at `http://127.0.0.1:7878`.
