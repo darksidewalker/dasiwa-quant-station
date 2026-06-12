@@ -39,7 +39,7 @@ def _resolve_model_path(m_path):
 def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn, stop_btn, 
                    q_format, pipeline_status, extra_flags, terminal_box, 
                    metadata_input, inject_btn, read_btn, scan_btn,
-                   model_type, optimizer_choice, low_vram, auto_layer_config,
+                   model_type, optimizer_choice, low_vram,
                    audit_btn, reference_dd, compare_btn,
                    build_exact_btn, clear_exact_btn,
                    full_checkpoint):
@@ -55,7 +55,7 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
 
     # --- 2. THE MAIN CONVERSION LOGIC ---
     # This function is triggered by START BATCH. 
-    def start_process(m_path, file_name, model_name, formats, options, m_type, opt_choice, lv, auto_lc, is_full):
+    def start_process(m_path, file_name, model_name, formats, options, m_type, opt_choice, lv, is_full):
         if not file_name or not model_name:
             yield "❌ Error: Select a source file and enter a model name.", "Error"
             return
@@ -76,7 +76,7 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
         log_acc += "-"*40 + "\n"
         
         # Filter selected formats
-        safe_fmts = [f for f in formats if f in ["FP8", "INT8 Block-wise", "NVFP4"]]
+        safe_fmts = [f for f in formats if f in ["FP8", "INT8 Row-wise ConvRot", "NVFP4"]]
         gguf_fmts = [f for f in formats if f.startswith("GGUF_")]
 
         # Execute Safetensors Quantization
@@ -85,7 +85,6 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
                 m_path, source_path, safe_fmts, model_name, 
                 m_type, opt_choice, options, log_acc,
                 low_vram=lv,
-                auto_layer_config=auto_lc,
                 is_full_checkpoint=is_full
             ):
                 log_acc = log
@@ -113,8 +112,7 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
             model_type,        # 5
             optimizer_choice,  # 6
             low_vram,          # 7
-            auto_layer_config, # 8
-            full_checkpoint    # 9
+            full_checkpoint    # 8
         ],
         outputs=[terminal_box, pipeline_status]
     )
@@ -191,10 +189,10 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
         if not reference_name.endswith(".safetensors"):
             return "❌ Reference must be a .safetensors file."
 
-        eligible = [f for f in formats if f in ("FP8", "NVFP4", "INT8 Block-wise")]
+        eligible = [f for f in formats if f in ("FP8", "NVFP4", "INT8 Row-wise ConvRot")]
         if not eligible:
             return ("❌ No layer-config-eligible format selected. "
-                    "Tick FP8, NVFP4, or INT8 Block-wise in Target Formats first.")
+                    "Tick FP8, NVFP4, or INT8 Row-wise ConvRot in Target Formats first.")
 
         m_path = _resolve_model_path(m_path)
         m_path = os.path.expanduser(m_path)

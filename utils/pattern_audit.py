@@ -6,8 +6,8 @@ important but aren't covered by any pattern (e.g. when a new model variant
 renames a component the heuristic was calibrated against).
 
 Categorization per layer:
-  - SKIP      : matched by ALWAYS_SKIP_PATTERNS for this architecture
-  - KEEP_HIGH : matched by KEEP_HIGHER_PRECISION_PATTERNS
+  - PRESERVE  : matched by PRESERVE_PATTERNS for this architecture
+  - RESCUE    : matched by RESCUE_PATTERNS
   - DEFAULT   : neither matched (will get the base format)
   - SUSPICIOUS: DEFAULT but the layer name contains transformer-component
                 keywords AND is a 2D weight tensor. These are the layers
@@ -22,9 +22,9 @@ import re
 from collections import Counter, defaultdict
 
 from core.layer_config_builder import (
-    ALWAYS_SKIP_PATTERNS,
-    KEEP_HIGHER_PRECISION_PATTERNS,
     BAKED_VAE_PATTERNS,
+    PRESERVE_PATTERNS,
+    RESCUE_PATTERNS,
 )
 from utils.arch_detector import verify_architecture_match
 
@@ -37,7 +37,7 @@ from utils.arch_detector import verify_architecture_match
 # avoid substring false-positives like "to_v" matching inside the module
 # name "audio_to_video_attn".
 SUSPICIOUS_PATTERNS = [
-    # Value projection variants (sensitive - keep_higher targets these)
+    # Value projection variants (sensitive - rescue targets these)
     r"\.to_v$",              # diffusers attention naming
     r"\.v_proj$",            # HuggingFace transformers naming
     r"\.v$",                 # WAN-style naming
@@ -86,10 +86,10 @@ def _classify_layer(key, skip_pats, keep_pats, suspicious_rx, shape):
     match_key = key[:-len(".weight")] if key.endswith(".weight") else key
     for pat_str, rx in skip_pats:
         if rx.search(match_key):
-            return "SKIP", pat_str
+            return "PRESERVE", pat_str
     for pat_str, rx in keep_pats:
         if rx.search(match_key):
-            return "KEEP_HIGH", pat_str
+            return "RESCUE", pat_str
 
     # Structural check: 2D weights or any large tensor (like embeddings)
     # that look structural but aren't matched by skip/keep rules.
@@ -123,10 +123,10 @@ def audit_patterns(safetensors_path, model_type):
     if not os.path.exists(safetensors_path):
         return f"❌ Error: File not found at {safetensors_path}"
 
-    if model_type not in ALWAYS_SKIP_PATTERNS:
+    if model_type not in PRESERVE_PATTERNS:
         return (
             f"❌ Error: No patterns defined for architecture '{model_type}'. "
-            f"Known: {list(ALWAYS_SKIP_PATTERNS)}"
+            f"Known: {list(PRESERVE_PATTERNS)}"
         )
 
     # Verify the file actually matches the declared architecture.
@@ -146,9 +146,9 @@ def audit_patterns(safetensors_path, model_type):
     # which specific rule matched each layer.
     # Include BAKED_VAE_PATTERNS so VAE/vocoder layers (if baked in) show
     # as SKIP rather than SUSPICIOUS.
-    skip_pattern_strs = list(ALWAYS_SKIP_PATTERNS[model_type]) + list(BAKED_VAE_PATTERNS)
+    skip_pattern_strs = list(PRESERVE_PATTERNS[model_type]) + list(BAKED_VAE_PATTERNS)
     skip_pats = [(p, re.compile(p)) for p in skip_pattern_strs]
-    keep_pats = [(p, re.compile(p)) for p in KEEP_HIGHER_PRECISION_PATTERNS[model_type]]
+    keep_pats = [(p, re.compile(p)) for p in RESCUE_PATTERNS[model_type]]
     suspicious_rx = re.compile("|".join(SUSPICIOUS_PATTERNS))
 
     try:
@@ -170,9 +170,9 @@ def audit_patterns(safetensors_path, model_type):
             key, skip_pats, keep_pats, suspicious_rx, shape
         )
         categories[cat] += 1
-        if cat == "SKIP":
+        if cat == "PRESERVE":
             skip_pattern_hits[matched_pattern] += 1
-        elif cat == "KEEP_HIGH":
+        elif cat == "RESCUE":
             keep_pattern_hits[matched_pattern] += 1
         elif cat == "SUSPICIOUS":
             stem = _collapse_stem(key)
@@ -208,16 +208,16 @@ def audit_patterns(safetensors_path, model_type):
     # === SUMMARY ===
     out.append(f"Total layers in file: {total}")
     out.append("")
-    out.append(f"  SKIP (matched ALWAYS_SKIP)         : {categories['SKIP']:>5}")
-    out.append(f"  KEEP_HIGH (matched sensitive list) : {categories['KEEP_HIGH']:>5}")
+    out.append(f"  PRESERVE (source precision)       : {categories['PRESERVE']:>5}")
+    out.append(f"  RESCUE (FP8 on lower-bit bases)   : {categories['RESCUE']:>5}")
     out.append(f"  DEFAULT (intentionally at base fmt): {categories['DEFAULT']:>5}")
     if n_suspicious:
         out.append(f"  SUSPICIOUS (review needed)         : {n_suspicious:>5}")
     out.append("")
 
-    # === ALWAYS_SKIP COVERAGE ===
+    # === PRESERVE COVERAGE ===
     out.append("─" * 60)
-    out.append("ALWAYS_SKIP patterns (structural layers preserved at FP16):")
+    out.append("PRESERVE patterns (source precision on every base):")
     out.append("─" * 60)
     for pat_str, _ in skip_pats:
         hits = skip_pattern_hits.get(pat_str, 0)
@@ -228,11 +228,11 @@ def audit_patterns(safetensors_path, model_type):
         out.append(f"  Note: {unused_skip} pattern(s) matched 0 layers in this model.")
     out.append("")
 
-    # === KEEP_HIGHER COVERAGE ===
+    # === RESCUE COVERAGE ===
     out.append("─" * 60)
-    out.append("KEEP_HIGHER_PRECISION patterns (sensitive layers):")
-    out.append("  On FP8 base: these stay at FP16/BF16 (skip mode)")
-    out.append("  On NVFP4/INT8 base: bumped to FP8")
+    out.append("RESCUE patterns (sensitive under lower-bit bases):")
+    out.append("  On FP8 base: use the FP8 base format")
+    out.append("  On NVFP4/INT8 base: rescue to FP8")
     out.append("─" * 60)
     for pat_str, _ in keep_pats:
         hits = keep_pattern_hits.get(pat_str, 0)
@@ -258,7 +258,7 @@ def audit_patterns(safetensors_path, model_type):
         out.append("")
         out.append("How to add a pattern:")
         out.append("  1. Open core/layer_config_builder.py")
-        out.append("  2. Find ALWAYS_SKIP_PATTERNS or KEEP_HIGHER_PRECISION_PATTERNS")
+        out.append("  2. Find PRESERVE_PATTERNS or RESCUE_PATTERNS")
         out.append(f"  3. Find the '{model_type}' entry")
         out.append("  4. Add a regex that matches the layer stems above")
         out.append("     (without the trailing .weight suffix)")

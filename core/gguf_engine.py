@@ -3,7 +3,7 @@ import os, subprocess, sys, json, re, hashlib
 from core.metadata_manager import write_gguf_meta
 from config import ROOT_DIR
 from safetensors import safe_open
-from core.layer_config_builder import ALWAYS_SKIP_PATTERNS, KEEP_HIGHER_PRECISION_PATTERNS, BAKED_VAE_PATTERNS
+from core.layer_config_builder import BAKED_VAE_PATTERNS, PRESERVE_PATTERNS, RESCUE_PATTERNS
 from utils.file_ops import save_log
 
 GGUFY_BIN = os.path.realpath(os.path.join(ROOT_DIR, "bin", "ggufy"))
@@ -35,11 +35,8 @@ def _generate_ggufy_sensitivities(source_path, model_type, convert_arch, is_full
     sensitivities = {}
     
     # Combine patterns for this architecture
-    skip_list = list(ALWAYS_SKIP_PATTERNS.get(model_type, []))
-    keep_high = list(KEEP_HIGHER_PRECISION_PATTERNS.get(model_type, []))
-    
-    if is_full:
-        skip_list.extend(BAKED_VAE_PATTERNS)
+    preserve_list = list(PRESERVE_PATTERNS.get(model_type, [])) + list(BAKED_VAE_PATTERNS)
+    rescue_list = list(RESCUE_PATTERNS.get(model_type, []))
 
     with safe_open(source_path, framework="pt", device="cpu") as f:
         for key in f.keys():
@@ -47,12 +44,13 @@ def _generate_ggufy_sensitivities(source_path, model_type, convert_arch, is_full
             match_name = key[:-7] if key.endswith(".weight") else key
 
             # Critical layers (95+ score in ggufy) are always kept at source precision
-            if any(re.search(pat, match_name) for pat in skip_list):
+            if any(re.search(pat, match_name) for pat in preserve_list):
                 sensitivities[key] = 100
                 continue
             
-            # High precision layers (80-94 score) are preserved or bumped to Q8_0
-            if any(re.search(pat, match_name) for pat in keep_high):
+            # Rescue layers (70-95 in ggufy docs) are upgraded according to
+            # sensitivity-aware quantization instead of forced source precision.
+            if any(re.search(pat, match_name) for pat in rescue_list):
                 sensitivities[key] = 90
 
     sens_path = os.path.abspath(os.path.join(ROOT_DIR, f"ggufy_sens_{convert_arch}_{hashlib.md5(source_path.encode()).hexdigest()[:8]}.json"))

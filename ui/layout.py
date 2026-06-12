@@ -166,7 +166,7 @@ def create_ui():
                         choices=[
                             ("Safetensors: FP8", "FP8"),
                             ("Safetensors: NVFP4", "NVFP4"),
-                            ("Safetensors: INT8 Block-wise", "INT8 Block-wise"),
+                            ("Safetensors: INT8 Row-wise ConvRot", "INT8 Row-wise ConvRot"),
                             ("GGUF: F32", "GGUF_F32"),
                             ("GGUF: BF16", "GGUF_BF16"),
                             ("GGUF: F16", "GGUF_F16"),
@@ -188,11 +188,6 @@ def create_ui():
                 # Right: options + run buttons
                 with gr.Column(scale=1):
                     gr.Markdown("### Options", elem_classes=["section-heading"])
-                    auto_layer_config = gr.Checkbox(
-                        label="Keep curated sensitive layers high-precision",
-                        value=False,
-                        info="FP8 base: stays at FP16. NVFP4/INT8: bumped to FP8.",
-                    )
                     low_vram = gr.Checkbox(
                         label="Low VRAM mode",
                         value=False,
@@ -348,7 +343,7 @@ def create_ui():
             q_format, pipeline_status, extra_flags, terminal_box,
             metadata_input, inject_btn, read_btn,
             scan_btn, model_type, optimizer_choice,
-            low_vram, auto_layer_config, audit_btn,
+            low_vram, audit_btn,
             reference_dd, compare_btn,
             build_exact_btn, clear_exact_btn,
             full_checkpoint,

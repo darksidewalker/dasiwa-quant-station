@@ -11,19 +11,25 @@ FILTERS_DIR = os.path.join(ROOT_DIR, "filters")
 
 def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type,
                         optimizer_choice, options, log_acc, low_vram=False, actcal=False,
-                        auto_layer_config=True, is_full_checkpoint=False):
+                        is_full_checkpoint=False):
 
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
         "FP8": ["--comfy_quant"],
-        "INT8 Block-wise": ["--int8", "--scaling_mode", "block", "--block_size", "64", "--comfy_quant"],
+        "INT8 Row-wise ConvRot": [
+            "--int8",
+            "--scaling_mode", "row",
+            "--convrot",
+            "--convrot-group-size", "256",
+            "--comfy_quant",
+        ],
         "NVFP4": ["--nvfp4", "--comfy_quant"],
     }
 
-    # Base formats where the auto layer config is meaningful.
-    # FP8 base: keeps sensitive layers at FP16/BF16 via skip:true
-    # NVFP4 / INT8 base: bumps sensitive layers to FP8
-    LAYER_CONFIG_ELIGIBLE = {"FP8", "NVFP4", "INT8 Block-wise"}
+    # Base formats where the automatic layer config is meaningful.
+    # Preserve patterns always stay at source precision; rescue patterns use
+    # the FP8 base as-is and are bumped to FP8 for NVFP4 / INT8.
+    LAYER_CONFIG_ELIGIBLE = {"FP8", "NVFP4", "INT8 Row-wise ConvRot"}
 
     # Architecture registry. Single source of truth for:
     #   - the CLI flag passed to convert_to_quant
@@ -151,19 +157,11 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                         )
                         break
 
-        if layer_config_enabled and not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and auto_layer_config:
+        if layer_config_enabled and not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE:
             layer_config_path, build_log = write_layer_config(
                 model_type, fmt, out_dir=FILTERS_DIR
             )
             layer_config_log.extend(build_log)
-        elif layer_config_enabled and not is_exact_config and fmt in LAYER_CONFIG_ELIGIBLE and not auto_layer_config:
-            # Manual config: shared per-architecture file (no per-model files
-            # needed since regex patterns work for any model of that arch).
-            arch_slug = model_type.replace(" ", "").replace(".", "").replace("-", "").lower()
-            manual_cfg = os.path.join(FILTERS_DIR, f"{arch_slug}_layer_config.json")
-            if os.path.exists(manual_cfg):
-                layer_config_path = manual_cfg
-                layer_config_log.append(f"[layer-config] Using manual config: {os.path.basename(manual_cfg)}")
         elif not layer_config_enabled and fmt in LAYER_CONFIG_ELIGIBLE:
             layer_config_log.append(
                 "[layer-config] Skipped: architecture is 'Not set'. "
@@ -198,9 +196,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         if layer_config_path:
             cmd.extend(["--layer-config", layer_config_path])
             yield log_acc, "Building layer config..."
-        elif (fmt in LAYER_CONFIG_ELIGIBLE
-              and auto_layer_config
-              and model_type != "Not set"):
+        elif fmt in LAYER_CONFIG_ELIGIBLE and model_type != "Not set":
             # No layer config attached. Could be either:
             #   - arch has no patterns registered (expected for unverified
             #     archs - convert_to_quant's preset handles skips), or

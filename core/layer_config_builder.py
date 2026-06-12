@@ -21,15 +21,14 @@ Why in-memory and not on-disk:
 Design:
   Two pattern groups per architecture:
 
-  ALWAYS_SKIP_PATTERNS:
-    Layers we never want quantized regardless of base format. These mirror
-    what --wan / --ltxv2 already skip via the arch preset. Listed here as
-    defense-in-depth: even if the preset's interaction with --layer-config
-    changes in a future convert_to_quant version, these layers stay safe.
+  PRESERVE_PATTERNS:
+    Structural / routing / IO layers we never want quantized regardless of
+    base format. These stay at source precision via {"skip": true}.
 
-  KEEP_HIGHER_PRECISION_PATTERNS:
-    Sensitive layers (to_v, ffn_down, connectors). Behavior depends on base:
-      - Base = float8_e4m3fn (FP8): mark as {"skip": true} -> stay at FP16
+  RESCUE_PATTERNS:
+    Layers that are sensitive under lower-bit formats but do not need to be
+    BF16/FP16 when the base format is already FP8.
+      - Base = float8_e4m3fn (FP8): no override, use the FP8 base
       - Base = nvfp4 / int8_*  : mark as {"format":"float8_e4m3fn"} -> bump to FP8
 """
 import os
@@ -40,7 +39,7 @@ import tempfile
 # Map UI format choice -> _default format string in the layer config
 BASE_FORMAT_FOR_CONFIG = {
     "FP8": "float8_e4m3fn",
-    "INT8 Block-wise": "int8_blockwise",
+    "INT8 Row-wise ConvRot": "int8_tensorwise",
     "NVFP4": "nvfp4",
 }
 
@@ -65,9 +64,10 @@ BAKED_VAE_PATTERNS = [
 
 
 # Layers that should never be quantized for a given architecture.
-# Mirrors --wan / --ltxv2 preset skips. Source: TEST FP8 Simple log
-# ("ltxv2 skip" lines) for LTX-2.3; lcpp.patch quantize-skip rules for both.
-ALWAYS_SKIP_PATTERNS = {
+# These are structural/routing/IO tensors where quantization damage tends to
+# cause hard failures or obvious output corruption rather than graceful quality
+# loss. They are skipped for FP8, NVFP4, INT8, and GGUF sensitivity maps.
+PRESERVE_PATTERNS = {
     "LTX-2.3": [
         # All adaln_single variants (timestep modulation tables).
         # Catches: adaln_single, audio_adaln_single, audio_prompt_adaln_single,
@@ -93,34 +93,6 @@ ALWAYS_SKIP_PATTERNS = {
         # LTX23 config). 1D tensors so already auto-skipped by --ltxv2,
         # but the pattern makes audit/comparison reports accurate.
         r"\.[qk]_norm$",
-        # Author preserves first 2 and last 2 blocks for these sensitive projections.
-        # Using (0|1|4[67]) specifically targets the author's preservation logic.
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_k$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_out\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_q$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn1\.to_v$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_k$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_out\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_q$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.attn2\.to_v$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_k$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_out\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_q$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn1\.to_v$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_k$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_out\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_q$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_attn2\.to_v$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.(audio_)?ff\.net\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.(audio_)?ff\.net\.\d+\.proj$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_k$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_out\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_q$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.audio_to_video_attn\.to_v$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_k$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_out\.\d+$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_q$",
-        r"(^|\.)transformer_blocks\.(0|1|4[67])\.video_to_audio_attn\.to_v$",
     ],
     "WAN 2.2": [
     # Patterns use (^|\.) to match both naked keys and keys still carrying
@@ -137,22 +109,22 @@ ALWAYS_SKIP_PATTERNS = {
 }
 
 
-# Sensitive layers: kept at higher precision than the base format.
-# Same heuristic as before (City96 keys_hiprec + lcpp.patch bump rules).
-# Patterns verified against real WAN and LTX-2.3 templates.
-KEEP_HIGHER_PRECISION_PATTERNS = {
+# Sensitive layers: use FP8 when the base format is lower than FP8.
+# On FP8 base these are intentionally left at the base format, not kept
+# BF16/FP16; official LTX-2 FP8 cast policy quantizes these transformer
+# linears rather than preserving them wholesale.
+RESCUE_PATTERNS = {
     "LTX-2.3": [
-        # to_v across every attention variant (excluding connector blocks
-        # which are already covered by ALWAYS_SKIP). Negative lookahead
-        # prevents double-matching the same layer with two different rules.
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_v$",
-        # FFN down projection (ff.net.2 and audio_ff.net.2), excluding
-        # connector layers for the same reason.
+        # Official LTX-2 FP8 cast targets these transformer linears. For
+        # lower-bit bases, rescue them to FP8 instead of BF16.
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_[qkv]$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_out\.\d+$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.0(\.proj)?$",
         r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.2$",
     ],
     "WAN 2.2": [
         # WAN uses split q/k/v/o (never fused). to_v in self + cross attn.
-        # WAN's ALWAYS_SKIP doesn't overlap with these patterns.
+        # WAN's preserve table doesn't overlap with these patterns.
         r"\.self_attn\.v$",
         r"\.cross_attn\.v$",
         # FFN second linear (down projection)
@@ -160,14 +132,13 @@ KEEP_HIGHER_PRECISION_PATTERNS = {
     ],
 }
 
-
 def build_layer_config_dict(model_type, base_format_ui_label):
     """
     Build the layer config as a Python dict.
 
     Args:
         model_type: UI architecture label, e.g. "WAN 2.2" or "LTX-2.3"
-        base_format_ui_label: UI format label, e.g. "FP8", "NVFP4", "INT8 Block-wise"
+        base_format_ui_label: UI format label, e.g. "FP8", "NVFP4", "INT8 Row-wise ConvRot"
 
     Returns:
         (config_dict, summary_dict) where summary contains pattern counts
@@ -183,48 +154,48 @@ def build_layer_config_dict(model_type, base_format_ui_label):
             f"Valid: {list(BASE_FORMAT_FOR_CONFIG)}"
         )
 
-    skip_patterns = ALWAYS_SKIP_PATTERNS.get(model_type)
-    keep_patterns = KEEP_HIGHER_PRECISION_PATTERNS.get(model_type)
-    if skip_patterns is None or keep_patterns is None:
+    preserve_patterns = PRESERVE_PATTERNS.get(model_type)
+    rescue_patterns = RESCUE_PATTERNS.get(model_type)
+    if preserve_patterns is None or rescue_patterns is None:
         raise ValueError(
             f"No patterns defined for architecture '{model_type}'. "
-            f"Valid: {list(ALWAYS_SKIP_PATTERNS)}"
+            f"Valid: {list(PRESERVE_PATTERNS)}"
         )
 
     # Merge baked-VAE patterns into the skip list. These apply regardless
     # of architecture - any VAE/vocoder/text_projection layers present in
     # the source must stay at source precision. Harmless if not present
     # in the source (zero matches, zero cost).
-    skip_patterns = list(skip_patterns) + list(BAKED_VAE_PATTERNS)
+    preserve_patterns = list(preserve_patterns) + list(BAKED_VAE_PATTERNS)
 
     config = {
         "_default": {"format": base_fmt},
         "_exclusions": [],
     }
 
-    # Sensitive-layer behavior depends on base format
+    # Rescue-layer behavior depends on base format.
     if base_fmt == "float8_e4m3fn":
-        # FP8 base: nothing higher to bump to within the format enum.
-        # Keep sensitive layers at source precision (FP16/BF16) via skip.
-        for pat in keep_patterns:
-            config[pat] = {"skip": True}
-        keep_action = "skip (stay at source FP16/BF16)"
+        rescue_action = "base FP8 (no extra override)"
     else:
-        # Lower-bit base (nvfp4, int8_*): bump sensitive layers to FP8.
-        for pat in keep_patterns:
-            config[pat] = {"format": "float8_e4m3fn"}
-        keep_action = "bump to float8_e4m3fn"
+        # Lower-bit base (nvfp4, int8_*): rescue sensitive layers to FP8.
+        for pat in rescue_patterns:
+            config[pat] = {"format": "float8_e4m3fn", "scaling_mode": "tensor"}
+        rescue_action = "rescue to float8_e4m3fn"
 
-    # Always-skip patterns get {"skip": true}. Added LAST so they override
-    # keep_higher patterns in lower-bit modes (BF16 skip > FP8 bump).
-    for pat in skip_patterns:
+    # Preserve patterns get {"skip": true}. Added LAST so they override
+    # rescue patterns in lower-bit modes (BF16 skip > FP8 rescue).
+    for pat in preserve_patterns:
         config[pat] = {"skip": True}
 
     summary = {
         "base_format": base_fmt,
-        "always_skip_count": len(skip_patterns),
-        "keep_higher_count": len(keep_patterns),
-        "keep_action": keep_action,
+        "preserve_count": len(preserve_patterns),
+        "rescue_count": len(rescue_patterns),
+        "rescue_action": rescue_action,
+        # Compatibility keys for existing log formatting.
+        "always_skip_count": len(preserve_patterns),
+        "keep_higher_count": len(rescue_patterns),
+        "keep_action": rescue_action,
     }
     return config, summary
 
@@ -267,8 +238,9 @@ def write_layer_config(model_type, base_format_ui_label, out_dir=None):
 
     log.append(
         f"[layer-config] {model_type} | base={summary['base_format']} | "
-        f"skip patterns={summary['always_skip_count']} | "
-        f"sensitive layer action: {summary['keep_action']}"
+        f"preserve patterns={summary['preserve_count']} | "
+        f"rescue patterns={summary['rescue_count']} | "
+        f"rescue action: {summary['rescue_action']}"
     )
     log.append(f"[layer-config] Written: {os.path.basename(config_path)}")
     return config_path, log

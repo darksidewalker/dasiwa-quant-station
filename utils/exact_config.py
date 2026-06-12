@@ -30,7 +30,7 @@ HIGH_PRECISION_DTYPES = {"F16", "BF16", "F32", "F64"}
 # convert_to_quant's layer config loader accepts).
 BASE_FORMAT_FOR_CONFIG = {
     "FP8": "float8_e4m3fn",
-    "INT8 Block-wise": "int8_blockwise",
+    "INT8 Row-wise ConvRot": "int8_tensorwise",
     "NVFP4": "nvfp4",
 }
 
@@ -54,7 +54,7 @@ def build_exact_config(reference_fp8_path, base_format_ui_label,
 
     Args:
         reference_fp8_path: path to the author's reference FP8 safetensors
-        base_format_ui_label: "FP8", "NVFP4", or "INT8 Block-wise"
+        base_format_ui_label: "FP8", "NVFP4", or "INT8 Row-wise ConvRot"
         source_keys: optional set of layer names from the source file.
             When provided, the config only includes entries for layers
             present in the source. Without this, the config tries to set
@@ -86,6 +86,8 @@ def build_exact_config(reference_fp8_path, base_format_ui_label,
     # builder behaves). Scales, biases, etc. are 1D and auto-handled.
     # NOTE: We include large non-suffix tensors like embeddings/modulations
     # which are structural and often several gigabytes.
+    from safetensors import safe_open
+
     weight_tensors = {}
     with safe_open(reference_fp8_path, framework="pt", device="cpu") as f:
         for k in f.keys():
@@ -119,7 +121,10 @@ def build_exact_config(reference_fp8_path, base_format_ui_label,
         if base_fmt == "float8_e4m3fn":
             config[key_no_weight] = {"skip": True}
         else:
-            config[key_no_weight] = {"format": "float8_e4m3fn"}
+            config[key_no_weight] = {
+                "format": "float8_e4m3fn",
+                "scaling_mode": "tensor",
+            }
 
     summary = {
         "base_format": base_fmt,

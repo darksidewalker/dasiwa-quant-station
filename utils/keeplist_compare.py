@@ -23,9 +23,9 @@ import re
 from collections import defaultdict, Counter
 
 from core.layer_config_builder import (
-    ALWAYS_SKIP_PATTERNS,
-    KEEP_HIGHER_PRECISION_PATTERNS,
     BAKED_VAE_PATTERNS,
+    PRESERVE_PATTERNS,
+    RESCUE_PATTERNS,
 )
 
 
@@ -57,15 +57,13 @@ def _is_quantizable_weight(name, shape_or_none):
     return name.endswith(".weight") or any(k in name for k in structural_keywords)
 
 
-def _our_classification(layer_key, skip_rxs, keep_rxs):
-    """Apply our patterns to a layer key. Returns 'preserve' or 'quantize'.
+def _our_classification(layer_key, preserve_rxs):
+    """Apply our FP8 preserve patterns. Returns 'preserve' or 'quantize'.
     
     Mirrors convert_to_quant: matches against name without .weight suffix.
     """
     match_key = layer_key[:-len(".weight")] if layer_key.endswith(".weight") else layer_key
-    if any(rx.search(match_key) for rx in skip_rxs):
-        return "preserve"
-    if any(rx.search(match_key) for rx in keep_rxs):
+    if any(rx.search(match_key) for rx in preserve_rxs):
         return "preserve"
     return "quantize"
 
@@ -93,15 +91,15 @@ def compare_to_reference(reference_fp8_path, model_type):
     if not os.path.exists(reference_fp8_path):
         return f"❌ Reference file not found: {reference_fp8_path}"
 
-    if model_type not in ALWAYS_SKIP_PATTERNS:
+    if model_type not in PRESERVE_PATTERNS:
         return (
             f"❌ No patterns defined for '{model_type}'. "
-            f"Known: {list(ALWAYS_SKIP_PATTERNS)}"
+            f"Known: {list(PRESERVE_PATTERNS)}"
         )
 
-    skip_pattern_strs = list(ALWAYS_SKIP_PATTERNS[model_type]) + list(BAKED_VAE_PATTERNS)
-    skip_rxs = [re.compile(p) for p in skip_pattern_strs]
-    keep_rxs = [re.compile(p) for p in KEEP_HIGHER_PRECISION_PATTERNS[model_type]]
+    preserve_pattern_strs = list(PRESERVE_PATTERNS[model_type]) + list(BAKED_VAE_PATTERNS)
+    preserve_rxs = [re.compile(p) for p in preserve_pattern_strs]
+    rescue_rxs = [re.compile(p) for p in RESCUE_PATTERNS[model_type]]
 
     try:
         ref_dtypes = _read_dtype_map(reference_fp8_path)
@@ -112,7 +110,7 @@ def compare_to_reference(reference_fp8_path, model_type):
     # This ensures we catch large embeddings/modulations that don't end in .weight.
     weight_tensors = {
         k: v for k, v in ref_dtypes.items() 
-        if k.endswith(".weight") or any(rx.search(k) for rx in skip_rxs + keep_rxs)
+        if k.endswith(".weight") or any(rx.search(k) for rx in preserve_rxs + rescue_rxs)
     }
     if not weight_tensors:
         return f"❌ No .weight tensors found in {os.path.basename(reference_fp8_path)}"
@@ -123,7 +121,7 @@ def compare_to_reference(reference_fp8_path, model_type):
     disagreement_we = []
     
     for name, dtype in weight_tensors.items():
-        ours = _our_classification(name, skip_rxs, keep_rxs)
+        ours = _our_classification(name, preserve_rxs)
         theirs = _author_classification(dtype)
         
         if ours == "preserve" and theirs == "preserve":
@@ -220,7 +218,7 @@ def compare_to_reference(reference_fp8_path, model_type):
         out.append("📋 SUGGESTED PATTERNS")
         out.append("=" * 60)
         out.append("Copy these regex patterns into core/layer_config_builder.py")
-        out.append(f"under ALWAYS_SKIP_PATTERNS['{model_type}'] to match the")
+        out.append(f"under PRESERVE_PATTERNS['{model_type}'] to match the")
         out.append("author's preservation decisions:")
         out.append("")
         # Build patterns from stems, dedup
