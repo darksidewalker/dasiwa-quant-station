@@ -132,7 +132,7 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
         log_acc += "-"*40 + "\n"
         
         # Filter selected formats
-        safe_fmts = [f for f in formats if f in ["FP8", "INT8 Row-wise ConvRot", "NVFP4"]]
+        safe_fmts = [f for f in formats if f in ["FP8", "INT8 Tensor-wise", "INT8 Row-wise ConvRot", "NVFP4"]]
         gguf_fmts = [f for f in formats if f.startswith("GGUF_")]
 
         # Execute Safetensors Quantization
@@ -245,10 +245,10 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
         if not reference_name.endswith(".safetensors"):
             return "❌ Reference must be a .safetensors file."
 
-        eligible = [f for f in formats if f in ("FP8", "NVFP4", "INT8 Row-wise ConvRot")]
+        eligible = [f for f in formats if f in ("FP8", "NVFP4", "INT8 Tensor-wise", "INT8 Row-wise ConvRot")]
         if not eligible:
             return ("❌ No layer-config-eligible format selected. "
-                    "Tick FP8, NVFP4, or INT8 Row-wise ConvRot in Target Formats first.")
+                    "Tick FP8, NVFP4, or INT8 Tensor-wise in Target Formats first.")
 
         m_path = _resolve_model_path(m_path)
         m_path = os.path.expanduser(m_path)

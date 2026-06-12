@@ -39,6 +39,9 @@ import tempfile
 # Map UI format choice -> _default format string in the layer config
 BASE_FORMAT_FOR_CONFIG = {
     "FP8": "float8_e4m3fn",
+    "INT8 Tensor-wise": "int8_tensorwise",
+    # Backward-compatible alias for configs/runs created before ConvRot was
+    # removed from the default INT8 path.
     "INT8 Row-wise ConvRot": "int8_tensorwise",
     "NVFP4": "nvfp4",
 }
@@ -153,7 +156,7 @@ def build_layer_config_dict(model_type, base_format_ui_label):
 
     Args:
         model_type: UI architecture label, e.g. "WAN 2.2" or "LTX-2.3"
-        base_format_ui_label: UI format label, e.g. "FP8", "NVFP4", "INT8 Row-wise ConvRot"
+        base_format_ui_label: UI format label, e.g. "FP8", "NVFP4", "INT8 Tensor-wise"
 
     Returns:
         (config_dict, summary_dict) where summary contains pattern counts

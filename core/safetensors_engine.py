@@ -16,11 +16,16 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
         "FP8": ["--comfy_quant"],
+        "INT8 Tensor-wise": [
+            "--int8",
+            "--scaling_mode", "tensor",
+            "--comfy_quant",
+        ],
+        # Backward-compatible alias for stale UI/session values. This now
+        # intentionally maps to the safe non-ConvRot path.
         "INT8 Row-wise ConvRot": [
             "--int8",
-            "--scaling_mode", "row",
-            "--convrot",
-            "--convrot-group-size", "256",
+            "--scaling_mode", "tensor",
             "--comfy_quant",
         ],
         "NVFP4": ["--nvfp4", "--comfy_quant"],
@@ -29,7 +34,12 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     # Base formats where the automatic layer config is meaningful.
     # Preserve patterns always stay at source precision; rescue patterns use
     # the FP8 base as-is and are bumped to FP8 for NVFP4 / INT8.
-    LAYER_CONFIG_ELIGIBLE = {"FP8", "NVFP4", "INT8 Row-wise ConvRot"}
+    LAYER_CONFIG_ELIGIBLE = {
+        "FP8",
+        "NVFP4",
+        "INT8 Tensor-wise",
+        "INT8 Row-wise ConvRot",
+    }
 
     # Architecture registry. Single source of truth for:
     #   - the CLI flag passed to convert_to_quant

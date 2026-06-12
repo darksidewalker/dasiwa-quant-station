@@ -161,7 +161,7 @@ def create_ui():
                         choices=[
                             ("Safetensors: FP8", "FP8"),
                             ("Safetensors: NVFP4", "NVFP4"),
-                            ("Safetensors: INT8 Row-wise ConvRot", "INT8 Row-wise ConvRot"),
+                            ("Safetensors: INT8 Tensor-wise", "INT8 Tensor-wise"),
                             ("GGUF: F32", "GGUF_F32"),
                             ("GGUF: BF16", "GGUF_BF16"),
                             ("GGUF: F16", "GGUF_F16"),

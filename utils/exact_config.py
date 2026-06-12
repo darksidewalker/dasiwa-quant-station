@@ -30,6 +30,9 @@ HIGH_PRECISION_DTYPES = {"F16", "BF16", "F32", "F64"}
 # convert_to_quant's layer config loader accepts).
 BASE_FORMAT_FOR_CONFIG = {
     "FP8": "float8_e4m3fn",
+    "INT8 Tensor-wise": "int8_tensorwise",
+    # Backward-compatible alias for configs/runs created before ConvRot was
+    # removed from the default INT8 path.
     "INT8 Row-wise ConvRot": "int8_tensorwise",
     "NVFP4": "nvfp4",
 }
@@ -54,7 +57,7 @@ def build_exact_config(reference_fp8_path, base_format_ui_label,
 
     Args:
         reference_fp8_path: path to the author's reference FP8 safetensors
-        base_format_ui_label: "FP8", "NVFP4", or "INT8 Row-wise ConvRot"
+        base_format_ui_label: "FP8", "NVFP4", or "INT8 Tensor-wise"
         source_keys: optional set of layer names from the source file.
             When provided, the config only includes entries for layers
             present in the source. Without this, the config tries to set
