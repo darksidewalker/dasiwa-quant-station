@@ -33,7 +33,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
 
     # Architecture registry. Single source of truth for:
     #   - the CLI flag passed to convert_to_quant
-    #   - the Ultra-Quality optimizer params for that arch
+    #   - the optimizer-driven learned-rounding params for that arch
     # An entry with flag=None means "Not set": no preset is applied,
     # convert_to_quant runs with its own defaults. In that mode we also
     # bypass layer-config building and architecture verification, since
@@ -42,53 +42,45 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     # Flag list verified against convert_to_quant --help output
     # (silveroxides/convert_to_quant, May 2026).
     #
-    # Ultra params: WAN and LTX-2.3 are hand-tuned. Other archs have no
-    # measured params yet, so they default to the WAN-style block
-    # (plateau schedule, broad calibration). User can override per-run
-    # via the UI in a future change.
-    _ULTRA_DEFAULT = [
-        "--num_iter", "9000",
-        "--calib_samples", "10000",
-        "--lr", "9e-3",
-        "--lr_schedule", "plateau",
-        "--early-stop-stall", "20000",
-    ]
-    _ULTRA_LTX = [
-        "--num_iter", "9000",
-        "--calib_samples", "4096",
+    # Optimizer params track current convert_to_quant defaults explicitly:
+    # Prodigy, 4000 iters, 3072 calibration samples, LR 1.0, plateau
+    # schedule, and stall 2000. Keeping them explicit makes command logs
+    # reproducible while avoiding stale local quality tuning.
+    _OPTIMIZER_DEFAULT = [
+        "--num_iter", "4000",
+        "--calib_samples", "3072",
         "--lr", "1.0",
-        "--lr_schedule", "adaptive",
-        "--lr_adaptive_mode", "simple-reset",
+        "--lr_schedule", "plateau",
         "--early-stop-stall", "2000",
     ]
 
     ARCH_REGISTRY = {
-        "Not set":           {"flag": None,                  "ultra": _ULTRA_DEFAULT},
+        "Not set":           {"flag": None,                  "optimizer": _OPTIMIZER_DEFAULT},
         # Verified-pattern archs (have entries in layer_config_builder,
         # arch_detector, and assets.MODEL_METADATA_CONFIGS).
-        "WAN 2.2":           {"flag": "--wan",               "ultra": _ULTRA_DEFAULT},
-        "LTX-2.3":           {"flag": "--ltxv2",             "ultra": _ULTRA_LTX},
+        "WAN 2.2":           {"flag": "--wan",               "optimizer": _OPTIMIZER_DEFAULT},
+        "LTX-2.3":           {"flag": "--ltxv2",             "optimizer": _OPTIMIZER_DEFAULT},
         # Other convert_to_quant presets. No verified layer-name patterns
         # in this project yet, so layer-config is skipped and we rely on
         # the convert_to_quant preset's own skip rules.
-        "Flux.2":            {"flag": "--flux2",             "ultra": _ULTRA_DEFAULT},
-        "Hunyuan Video":     {"flag": "--hunyuan",           "ultra": _ULTRA_DEFAULT},
-        "Qwen Image":        {"flag": "--qwen",              "ultra": _ULTRA_DEFAULT},
-        "Z-Image":           {"flag": "--zimage",            "ultra": _ULTRA_DEFAULT},
-        "Z-Image Refiner":   {"flag": "--zimage_refiner",    "ultra": _ULTRA_DEFAULT},
-        "Anima":             {"flag": "--anima",             "ultra": _ULTRA_DEFAULT},
-        "Radiance":          {"flag": "--radiance",          "ultra": _ULTRA_DEFAULT},
-        "Distillation Large":{"flag": "--distillation_large","ultra": _ULTRA_DEFAULT},
-        "Distillation Small":{"flag": "--distillation_small","ultra": _ULTRA_DEFAULT},
-        "NeRF Large":        {"flag": "--nerf_large",        "ultra": _ULTRA_DEFAULT},
-        "NeRF Small":        {"flag": "--nerf_small",        "ultra": _ULTRA_DEFAULT},
+        "Flux.2":            {"flag": "--flux2",             "optimizer": _OPTIMIZER_DEFAULT},
+        "Hunyuan Video":     {"flag": "--hunyuan",           "optimizer": _OPTIMIZER_DEFAULT},
+        "Qwen Image":        {"flag": "--qwen",              "optimizer": _OPTIMIZER_DEFAULT},
+        "Z-Image":           {"flag": "--zimage",            "optimizer": _OPTIMIZER_DEFAULT},
+        "Z-Image Refiner":   {"flag": "--zimage_refiner",    "optimizer": _OPTIMIZER_DEFAULT},
+        "Anima":             {"flag": "--anima",             "optimizer": _OPTIMIZER_DEFAULT},
+        "Radiance":          {"flag": "--radiance",          "optimizer": _OPTIMIZER_DEFAULT},
+        "Distillation Large":{"flag": "--distillation_large","optimizer": _OPTIMIZER_DEFAULT},
+        "Distillation Small":{"flag": "--distillation_small","optimizer": _OPTIMIZER_DEFAULT},
+        "NeRF Large":        {"flag": "--nerf_large",        "optimizer": _OPTIMIZER_DEFAULT},
+        "NeRF Small":        {"flag": "--nerf_small",        "optimizer": _OPTIMIZER_DEFAULT},
         # Text-encoder / non-diffusion presets. Kept available for power
         # users who want to quantize companion models.
-        "T5-XXL":            {"flag": "--t5xxl",             "ultra": _ULTRA_DEFAULT},
-        "Qwen 3.5":          {"flag": "--qwen35",            "ultra": _ULTRA_DEFAULT},
-        "Mistral":           {"flag": "--mistral",           "ultra": _ULTRA_DEFAULT},
-        "Visual":            {"flag": "--visual",            "ultra": _ULTRA_DEFAULT},
-        "Generic Text":      {"flag": "--generic_text",      "ultra": _ULTRA_DEFAULT},
+        "T5-XXL":            {"flag": "--t5xxl",             "optimizer": _OPTIMIZER_DEFAULT},
+        "Qwen 3.5":          {"flag": "--qwen35",            "optimizer": _OPTIMIZER_DEFAULT},
+        "Mistral":           {"flag": "--mistral",           "optimizer": _OPTIMIZER_DEFAULT},
+        "Visual":            {"flag": "--visual",            "optimizer": _OPTIMIZER_DEFAULT},
+        "Generic Text":      {"flag": "--generic_text",      "optimizer": _OPTIMIZER_DEFAULT},
     }
 
     # Backwards-compat views derived from the registry. Other code in the
@@ -222,10 +214,8 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # --- 4. STRATEGY FLAGS (independent of architecture) ---
         if options == "Simple":
             cmd.append("--simple")
-        elif options == "Auto-Quality (Heur)":
-            cmd.append("--heur")
-        elif options == "Ultra-Quality (Optimizer)":
-            opt_params = arch_entry["ultra"]
+        elif options == "Optimizer-driven":
+            opt_params = arch_entry["optimizer"]
             cmd.extend(["--optimizer", optimizer_choice])
             cmd.extend(opt_params)
         else:
@@ -261,14 +251,12 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             elif cmd.count(arch_flag) != 1:
                 guard_errors.append(f"{arch_flag} appears {cmd.count(arch_flag)} times (expected 1)")
 
-        strategy_flags = ["--simple", "--heur", "--optimizer"]
+        strategy_flags = ["--simple", "--optimizer"]
         present_strategy = [f for f in strategy_flags if f in cmd]
         if len(present_strategy) == 0:
-            guard_errors.append("missing strategy flag (--simple/--heur/--optimizer)")
-        if "--simple" in cmd and "--heur" in cmd:
-            guard_errors.append("--simple and --heur both present")
-        if "--optimizer" in cmd and ("--simple" in cmd or "--heur" in cmd):
-            guard_errors.append("--optimizer combined with --simple/--heur")
+            guard_errors.append("missing strategy flag (--simple/--optimizer)")
+        if "--optimizer" in cmd and "--simple" in cmd:
+            guard_errors.append("--optimizer combined with --simple")
 
         if guard_errors:
             log_acc += f"❌ FATAL command guard for {fmt}:\n"

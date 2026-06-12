@@ -142,21 +142,16 @@ def create_ui():
                     gr.Markdown("### Strategy (Safetensors)", elem_classes=["section-heading"])
                     extra_flags = gr.Radio(
                         choices=[
-                            "Ultra-Quality (Optimizer)",
-                            "Auto-Quality (Heur)",
+                            "Optimizer-driven",
                             "Simple",
                         ],
                         label="Quantization strategy",
-                        value="Ultra-Quality (Optimizer)",
+                        value="Optimizer-driven",
                     )
-                    optimizer_choice = gr.Dropdown(
-                        choices=["prodigy", "adamw", "radam", "original"],
-                        value="prodigy",
-                        label="Optimizer (Ultra only)",
-                    )
+                    optimizer_choice = gr.State("prodigy")
                     tweak_hint = gr.Markdown(
                         "<span style='color:#8b949e; font-size:0.85em;'>"
-                        "Manual optimizer active (9000 iters)</span>"
+                        "Learned rounding active (Prodigy, upstream defaults)</span>"
                     )
 
                 # Middle: target formats
@@ -312,23 +307,17 @@ def create_ui():
         # REACTIVE LOGIC
         # =========================================================
         def on_settings_change(m_type, name, selection, is_full):
-            if selection == "Ultra-Quality (Optimizer)":
+            if selection == "Optimizer-driven":
                 hint = ("<span style='color:#8b949e; font-size:0.85em;'>"
-                        "Manual optimizer active (9000 iters)</span>")
-                opt_update = gr.update(interactive=True)
-            elif selection == "Auto-Quality (Heur)":
-                hint = ("<span style='color:#8b949e; font-size:0.85em;'>"
-                        "Heuristics active (engine-controlled)</span>")
-                opt_update = gr.update(interactive=False, value="prodigy")
+                        "Learned rounding active (Prodigy, upstream defaults)</span>")
             else:  # Simple
                 hint = ("<span style='color:#8b949e; font-size:0.85em;'>"
                         "Fast simple quant (no optimization)</span>")
-                opt_update = gr.update(interactive=False)
             new_json = update_metadata_preview(name, m_type, is_full=is_full)
-            return opt_update, hint, new_json
+            return hint, new_json
 
         settings_inputs = [model_type, friendly_name, extra_flags, full_checkpoint]
-        settings_outputs = [optimizer_choice, tweak_hint, metadata_input]
+        settings_outputs = [tweak_hint, metadata_input]
         for component in settings_inputs:
             component.change(
                 fn=on_settings_change,
