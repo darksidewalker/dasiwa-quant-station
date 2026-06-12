@@ -162,6 +162,7 @@ def create_ui():
                             ("Safetensors: FP8", "FP8"),
                             ("Safetensors: NVFP4", "NVFP4"),
                             ("Safetensors: INT8 Tensor-wise", "INT8 Tensor-wise"),
+                            ("Safetensors: INT8 Row-wise ConvRot (runtime)", "INT8 Row-wise ConvRot Runtime"),
                             ("GGUF: F32", "GGUF_F32"),
                             ("GGUF: BF16", "GGUF_BF16"),
                             ("GGUF: F16", "GGUF_F16"),

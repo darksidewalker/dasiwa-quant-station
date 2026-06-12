@@ -21,6 +21,13 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             "--scaling_mode", "tensor",
             "--comfy_quant",
         ],
+        "INT8 Row-wise ConvRot Runtime": [
+            "--int8",
+            "--scaling_mode", "row",
+            "--convrot",
+            "--convrot-group-size", "256",
+            "--comfy_quant",
+        ],
         # Backward-compatible alias for stale UI/session values. This now
         # intentionally maps to the safe non-ConvRot path.
         "INT8 Row-wise ConvRot": [
@@ -38,6 +45,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         "FP8",
         "NVFP4",
         "INT8 Tensor-wise",
+        "INT8 Row-wise ConvRot Runtime",
         "INT8 Row-wise ConvRot",
     }
 
@@ -191,6 +199,12 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         
         if fmt in FLAG_MAP:
             cmd.extend(FLAG_MAP[fmt])
+
+        if fmt == "INT8 Row-wise ConvRot Runtime":
+            log_acc += (
+                "NOTE: INT8 Row-wise ConvRot requires a runtime that reads "
+                ".comfy_quant convrot metadata and rotates activations.\n"
+            )
         
         # Flush layer config log and attach the flag if resolved
         for line in layer_config_log:

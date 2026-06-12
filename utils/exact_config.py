@@ -31,6 +31,7 @@ HIGH_PRECISION_DTYPES = {"F16", "BF16", "F32", "F64"}
 BASE_FORMAT_FOR_CONFIG = {
     "FP8": "float8_e4m3fn",
     "INT8 Tensor-wise": "int8_tensorwise",
+    "INT8 Row-wise ConvRot Runtime": "int8_tensorwise",
     # Backward-compatible alias for configs/runs created before ConvRot was
     # removed from the default INT8 path.
     "INT8 Row-wise ConvRot": "int8_tensorwise",
