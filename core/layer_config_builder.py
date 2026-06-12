@@ -44,11 +44,14 @@ BASE_FORMAT_FOR_CONFIG = {
 }
 
 
-# Patterns for baked-in VAE, audio VAE, vocoder, and text-embedding projection
-# layers. These are present when a model ships with its decoder/vocoder baked
-# into the checkpoint (full inference pipeline) rather than transformer-only.
-# They are decode-quality-critical: even the author's FP8 releases keep them
-# at BF16 (verified via Compare to Reference against author's sulphur_dev FP8).
+# Patterns for baked-in companion modules: VAE, audio VAE, vocoder, text
+# encoders, audio encoders, and text-embedding projection layers. These are
+# present when a model ships a full inference pipeline rather than a
+# transformer-only checkpoint.
+#
+# They are decode/conditioning-quality-critical and should not be quantized
+# by transformer quantization presets. Dedicated text-encoder quantization
+# remains available through the separate text architecture presets.
 #
 # Applied to all architectures unconditionally. Patterns are anchored with ^
 # because these prefixes live at the top level of the layer name (no
@@ -57,6 +60,18 @@ BAKED_VAE_PATTERNS = [
     r"^vae\.",
     r"^audio_vae\.",
     r"^vocoder\.",
+    r"^text_encoder($|\.)",
+    r"^text_encoder_\d+\.",
+    r"^text_encoders\.",
+    r"^t5\.",
+    r"^clip($|\.)",
+    r"^clip_text($|\.)",
+    r"^clip_vision($|\.)",
+    r"^gemma($|\.)",
+    r"^llm($|\.)",
+    r"^language_model\.",
+    r"^audio_encoder\.",
+    r"^audio_text_encoder\.",
     r"^text_embedding_projection\.",
     r"^encoder\.",
     r"^decoder\.",
