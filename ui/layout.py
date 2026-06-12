@@ -172,7 +172,6 @@ def create_ui():
                             ("GGUF: Q4_K", "GGUF_Q4_K"),
                             ("GGUF: Q3_K", "GGUF_Q3_K"),
                             ("GGUF: Q2_K", "GGUF_Q2_K"),
-                            ("GGUF: Q1_0", "GGUF_Q1_0"),
                         ],
                         label="Target formats",
                         value=[],

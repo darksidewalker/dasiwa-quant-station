@@ -6,8 +6,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PATH="$PROJECT_DIR/.venv"
 LLAMA_DIR="$PROJECT_DIR/llama.cpp"
 PATCH_FILE="$PROJECT_DIR/lcpp.patch"
+MODE="${1:---go}"
 
 echo "📂 Project Root: $PROJECT_DIR"
+echo "🧭 Launch Mode: $MODE"
 
 # --- 1.5 MULTI-DISTRO DEPENDENCIES ---
 if [ -f /etc/os-release ]; then
@@ -18,12 +20,12 @@ if [ -f /etc/os-release ]; then
     case "$ID" in
         arch|manjaro)
             echo "📦 Installing for Arch-based system..."
-            sudo pacman -S --needed --noconfirm base-devel cmake cuda curl unzip
+            sudo pacman -S --needed --noconfirm base-devel cmake cuda curl unzip go
             ;;
         ubuntu|debian|mint)
             echo "📦 Installing for Debian-based system..."
             sudo apt update
-            sudo apt install -y build-essential cmake nvidia-cuda-toolkit curl unzip
+            sudo apt install -y build-essential cmake nvidia-cuda-toolkit curl unzip golang-go
             ;;
         *)
             echo "⚠️ Unrecognized distribution ($ID). Ensure build-essential, cmake, and cuda are manualy installed."
@@ -102,9 +104,28 @@ echo "🍳 Installing Comfy Kitchen [CUBLAS]..."
 uv pip install --refresh "comfy-kitchen[cublas]"
 
 # --- 4. LAUNCH ---
-echo "🚀 Starting Quant Station ..."
 export VIRTUAL_ENV="$VENV_PATH"
 export PATH="$VENV_PATH/bin:$PATH"
 
-# Ensure Python knows we aren't using RAMDisk anymore
-python app.py
+if [ "$MODE" = "--setup-only" ]; then
+    echo "✅ Setup complete."
+    exit 0
+fi
+
+if [ "$MODE" = "--gradio" ]; then
+    echo "🚀 Starting Quant Station Gradio UI ..."
+    python app.py
+    exit $?
+fi
+
+if ! command -v go &> /dev/null; then
+    echo "❌ Go toolchain not found. Install Go or run ./start-linux.sh --gradio"
+    exit 1
+fi
+
+echo "🔨 Building Go UI ..."
+go build -o "$PROJECT_DIR/dasiwa" ./cmd/dasiwa
+
+echo "🚀 Starting Quant Station Go UI ..."
+echo "🌐 Open: http://127.0.0.1:7878"
+"$PROJECT_DIR/dasiwa"

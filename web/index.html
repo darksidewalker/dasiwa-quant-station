@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DaSiWa Quant Station</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">
+        <div class="mark">D</div>
+        <div>
+          <h1>DaSiWa</h1>
+          <p>Quant Station</p>
+        </div>
+      </div>
+
+      <section class="panel source-panel">
+        <h2>Source</h2>
+        <button id="pick-folder" class="picker-button" type="button">
+          <span>Model Folder</span>
+          <strong id="folder-label">models</strong>
+        </button>
+        <button id="pick-source" class="picker-button" type="button">
+          <span>Checkpoint</span>
+          <strong id="source-label">Choose file</strong>
+        </button>
+        <label class="field">
+          <span>Architecture</span>
+          <select id="architecture"></select>
+        </label>
+        <label class="field">
+          <span>Display Name</span>
+          <input id="model-name" type="text" placeholder="TreasureChest-v1">
+        </label>
+        <label class="checkline">
+          <input id="full-checkpoint" type="checkbox">
+          <span>Full checkpoint</span>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>Strategy</h2>
+        <div class="segmented" id="strategy">
+          <button class="active" data-value="Optimizer-driven" type="button">Optimizer</button>
+          <button data-value="Simple" type="button">Simple</button>
+        </div>
+        <label class="checkline">
+          <input id="low-vram" type="checkbox">
+          <span>Low VRAM</span>
+        </label>
+      </section>
+
+      <section class="panel">
+        <h2>Run</h2>
+        <button id="start" class="primary" type="button">Start Batch</button>
+        <button id="stop" class="danger" type="button" disabled>Stop</button>
+        <button id="update-app" class="secondary" type="button">Update & Restart</button>
+      </section>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h2>Video Model Quantization</h2>
+          <p id="status">Idle</p>
+        </div>
+        <div id="hardware" class="hardware">
+          <div class="meter" data-meter="cpu">
+            <div class="meter-top"><span>CPU</span><b id="cpu">--</b></div>
+            <div class="bar"><i id="cpu-bar"></i></div>
+          </div>
+          <div class="meter" data-meter="ram">
+            <div class="meter-top"><span>RAM</span><b id="ram">--</b></div>
+            <div class="bar"><i id="ram-bar"></i></div>
+          </div>
+          <div class="meter" data-meter="gpu">
+            <div class="meter-top"><span>GPU</span><b id="gpu">--</b></div>
+            <div class="bar"><i id="gpu-bar"></i></div>
+          </div>
+          <div class="meter" data-meter="vram">
+            <div class="meter-top"><span>VRAM</span><b id="vram">--</b></div>
+            <div class="bar"><i id="vram-bar"></i></div>
+          </div>
+        </div>
+      </div>
+
+      <section class="workspace">
+        <div class="format-band">
+          <div class="section-title">
+            <h3>Formats</h3>
+            <button id="refresh-files" class="ghost" type="button">Refresh</button>
+          </div>
+          <div id="formats" class="chips"></div>
+        </div>
+
+        <div class="grid">
+          <section class="console-card">
+            <div class="section-title">
+              <h3>Console</h3>
+              <button id="clear-console" class="ghost" type="button">Clear</button>
+            </div>
+            <pre id="console"></pre>
+          </section>
+          <section class="meta-card">
+            <div class="section-title">
+              <h3>Metadata</h3>
+              <div class="actions-inline">
+                <button id="refresh-meta" class="ghost" type="button">Refresh</button>
+                <button id="read-meta" class="ghost" type="button">Read</button>
+                <button id="inject-meta" class="ghost" type="button">Inject</button>
+                <button id="copy-meta" class="ghost" type="button">Copy</button>
+              </div>
+            </div>
+            <textarea id="metadata" spellcheck="false"></textarea>
+            <div class="tool-row">
+              <button id="scan" type="button">Scan 5D</button>
+              <button id="audit" type="button">Audit Patterns</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="browser">
+    <div class="browser-head">
+      <div>
+        <h3 id="browser-title">Pick</h3>
+        <p id="browser-path"></p>
+      </div>
+      <button id="browser-close" class="icon" type="button">x</button>
+    </div>
+    <div class="browser-actions">
+      <button id="browser-up" type="button">Up</button>
+      <button id="browser-select-folder" type="button">Use This Folder</button>
+    </div>
+    <div id="browser-list" class="browser-list"></div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

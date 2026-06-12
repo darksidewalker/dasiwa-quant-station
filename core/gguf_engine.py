@@ -1,5 +1,5 @@
 # core/gguf_engine.py
-import os, subprocess, sys, json, re, hashlib
+import os, subprocess, sys, json, re, hashlib, time
 from core.metadata_manager import write_gguf_meta
 from config import ROOT_DIR
 from safetensors import safe_open
@@ -31,7 +31,13 @@ def _sanitize_model_name(model_name):
 
 
 def _generate_ggufy_sensitivities(source_path, model_type, convert_arch, is_full):
-    """Builds a temporary JSON sensitivity file for ggufy based on local patterns."""
+    """Builds a temporary JSON sensitivity file for ggufy.
+
+    ggufy treats the sensitivities JSON as the quantization candidate map:
+    tensors not present in the file are kept at higher/source precision.
+    Because of that, preserve-pattern matches must be omitted, not assigned
+    a high score.
+    """
     sensitivities = {}
     
     # Combine patterns for this architecture
@@ -40,18 +46,23 @@ def _generate_ggufy_sensitivities(source_path, model_type, convert_arch, is_full
 
     with safe_open(source_path, framework="pt", device="cpu") as f:
         for key in f.keys():
+            tensor = f.get_slice(key)
+            shape = tensor.get_shape()
             # Strip .weight for matching logic consistency with patterns
             match_name = key[:-7] if key.endswith(".weight") else key
 
-            # Critical layers (95+ score in ggufy) are always kept at source precision
+            # Critical layers must be absent from ggufy's candidate map.
             if any(re.search(pat, match_name) for pat in preserve_list):
-                sensitivities[key] = 100
                 continue
-            
+
             # Rescue layers (70-95 in ggufy docs) are upgraded according to
             # sensitivity-aware quantization instead of forced source precision.
             if any(re.search(pat, match_name) for pat in rescue_list):
-                sensitivities[key] = 90
+                sensitivities[key] = 25
+                continue
+
+            if key.endswith(".weight") and len(shape) == 2:
+                sensitivities[key] = 50
 
     sens_path = os.path.abspath(os.path.join(ROOT_DIR, f"ggufy_sens_{convert_arch}_{hashlib.md5(source_path.encode()).hexdigest()[:8]}.json"))
     with open(sens_path, "w") as j:
@@ -73,7 +84,6 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
         "GGUF_Q4_K": "q4_k",
         "GGUF_Q3_K": "q3_k",
         "GGUF_Q2_K": "q2_k",
-        "GGUF_Q1_0": "q1_0",
     }
 
     # 1. Sanitize and Normalize All Paths
@@ -104,6 +114,14 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
         return
 
     for fmt in formats:
+        if fmt == "GGUF_Q1_0":
+            log_acc += (
+                "❌ GGUF Q1_0 is disabled: the current ggufy binary reports "
+                "UnsupportedDestinationType for q1_0 conversion.\n"
+            )
+            yield log_acc, "Unsupported GGUF format"
+            continue
+
         q_flag = q_map.get(fmt, "q8_0")
         out_filename = f"{sanitized_model_name}_{q_flag.upper()}"
         final_path = os.path.join(MODELS_DIR, f"{out_filename}.gguf")
@@ -151,13 +169,40 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
             ])
             log_acc += f"   CMD: {' '.join(cmd)}\n"
 
-            # Use Popen to stream logs to the UI terminal in real-time
+            # Use Popen to stream logs to the UI terminal in real-time.
+            # ggufy may render progress with carriage returns instead of
+            # newline-delimited log lines, so read character-by-character and
+            # flush on either separator.
             process = subprocess.Popen(
                 cmd, cwd=ROOT_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, universal_newlines=True
             )
-            for line in process.stdout:
-                log_acc += line
+            current_line = ""
+            last_status = time.monotonic()
+            while True:
+                char = process.stdout.read(1)
+                if not char and process.poll() is not None:
+                    break
+                if not char:
+                    continue
+
+                if char in ("\n", "\r"):
+                    clean_line = current_line.strip()
+                    if clean_line:
+                        log_acc += clean_line + "\n"
+                        yield log_acc, f"Quantizing {q_flag}..."
+                    current_line = ""
+                    last_status = time.monotonic()
+                    continue
+
+                current_line += char
+                now = time.monotonic()
+                if now - last_status >= 2.0:
+                    yield log_acc, f"Quantizing {q_flag}..."
+                    last_status = now
+
+            if current_line.strip():
+                log_acc += current_line.strip() + "\n"
                 yield log_acc, f"Quantizing {q_flag}..."
             process.wait()
 

@@ -1,75 +1,111 @@
-# 🌀 DaSiWa Quant Station
+# DaSiWa Quant Station
 
-DaSiWa Quant Station is a high-performance toolkit designed for quantizing Video Models. Specifically engineered for systems with 64GB RAM and NVIDIA Ada (40-series) or Blackwell (50-series) GPUs.
+DaSiWa Quant Station is a local quantization workbench for video diffusion models. It combines a modern Go-powered web UI with the existing Python quantization engines for GGUF and safetensors workflows.
 
-📦 GGUF Expert: Native Wan 2.2 and LTX-2.3 GGUF quantization via `ggufy`, utilizing sensitivity-aware quantization to preserve 5D video tensors and prevent "gray-screen" or corrupted outputs.
+It is built around the practical pain points of WAN 2.2 and LTX-2.3 style video checkpoints: preserving 5D/video-critical tensors, keeping full-checkpoint companion modules safe, injecting modelspec metadata, and avoiding INT8 paths that look valid but produce corrupted video.
 
-💎 Next-Gen FP Quants: Native support for NVFP4 (Blackwell) and FP8 E4M3 (Ada) via optimized convert_to_quant integration.
+## Highlights
 
-🛡️ 64GB Safety Logic: Intelligent memory flushing and subprocess monitoring to prevent OOM (Out of Memory) crashes during model handling.
+- **Modern local UI:** Go server with HTML/CSS/JS frontend at `http://127.0.0.1:7878`.
+- **Safetensors quantization:** FP8, NVFP4, INT8 Tensor-wise, and explicit INT8 ConvRot-runtime mode through `silveroxides/convert_to_quant`.
+- **GGUF conversion:** GGUF F32/BF16/F16/Q8/Q6/Q5/Q4/Q3/Q2 through `ggufy`.
+- **Layer safety:** Verified WAN 2.2 and LTX-2.3 preserve/rescue tables, plus baked VAE/text/audio companion preservation for full checkpoints.
+- **Automatic inspection:** Header-only architecture and full-checkpoint detection when selecting a safetensors file.
+- **Metadata tools:** Preview, read, inject, and hash modelspec metadata from the UI.
+- **Hardware monitor:** Compact CPU/RAM/GPU/VRAM bars with MIG-friendly labels.
+- **Update button:** The UI can refresh dependencies, rebuild the Go binary, and restart itself.
 
-## 🚀 Quick Start
+## Quick Start
 
-### Prerequisites
-
-Ensure you have uv installed for high-speed dependency management:
-Bash
-```
-curl -LsSf https://astral.sh/uv/install.sh | sh
-``` 
-
-### Installation & Launch
-
-The included start-linux.sh environment syncing, and build requirements automatically.
-Bash
-```
+```bash
 chmod +x start-linux.sh
 ./start-linux.sh
 ```
 
-#### 🛠️ Quantization Guide
+Then open:
 
-|Format|Target|Hardware|
-|-----:|-----:|-------:|
-| GGUF (Q2-Q8) | Universal / CPU | Best for VRAM-constrained systems (8GB - 12GB).|
-| FP8 (E4M3) | RTX 40-Series | Native Ada acceleration; best quality/speed balance.|
-| NVFP4 | RTX 50-Series | Blackwell native 4-bit; extreme VRAM savings for 14B models.|
-| MXFP8 | RTX 50-Series | Microscaled 8-bit; near-lossless video quality.|
+```text
+http://127.0.0.1:7878
+```
 
-#### 🧬 Architecture Support
+The startup script syncs the environment before launch:
 
-The Architecture dropdown selects which `convert_to_quant` preset is applied to the safetensors quantization pass. All 18 upstream presets are exposed, grouped by category. A 19th option, **Not set**, bypasses the preset entirely and runs `convert_to_quant` with no architecture flag, no layer config, and no source-file architecture verification.
+- installs/checks system build tools where supported
+- installs `uv` if missing
+- creates `.venv/`
+- installs Python dependencies
+- refreshes `convert_to_quant` from GitHub
+- installs `comfy-kitchen[cublas]`
+- downloads/repairs `bin/ggufy`
+- builds and starts the Go UI
 
-| Category | Choices | Status |
+## Launch Modes
+
+```bash
+./start-linux.sh              # setup/update, build Go UI, launch
+./start-linux.sh --setup-only # setup/update only
+./start-linux.sh --gradio     # launch the legacy Gradio UI
+./dasiwa                      # launch the already-built Go binary only
+```
+
+Starting `./dasiwa` directly is fast, but it does not update dependencies or rebuild the app. Use `./start-linux.sh` when you want the startup-script maintenance behavior.
+
+The Go UI also has **Update & Restart**. It runs the setup-only path, rebuilds `dasiwa`, starts a fresh copy, and exits the old server. If your system needs `sudo` for missing packages, run from a terminal or make sure sudo is already available, because the browser log cannot securely answer password prompts.
+
+## Choosing Formats
+
+| Format | Best Use | Notes |
 |---|---|---|
-| Video | WAN 2.2, LTX-2.3, Hunyuan Video | WAN 2.2 and LTX-2.3 have hand-tuned layer-config patterns, GGUFY sensitivity maps, and source-file verification. |
-| Image | Flux.2, Qwen Image, Z-Image, Z-Image Refiner, Anima | Upstream preset only (no per-arch layer config in this project yet). |
-| Other | Radiance, Distillation Large/Small, NeRF Large/Small | Upstream preset only. |
-| Text | T5-XXL, Qwen 3.5, Mistral, Visual, Generic Text | Upstream preset only. Companion-model use. |
-| None | Not set | No preset, no layer config, no verification. |
+| FP8 | RTX 40/50-series quality baseline | Good default for video model compression. |
+| NVFP4 | Blackwell VRAM savings | More aggressive; sensitive layers are rescued to FP8 where local tables exist. |
+| INT8 Tensor-wise | Safer INT8 path | Recommended INT8 choice for broad Comfy compatibility. |
+| INT8 ConvRot runtime | Experimental/runtime-specific INT8 | Requires inference code that reads ConvRot metadata and rotates activations. |
+| GGUF Q formats | GGUF/llama.cpp-style deployment | Uses `ggufy` plus sensitivity maps for verified video tensors. |
 
-For archs without per-arch layer-config patterns, sensitive-layer preservation is handled entirely by the upstream `convert_to_quant` preset (the same skip rules the author ships). The 5D Tensor Scan, Pattern Audit, and Compare-to-Reference tools currently only operate on WAN 2.2 and LTX-2.3 files; selecting another arch in the dropdown when using those tools returns a clear "no patterns defined" error.
+If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot row-wise INT8 only works correctly when the runtime implements the matching activation rotation; otherwise the weights and activations disagree.
 
-### 📂 Directory Structure & UI
+## Architecture And Preservation
 
-    models/: Place your .safetensors base models and LoRAs here.
+The architecture selection controls the `convert_to_quant` preset and, for verified models, DaSiWa's local preservation table.
 
-    logs/: Automated session logs for debugging merge weights.
+| Architecture | Local Preserve/Rescue Table | Detection | Notes |
+|---|---:|---:|---|
+| WAN 2.2 | Yes | Yes | Verified local table for structural/video-sensitive layers. |
+| LTX-2.3 | Yes | Yes | Verified local table, including audio/video connector and gate-sensitive patterns. |
+| Hunyuan Video, Flux.2, Qwen Image, Z-Image, Anima, Radiance, Distillation, NeRF, text presets | No | Limited/none | Uses upstream `convert_to_quant` preset skip logic. |
+| Not set | No | Skipped | Runs without architecture flag, local layer config, or architecture verification. |
 
-UI changes (current):
-- The left-hand Model Directory control is a dropdown that lists the internal `MODELS_DIR` and its immediate subfolders. This replaces earlier free-text or upload-style folder pickers.
-- Select a folder from the dropdown to populate the `Safetensors file` dropdown automatically. Use the `↻ Refresh folder` button to refresh the available directories and file lists.
-- The app operates on file paths inside the host's `models/` tree; you do not upload files through the UI.
+Full checkpoints are detected from the source header when possible. When local layer configs are active, baked companion modules such as VAE, audio VAE, vocoder, text encoders, audio encoders, and text projection layers are preserved instead of being treated like transformer weights.
 
-### 🤝 Credits
+## UI Workflow
 
-Quantization: 
-- [llama.cpp](https://github.com/ggml-org/llama.cpp)
+1. Pick a model folder or file with the file buttons.
+2. Select a safetensors checkpoint or GGUF source.
+3. Let the app inspect the source; adjust architecture/full-checkpoint if needed.
+4. Choose formats from the grouped safetensors/GGUF chips.
+5. Pick **Optimizer-driven** for the full `convert_to_quant` learned-rounding defaults, or **Simple** for the simple path.
+6. Start the batch and watch the streamed log.
+7. Use Metadata tools to read/inject modelspec metadata when needed.
+
+## Project Layout
+
+```text
+cmd/dasiwa/              Go entry point
+internal/app/            Go server, API routes, SSE job manager
+web/                     Primary frontend
+scripts/go_bridge.py     Bridge from Go API to Python engines
+core/                    Quantization and metadata engines
+utils/                   Detection, scan, audit, system helpers
+models/                  Local model tree
+logs/                    Conversion logs
+bin/ggufy                GGUFY binary maintained by start-linux.sh
+app.py                   Legacy Gradio UI
+```
+
+## Credits
+
 - [silveroxides/convert_to_quant](https://github.com/silveroxides/convert_to_quant)
-- [City96](https://github.com/city96/ComfyUI-GGUF/tree/main/tools)
-- [ggufy](https://github.com/qskousen/ggufy)
-
-Utilities and UI:
-- Gradio (UI library) — UI components and patterns used in the app UI.
-- [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) for Blackwell/NVFP4 support.
-
+- [qskousen/ggufy](https://github.com/qskousen/ggufy)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)
+- [City96 ComfyUI-GGUF tools](https://github.com/city96/ComfyUI-GGUF/tree/main/tools)
+- [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen)
