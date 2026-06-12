@@ -15,6 +15,7 @@ from utils.scanner_5d import scan_5d_tensors
 from utils.pattern_audit import audit_patterns
 from utils.keeplist_compare import compare_to_reference
 from utils.exact_config import write_exact_config
+from utils.arch_detector import inspect_checkpoint
 import os
 
 def _resolve_model_path(m_path):
@@ -53,6 +54,60 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
     refresh_btn.click(fn=refresh_both, inputs=[models_dir_dd], outputs=[base_dd, reference_dd])
     models_dir_dd.change(fn=refresh_both, inputs=[models_dir_dd], outputs=[base_dd, reference_dd])
 
+    def handle_source_selection(m_path, file_name, current_arch, model_name):
+        """Inspect selected safetensors header and prefill safe defaults."""
+        no_change = gr.update()
+        if not file_name:
+            return no_change, no_change, "", no_change
+        if not str(file_name).endswith(".safetensors"):
+            return no_change, no_change, "Source inspection skipped: select a .safetensors file.", no_change
+
+        m_path = _resolve_model_path(m_path)
+        m_path = os.path.realpath(os.path.expanduser(m_path))
+        source_path = os.path.realpath(os.path.join(m_path, file_name))
+        if not os.path.isfile(source_path):
+            return no_change, no_change, f"Source inspection failed: file not found:\n{source_path}", no_change
+
+        try:
+            detected_arch, is_full, inspect_log = inspect_checkpoint(source_path)
+        except Exception as e:
+            return no_change, no_change, f"Source inspection failed: {e}", no_change
+
+        arch_update = no_change
+        arch_line = f"Architecture: {detected_arch}"
+        if detected_arch in ("WAN 2.2", "LTX-2.3"):
+            arch_update = gr.update(value=detected_arch)
+            arch_line += " (auto-selected)"
+            effective_arch = detected_arch
+        elif detected_arch == "UNKNOWN":
+            arch_line += f" (kept current selection: {current_arch})"
+            effective_arch = current_arch
+        else:
+            arch_line += f" (ambiguous; kept current selection: {current_arch})"
+            effective_arch = current_arch
+
+        full_update = gr.update(value=is_full)
+        full_line = "Full checkpoint: yes" if is_full else "Full checkpoint: no"
+        display_name = model_name or "TreasureChest"
+        metadata_json = update_metadata_preview(display_name, effective_arch, is_full=is_full)
+
+        msg = [
+            f"Source inspected: {file_name}",
+            arch_line,
+            full_line,
+            "",
+            *inspect_log,
+            "",
+            "You can still override Architecture or Full Checkpoint before starting.",
+        ]
+        return arch_update, full_update, "\n".join(msg), metadata_json
+
+    base_dd.change(
+        fn=handle_source_selection,
+        inputs=[models_dir_dd, base_dd, model_type, friendly_name],
+        outputs=[model_type, full_checkpoint, terminal_box, metadata_input],
+    )
+
     # --- 2. THE MAIN CONVERSION LOGIC ---
     # This function is triggered by START BATCH. 
     def start_process(m_path, file_name, model_name, formats, options, m_type, opt_choice, lv, is_full):
@@ -73,6 +128,7 @@ def setup_callbacks(models_dir_dd, base_dd, friendly_name, refresh_btn, run_btn,
 
         log_acc = f"🚀 Initializing Pipeline for: {model_name}\n"
         log_acc += f"📦 Target Architecture: {m_type}\n"
+        log_acc += f"📦 Full Checkpoint: {'Yes' if is_full else 'No'}\n"
         log_acc += "-"*40 + "\n"
         
         # Filter selected formats

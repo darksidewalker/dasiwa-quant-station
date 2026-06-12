@@ -89,7 +89,7 @@ def create_ui():
             full_checkpoint = gr.Checkbox(
                 label="Full Checkpoint (Inc. VAE)",
                 value=False,
-                info="Check if the source file includes VAE/Audio VAE weights (LTX-2.3 only)."
+                info="Auto-detected from the selected source file; can be changed before starting."
             )
 
         # =========================================================

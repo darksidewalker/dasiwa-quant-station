@@ -45,6 +45,39 @@ ARCH_MARKERS = {
     ],
 }
 
+FULL_CHECKPOINT_MARKERS = {
+    "vae": [
+        re.compile(r"^vae\."),
+        re.compile(r"^encoder\."),
+        re.compile(r"^decoder\."),
+    ],
+    "audio_vae": [
+        re.compile(r"^audio_vae\."),
+    ],
+    "vocoder": [
+        re.compile(r"^vocoder\."),
+    ],
+    "text_encoder": [
+        re.compile(r"^text_encoder($|\.)"),
+        re.compile(r"^text_encoder_\d+\."),
+        re.compile(r"^text_encoders\."),
+        re.compile(r"^t5\."),
+        re.compile(r"^clip($|\.)"),
+        re.compile(r"^clip_text($|\.)"),
+        re.compile(r"^clip_vision($|\.)"),
+        re.compile(r"^gemma($|\.)"),
+        re.compile(r"^llm($|\.)"),
+        re.compile(r"^language_model\."),
+    ],
+    "audio_encoder": [
+        re.compile(r"^audio_encoder\."),
+        re.compile(r"^audio_text_encoder\."),
+    ],
+    "projection": [
+        re.compile(r"^text_embedding_projection\."),
+    ],
+}
+
 
 def _read_keys_only(safetensors_path, max_keys=None):
     """Read just the layer key list from a safetensors header. No weights."""
@@ -54,6 +87,63 @@ def _read_keys_only(safetensors_path, max_keys=None):
     if max_keys is not None:
         keys = keys[:max_keys]
     return keys
+
+
+def _detect_full_checkpoint_from_keys(keys, basename):
+    if not keys:
+        return False, [f"No keys found in {basename}"]
+
+    family_hits = {}
+    for family, patterns in FULL_CHECKPOINT_MARKERS.items():
+        count = 0
+        for key in keys:
+            if any(rx.search(key) for rx in patterns):
+                count += 1
+        if count:
+            family_hits[family] = count
+
+    log = [f"Inspected {len(keys)} layer keys"]
+    if not family_hits:
+        log.append("No VAE/text/audio companion-module markers matched")
+        return False, log
+
+    hit_text = ", ".join(f"{name}: {count}" for name, count in family_hits.items())
+    log.append(f"Detected companion modules: {hit_text}")
+    return True, log
+
+
+def detect_full_checkpoint(safetensors_path):
+    """
+    Inspect the safetensors header and infer whether this is a full checkpoint.
+
+    Full means the file appears to bundle non-transformer companion modules
+    such as VAE, audio VAE, vocoder, text encoders, or audio encoders. The
+    detector reads only tensor keys from the safetensors header.
+
+    Returns:
+        (is_full_checkpoint: bool, confidence_log: list[str])
+    """
+    keys = _read_keys_only(safetensors_path)
+    return _detect_full_checkpoint_from_keys(keys, os.path.basename(safetensors_path))
+
+
+def inspect_checkpoint(safetensors_path):
+    """
+    Read the header once and return both architecture and full-checkpoint info.
+
+    Returns:
+        (arch_name, is_full_checkpoint, confidence_log)
+    """
+    keys = _read_keys_only(safetensors_path)
+    basename = os.path.basename(safetensors_path)
+    arch, arch_log = _detect_architecture_from_keys(keys, basename)
+    is_full, full_log = _detect_full_checkpoint_from_keys(keys, basename)
+
+    log = ["Architecture:"]
+    log.extend(f"  {line}" for line in arch_log)
+    log.append("Full checkpoint:")
+    log.extend(f"  {line}" for line in full_log)
+    return arch, is_full, log
 
 
 def detect_architecture(safetensors_path):
@@ -68,8 +158,12 @@ def detect_architecture(safetensors_path):
     Errors raised by file I/O are propagated to the caller.
     """
     keys = _read_keys_only(safetensors_path)
+    return _detect_architecture_from_keys(keys, os.path.basename(safetensors_path))
+
+
+def _detect_architecture_from_keys(keys, basename):
     if not keys:
-        return "UNKNOWN", [f"No keys found in {os.path.basename(safetensors_path)}"]
+        return "UNKNOWN", [f"No keys found in {basename}"]
     
     matches = {}  # arch -> [(marker_index, hit_count), ...]
     for arch, patterns in ARCH_MARKERS.items():
