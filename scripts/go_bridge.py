@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import ctypes
+import gc
 import json
 import os
+import subprocess
 import sys
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -85,6 +88,88 @@ def cmd_scan(args):
 
 def cmd_audit(args):
     _emit({"text": audit_patterns(args.path, args.architecture)})
+
+
+def cmd_clean_memory(args):
+    lines = [
+        "Released DaSiWa Go heap pressure and ran Python garbage collection.",
+    ]
+    collected = gc.collect()
+    lines.append(f"Python GC collected {collected} objects.")
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        if libc.malloc_trim(0) == 1:
+            lines.append("Returned free libc heap pages to the OS.")
+    except Exception:
+        pass
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            lines.append("Requested PyTorch CUDA cache release.")
+        else:
+            lines.append("PyTorch CUDA is not active.")
+    except Exception as exc:
+        lines.append(f"PyTorch cleanup skipped: {exc}")
+
+    try:
+        import cupy
+
+        cupy.get_default_memory_pool().free_all_blocks()
+        cupy.get_default_pinned_memory_pool().free_all_blocks()
+        lines.append("Requested CuPy memory pool release.")
+    except Exception as exc:
+        lines.append(f"CuPy cleanup skipped: {exc}")
+
+    try:
+        import tensorflow as tf
+
+        tf.keras.backend.clear_session()
+        lines.append("Requested TensorFlow/Keras session cleanup.")
+    except Exception as exc:
+        lines.append(f"TensorFlow cleanup skipped: {exc}")
+
+    holders = _nvidia_memory_holders()
+    if holders:
+        lines.append("")
+        lines.append("Processes still holding NVIDIA VRAM:")
+        lines.extend(holders)
+        lines.append("Close or stop those processes to release their model memory.")
+
+    _emit({"text": "\n".join(lines)})
+
+
+def _nvidia_memory_holders():
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3,
+        )
+    except Exception:
+        return []
+    if result.returncode != 0:
+        return []
+
+    holders = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 4:
+            continue
+        gpu_uuid, pid, name, used_mb = parts
+        holders.append(f"- PID {pid}: {name} on {gpu_uuid} using {used_mb}MB")
+    return holders
 
 
 def cmd_quantize(args):
@@ -192,6 +277,9 @@ def main():
     p.add_argument("path")
     p.add_argument("--architecture", required=True)
     p.set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("clean-memory")
+    p.set_defaults(func=cmd_clean_memory)
 
     p = sub.add_parser("quantize")
     p.add_argument("--json")

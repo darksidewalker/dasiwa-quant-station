@@ -161,6 +161,7 @@ function wireEvents() {
 
   $("start").addEventListener("click", startJob);
   $("stop").addEventListener("click", stopJob);
+  $("clean-memory").addEventListener("click", cleanMemory);
   $("update-app").addEventListener("click", updateApp);
   $("scan").addEventListener("click", () => runTool("scan"));
   $("audit").addEventListener("click", () => runTool("audit"));
@@ -329,6 +330,25 @@ async function updateApp() {
     $("start").disabled = false;
     $("stop").disabled = true;
     setStatus("Error");
+  }
+}
+
+async function cleanMemory() {
+  const btn = $("clean-memory");
+  btn.disabled = true;
+  setStatus("Cleaning memory");
+  log("\nCleaning RAM / VRAM caches...\n");
+
+  try {
+    const data = await api("/api/memory/clean", {method: "POST"});
+    log(`\n${data.text}\n`);
+    await refreshSystem();
+    setStatus("Idle");
+  } catch (err) {
+    log(`Memory cleanup failed: ${err.message}\n`);
+    setStatus("Error");
+  } finally {
+    btn.disabled = false;
   }
 }
 

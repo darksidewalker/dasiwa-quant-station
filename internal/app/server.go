@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +64,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/metadata/inject", s.handleMetadataInject)
 	mux.HandleFunc("POST /api/quantize", s.handleQuantize)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
+	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
 	mux.HandleFunc("POST /api/jobs/{id}/stop", s.handleJobStop)
 	mux.HandleFunc("POST /api/tools/scan", s.handleScan)
@@ -399,6 +402,35 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"job_id": id})
 }
 
+func (s *Server) handleMemoryClean(w http.ResponseWriter, r *http.Request) {
+	before := readSystemStatus()
+
+	runtime.GC()
+	debug.FreeOSMemory()
+
+	out, err := s.runBridge(r.Context(), "clean-memory")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	runtime.GC()
+	debug.FreeOSMemory()
+
+	var bridge struct {
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(out, &bridge)
+
+	after := readSystemStatus()
+	text := formatMemoryCleanReport(before, after, bridge.Text)
+	writeJSON(w, map[string]any{
+		"text":   text,
+		"before": before,
+		"after":  after,
+	})
+}
+
 func (s *Server) runQuantizeJob(ctx context.Context, job *Job, req QuantizeRequest) {
 	defer close(job.Events)
 	payload, _ := json.Marshal(req)
@@ -680,6 +712,10 @@ type systemStatus struct {
 }
 
 func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, readSystemStatus())
+}
+
+func readSystemStatus() systemStatus {
 	status := systemStatus{GPU: "Idle", VRAM: "n/a"}
 	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
 		total, available := parseMeminfo(string(data))
@@ -695,7 +731,30 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 		status.GPUPercent = gpuPct
 		status.VRAMPercent = vramPct
 	}
-	writeJSON(w, status)
+	return status
+}
+
+func formatMemoryCleanReport(before, after systemStatus, bridgeText string) string {
+	var b strings.Builder
+	b.WriteString("Memory cleanup complete.\n")
+	if before.RAMTotalGB > 0 && after.RAMTotalGB > 0 {
+		freed := before.RAMUsedGB - after.RAMUsedGB
+		b.WriteString(fmt.Sprintf("RAM: %.1f/%.1fGB -> %.1f/%.1fGB", before.RAMUsedGB, before.RAMTotalGB, after.RAMUsedGB, after.RAMTotalGB))
+		if freed > 0 {
+			b.WriteString(fmt.Sprintf(" (%.1fGB lower)", freed))
+		}
+		b.WriteString("\n")
+	}
+	if before.VRAM != "n/a" || after.VRAM != "n/a" {
+		b.WriteString(fmt.Sprintf("VRAM: %s -> %s\n", before.VRAM, after.VRAM))
+	}
+	if strings.TrimSpace(bridgeText) != "" {
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(bridgeText))
+		b.WriteString("\n")
+	}
+	b.WriteString("\nSafe mode: this does not kill processes, reset GPUs, or drop kernel page cache.")
+	return b.String()
 }
 
 func parseMeminfo(text string) (totalKB, availableKB int64) {

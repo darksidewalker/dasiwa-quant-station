@@ -157,7 +157,7 @@ input, select, textarea {
 .primary { width: 100%; background: var(--green); color: #07100b; border: 0; font-weight: 800; }
 .secondary { width: 100%; margin-top: 8px; background: rgba(88, 166, 255, 0.13); border-color: rgba(88, 166, 255, 0.32); }
 .danger { width: 100%; margin-top: 8px; background: rgba(255, 95, 104, 0.14); border-color: rgba(255, 95, 104, 0.35); }
-.danger:disabled, .secondary:disabled { opacity: .45; cursor: not-allowed; }
+.primary:disabled, .danger:disabled, .secondary:disabled { opacity: .45; cursor: not-allowed; }
 .ghost { padding: 7px 10px; color: var(--muted); }
 
 .main {
