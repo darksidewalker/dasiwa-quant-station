@@ -38,3 +38,4 @@ Thumbs.db
 *.swp
 fix_5d_tensors_*
 .ggufy_sens_*.json
+ggufy_sens_*.json

@@ -88,8 +88,9 @@ MODEL_METADATA_CONFIGS = {
         "modelspec.description": "Anima model quantized via DaSiWa Station.",
         "modelspec.architecture": "anima",
         "modelspec.implementation": "",
-        "modelspec.license": "Custom License Addendum Distribution Restriction",
-        "modelspec.tags": "diffusion, anima, DaSiWa",
+        "modelspec.license": "CircleStone Labs Non-Commercial License",
+        "modelspec.tags": "diffusion, anima, DaSiWa, anime, art, illustration",
+        "modelspec.resolution": "1024x1024",
     },
     "Radiance": {
         "modelspec.title": "{model_name}",
