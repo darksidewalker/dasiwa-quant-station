@@ -50,9 +50,9 @@ The startup script syncs the environment before launch:
 ./dasiwa                      # launch the already-built Go binary only
 ```
 
-Starting `./dasiwa` directly is fast, but it does not update dependencies or rebuild the app. Use `./start-linux.sh` when you want the startup-script maintenance behavior.
+Starting `./quantstation` directly is fast, but it does not update dependencies or rebuild the app. Use `./start-linux.sh` when you want the startup-script maintenance behavior.
 
-The Go UI also has **Update & Restart**. It runs the setup-only path, rebuilds `dasiwa`, starts a fresh copy, and exits the old server. If your system needs `sudo` for missing packages, run from a terminal or make sure sudo is already available, because the browser log cannot securely answer password prompts.
+The Go UI also has **Update & Restart**. It runs the setup-only path, rebuilds `quantstation`, starts a fresh copy, and exits the old server. If your system needs `sudo` for missing packages, run from a terminal or make sure sudo is already available, because the browser log cannot securely answer password prompts.
 
 ## Choosing Formats
 
