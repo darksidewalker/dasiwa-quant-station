@@ -11,8 +11,8 @@ filters/*.json
 llama.cpp/
 build/
 bin/
-/dasiwa
-/dasiwa.next
+/quantstation
+/quantstation.next
 *.gguf
 *.patch
 !lcpp.patch

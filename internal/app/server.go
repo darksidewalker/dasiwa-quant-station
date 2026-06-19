@@ -63,6 +63,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/metadata/read", s.handleMetadataRead)
 	mux.HandleFunc("POST /api/metadata/inject", s.handleMetadataInject)
 	mux.HandleFunc("POST /api/quantize", s.handleQuantize)
+	mux.HandleFunc("POST /api/lora/merge", s.handleLoraMerge)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
@@ -360,6 +361,25 @@ type QuantizeRequest struct {
 	FullCheckpoint bool     `json:"full_checkpoint"`
 }
 
+type LoraSpec struct {
+	Path     string  `json:"path"`
+	Strength float64 `json:"strength"`
+	Strategy string  `json:"strategy"`
+}
+
+type LoraMergeRequest struct {
+	BasePath       string     `json:"base_path"`
+	ModelsDir      string     `json:"models_dir"`
+	OutputPath     string     `json:"output_path"`
+	OutputName     string     `json:"output_name"`
+	Loras          []LoraSpec `json:"loras"`
+	Strategy       string     `json:"strategy"`
+	GlobalStrength float64    `json:"global_strength"`
+	Adaptive       bool       `json:"adaptive"`
+	DryRun         bool       `json:"dry_run"`
+	StrictMatching bool       `json:"strict_matching"`
+}
+
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	var req QuantizeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -384,6 +404,50 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	}
 	s.jobs.Add(job)
 	go s.runQuantizeJob(ctx, job, req)
+	writeJSON(w, map[string]string{"job_id": id})
+}
+
+func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
+	var req LoraMergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.BasePath == "" || len(req.Loras) == 0 {
+		writeError(w, http.StatusBadRequest, "base checkpoint and at least one LoRA are required")
+		return
+	}
+	if req.ModelsDir == "" {
+		req.ModelsDir = s.modelsDir
+	}
+	req.BasePath = cleanPath(req.BasePath, s.modelsDir)
+	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
+	if req.OutputPath != "" {
+		req.OutputPath = cleanPath(req.OutputPath, req.ModelsDir)
+	}
+	if req.Strategy == "" {
+		req.Strategy = "Balanced I2V"
+	}
+	if req.GlobalStrength == 0 {
+		req.GlobalStrength = 1
+	}
+	for i := range req.Loras {
+		req.Loras[i].Path = cleanPath(req.Loras[i].Path, s.modelsDir)
+		if req.Loras[i].Strength == 0 {
+			req.Loras[i].Strength = 1
+		}
+	}
+	id := newID()
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &Job{
+		ID:        id,
+		CreatedAt: time.Now(),
+		Events:    make(chan Event, 512),
+		cancel:    cancel,
+		Status:    "starting lora merge",
+	}
+	s.jobs.Add(job)
+	go s.runLoraMergeJob(ctx, job, req)
 	writeJSON(w, map[string]string{"job_id": id})
 }
 
@@ -482,6 +546,26 @@ func (s *Server) runQuantizeJob(ctx context.Context, job *Job, req QuantizeReque
 	job.Emit(Event{Type: "done", Status: "finished"})
 }
 
+func (s *Server) runLoraMergeJob(ctx context.Context, job *Job, req LoraMergeRequest) {
+	defer close(job.Events)
+	payload, _ := json.Marshal(req)
+	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "lora-merge", "--json", string(payload))
+	cmd.Dir = s.rootDir
+	cmd.Env = s.commandEnv()
+	if err := streamCommand(ctx, cmd, job); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			job.setStatus("lora merge stopped")
+			job.Emit(Event{Type: "done", Status: "lora merge stopped"})
+			return
+		}
+		job.setStatus("lora merge failed")
+		job.Emit(Event{Type: "error", Text: err.Error()})
+		job.Emit(Event{Type: "done", Status: "lora merge failed"})
+		return
+	}
+	job.setStatus("lora merge finished")
+}
+
 func (s *Server) runUpdateJob(ctx context.Context, job *Job) {
 	defer close(job.Events)
 	job.setStatus("updating")
@@ -497,7 +581,7 @@ func (s *Server) runUpdateJob(ctx context.Context, job *Job) {
 		},
 		{
 			name: "build",
-			cmd:  exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.rootDir, "dasiwa.next"), "./cmd/dasiwa"),
+			cmd:  exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.rootDir, "quantstation.next"), "./cmd/dasiwa"),
 		},
 	}
 
@@ -517,8 +601,8 @@ func (s *Server) runUpdateJob(ctx context.Context, job *Job) {
 			return
 		}
 		if step.name == "build" {
-			nextPath := filepath.Join(s.rootDir, "dasiwa.next")
-			finalPath := filepath.Join(s.rootDir, "dasiwa")
+			nextPath := filepath.Join(s.rootDir, "quantstation.next")
+			finalPath := filepath.Join(s.rootDir, "quantstation")
 			if err := os.Rename(nextPath, finalPath); err != nil {
 				job.setStatus("update failed")
 				job.Emit(Event{Type: "error", Text: fmt.Sprintf("failed to replace binary: %v", err)})
@@ -554,7 +638,16 @@ func streamCommand(ctx context.Context, cmd *exec.Cmd, job *Job) error {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
-		job.Emit(Event{Type: "log", Text: scanner.Text() + "\n"})
+		line := scanner.Bytes()
+		var ev Event
+		if err := json.Unmarshal(line, &ev); err == nil && ev.Type != "" {
+			job.Emit(ev)
+			if ev.Status != "" {
+				job.setStatus(ev.Status)
+			}
+			continue
+		}
+		job.Emit(Event{Type: "log", Text: string(line) + "\n"})
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
 		return err

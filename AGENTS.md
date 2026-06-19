@@ -26,8 +26,9 @@ Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwe
 - `./start-linux.sh` is the normal start path. It performs setup/update work before launching the Go UI.
 - `./start-linux.sh --setup-only` performs dependency/binary setup and exits.
 - `./start-linux.sh --gradio` launches the legacy Gradio UI.
-- `./dasiwa` starts the already-built Go binary directly. It does **not** sync dependencies, update `convert_to_quant`, refresh `ggufy`, or rebuild itself.
-- The Go UI has an **Update & Restart** button. It runs `bash start-linux.sh --setup-only`, rebuilds to `dasiwa.next`, replaces `dasiwa`, starts a new copy of the binary, then exits the old process.
+- `./quantstation` starts the already-built Go binary directly. It does **not** sync dependencies, update `convert_to_quant`, refresh `ggufy`, or rebuild itself.
+- `./build.sh` rebuilds the Go binary to `quantstation` without running setup.
+- The Go UI has an **Update & Restart** button. It runs `bash start-linux.sh --setup-only`, rebuilds to `quantstation.next`, replaces `quantstation`, starts a new copy of the binary, then exits the old process.
 - The in-app updater may call `sudo` through the startup script if system packages are missing. It streams logs, but browser UIs cannot safely answer password prompts; launch from a terminal or pre-cache sudo when needed.
 
 ## Environmental Requirements

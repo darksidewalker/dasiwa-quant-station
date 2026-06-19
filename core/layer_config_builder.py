@@ -29,7 +29,8 @@ Design:
     Layers that are sensitive under lower-bit formats but do not need to be
     BF16/FP16 when the base format is already FP8.
       - Base = float8_e4m3fn (FP8): no override, use the FP8 base
-      - Base = nvfp4 / int8_*  : mark as {"format":"float8_e4m3fn"} -> bump to FP8
+      - Base = nvfp4: mark as {"format":"float8_e4m3fn"} -> bump to FP8
+      - Base = int8_*: no rescue (all transformer weights stay INT8)
 """
 import os
 import json
@@ -136,10 +137,11 @@ RESCUE_PATTERNS = {
     "LTX-2.3": [
         # Official LTX-2 FP8 cast targets these transformer linears. For
         # lower-bit bases, rescue them to FP8 instead of BF16.
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_[qkv]$",
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_out\.\d+$",
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.0(\.proj)?$",
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.2$",
+        # Keys end in .weight/.bias so the anchor must account for that suffix.
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_[qkv]\.(weight|bias)$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_out\.\d+\.(weight|bias)$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.0(\.proj)?\.(weight|bias)$",
+        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.2\.(weight|bias)$",
     ],
     "WAN 2.2": [
         # WAN uses split q/k/v/o (never fused). to_v in self + cross attn.
@@ -193,13 +195,26 @@ def build_layer_config_dict(model_type, base_format_ui_label):
     }
 
     # Rescue-layer behavior depends on base format.
+    # NVFP4: rescue sensitive layers to FP8 (INT8 is too lossy for them).
+    # INT8 (tensor-wise and ConvRot): do NOT rescue. Winnougan's working
+    # int8tensormixed model keeps ALL transformer weights (attention + FFN)
+    # as INT8 — rescuing to FP8 breaks compatibility with ComfyUI-INT8-Fast.
     if base_fmt == "float8_e4m3fn":
         rescue_action = "base FP8 (no extra override)"
-    else:
-        # Lower-bit base (nvfp4, int8_*): rescue sensitive layers to FP8.
+    elif base_fmt == "nvfp4":
         for pat in rescue_patterns:
             config[pat] = {"format": "float8_e4m3fn", "scaling_mode": "tensor"}
         rescue_action = "rescue to float8_e4m3fn"
+    elif base_fmt == "int8_tensorwise":
+        # INT8 tensor-wise: no rescue, all transformer weights stay INT8.
+        rescue_action = "no rescue (all INT8)"
+        # ConvRot Runtime needs row-wise scaling in the layer config so
+        # the per-layer converter applies convrot.  Detect from the UI label.
+        if "ConvRot" in base_format_ui_label:
+            config["_default"]["scaling_mode"] = "row"
+            rescue_action = "no rescue (all INT8 row-wise ConvRot)"
+    else:
+        rescue_action = "no rescue"
 
     # Preserve patterns get {"skip": true}. Added LAST so they override
     # rescue patterns in lower-bit modes (BF16 skip > FP8 rescue).
