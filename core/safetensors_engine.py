@@ -1,12 +1,62 @@
 # core/safetensors_engine.py
-import os, subprocess, sys
-from core.metadata_manager import inject_metadata, merge_custom_metadata
+import os, subprocess, sys, datetime
+from core.metadata_manager import inject_metadata, merge_custom_metadata, calculate_civitai_hashes
 from core.layer_config_builder import write_layer_config
 from utils.arch_detector import verify_architecture_match
 from config import ROOT_DIR
 from utils.file_ops import save_log
 
 FILTERS_DIR = os.path.join(ROOT_DIR, "filters")
+
+
+def write_quant_recipe(output_path, source_path, model_name, architecture, fmt,
+                       strategy, optimizer_choice, low_vram, actcal,
+                       is_full_checkpoint, layer_config_path, command,
+                       metadata_injected, metadata_message, hashes=None):
+    """Write a human-readable quantization recipe next to a quant output."""
+    hashes = hashes or calculate_civitai_hashes(output_path)
+    recipe_path = output_path.rsplit(".", 1)[0] + ".txt"
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "=" * 64,
+        "  DaSiWa Quantization Recipe",
+        "=" * 64,
+        "",
+        f"Date:              {now}",
+        f"Output:            {os.path.basename(output_path)}",
+        f"Output path:       {os.path.realpath(os.path.expanduser(output_path))}",
+        f"Source:            {os.path.basename(source_path)}",
+        f"Source path:       {os.path.realpath(os.path.expanduser(source_path))}",
+        f"Model name:        {model_name}",
+        f"Architecture:      {architecture}",
+        f"Format:            {fmt}",
+        f"Strategy:          {strategy}",
+        f"Optimizer:         {optimizer_choice if strategy == 'Optimizer-driven' else 'n/a'}",
+        f"Low VRAM:          {'yes' if low_vram else 'no'}",
+        f"Activation calib:  {'yes' if actcal else 'no'}",
+        f"Full checkpoint:   {'yes' if is_full_checkpoint else 'no'}",
+        f"Layer config:      {layer_config_path or 'none'}",
+        f"Metadata injected: {'yes' if metadata_injected else 'no'}",
+        f"Metadata message:  {metadata_message}",
+        "",
+        "-" * 64,
+        "  Civitai/Common Hashes",
+        "-" * 64,
+        f"AutoV1:            {hashes.get('AutoV1', '')}",
+        f"AutoV2:            {hashes.get('AutoV2', '')}",
+        f"AutoV3:            {hashes.get('AutoV3', '')}",
+        f"SHA256:            {hashes.get('SHA256', '')}",
+        f"CRC32:             {hashes.get('CRC32', '')}",
+        "",
+        "-" * 64,
+        "  Command",
+        "-" * 64,
+        " ".join(command),
+        "",
+    ]
+    with open(recipe_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return recipe_path
 
 
 def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type,
@@ -346,11 +396,20 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             
             # Inject the resulting dictionary into the safetensor
             success, msg = inject_metadata(final_path, meta)
+            hashes = calculate_civitai_hashes(final_path)
             
             if success:
                 log_acc += f"📝 Meta Injected [{model_type}]: {os.path.basename(final_path)}\n"
             else:
                 log_acc += f"⚠️ Metadata injection failed: {msg}\n"
+
+            recipe_path = write_quant_recipe(
+                final_path, source_path, model_name, model_type, fmt,
+                options, optimizer_choice, low_vram, actcal,
+                is_full_checkpoint, layer_config_path, cmd,
+                success, msg, hashes,
+            )
+            log_acc += f"🧾 Quant recipe written: {os.path.basename(recipe_path)}\n"
         else:
             log_acc += f"❌ Quantization Failed. Return code: {process.returncode}\n"
 

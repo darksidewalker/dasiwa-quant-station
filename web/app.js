@@ -14,6 +14,9 @@ const state = {
   events: null,
   logBuffer: "",
   logFlushPending: false,
+  selectedLoraPaths: new Set(),
+  lastLoraDir: "",
+  lastFileDir: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -134,6 +137,27 @@ function compactFormatLabel(label) {
 function wireEvents() {
   $("pick-folder").addEventListener("click", () => openBrowser("folder"));
   $("pick-source").addEventListener("click", () => openBrowser("file"));
+  wireDropTarget($("pick-source"), "source");
+  wireDropTarget($("lora-list"), "lora");
+  wireDropTarget($("add-lora"), "lora");
+
+  // Global OS file-manager drop support.
+  document.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "copy";
+  });
+  document.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    const paths = pathsFromDrop(ev.dataTransfer);
+    if (paths.length === 0) return;
+    const isSidebar = ev.target.closest(".side") !== null;
+    if (isSidebar) {
+      if (paths.length > 1) log(`Dropped ${paths.length} files on sidebar; using the first as the checkpoint.\n`);
+      selectSource(paths[0]);
+    } else {
+      addLoraPaths(paths);
+    }
+  });
   document.querySelectorAll("#workflow-mode button").forEach((btn) => {
     btn.addEventListener("click", () => setWorkflowMode(btn.dataset.mode));
   });
@@ -142,6 +166,13 @@ function wireEvents() {
   $("browser-close").addEventListener("click", () => $("browser").close());
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
   $("browser-select-folder").addEventListener("click", () => selectFolder(state.browserPath));
+  $("browser-add-selected").addEventListener("click", () => {
+    if (state.selectedLoraPaths.size > 0) {
+      addLoraPaths(Array.from(state.selectedLoraPaths));
+      state.selectedLoraPaths.clear();
+      $("browser").close();
+    }
+  });
   $("refresh-files").addEventListener("click", () => browse(state.modelsDir));
   $("clear-console").addEventListener("click", () => {
     state.logBuffer = "";
@@ -205,7 +236,16 @@ async function openBrowser(mode) {
   state.browserMode = mode;
   $("browser-title").textContent = mode === "folder" ? "Choose Model Folder" : (mode === "lora" ? "Choose LoRA" : "Choose Checkpoint");
   $("browser-select-folder").style.display = mode === "folder" ? "" : "none";
-  await browse(mode === "folder" ? state.modelsDir : (state.modelsDir || state.rootDir));
+  const addSel = $("browser-add-selected");
+  if (addSel) addSel.style.display = mode === "lora" ? "" : "none";
+  state.selectedLoraPaths.clear();
+  
+  let startPath;
+  if (mode === "lora" && state.lastLoraDir) startPath = state.lastLoraDir;
+  else if (mode === "file" && state.lastFileDir) startPath = state.lastFileDir;
+  else startPath = mode === "folder" ? state.modelsDir : (state.modelsDir || state.rootDir);
+  
+  await browse(startPath);
   $("browser").showModal();
 }
 
@@ -221,7 +261,34 @@ async function browse(path) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "browser-item";
-      btn.innerHTML = `<span>${item.name}</span><span class="kind">${item.is_dir ? "folder" : "file"}</span>`;
+      btn.draggable = !item.is_dir;
+      btn.addEventListener("dragstart", (ev) => {
+        ev.dataTransfer.effectAllowed = "copy";
+        ev.dataTransfer.setData("text/plain", item.path);
+        ev.dataTransfer.setData("text/uri-list", `file://${item.path}`);
+      });
+      
+      if (state.browserMode === "lora" && !item.is_dir) {
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = state.selectedLoraPaths.has(item.path);
+        cb.addEventListener("click", (ev) => ev.stopPropagation());
+        cb.addEventListener("change", () => {
+          if (cb.checked) state.selectedLoraPaths.add(item.path);
+          else state.selectedLoraPaths.delete(item.path);
+        });
+        btn.appendChild(cb);
+      }
+      
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = item.name;
+      btn.appendChild(nameSpan);
+      
+      const kindSpan = document.createElement("span");
+      kindSpan.className = "kind";
+      kindSpan.textContent = item.is_dir ? "folder" : "file";
+      btn.appendChild(kindSpan);
+
       btn.addEventListener("click", () => {
         if (item.is_dir) {
           browse(item.path);
@@ -244,12 +311,86 @@ function selectFolder(path) {
   $("browser").close();
 }
 
+function wireDropTarget(el, kind) {
+  if (!el) return;
+  ["dragenter", "dragover"].forEach((eventName) => {
+    el.addEventListener(eventName, (ev) => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "copy";
+      el.classList.add("drag-over");
+    });
+  });
+  ["dragleave", "drop"].forEach((eventName) => {
+    el.addEventListener(eventName, () => el.classList.remove("drag-over"));
+  });
+  el.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    const paths = pathsFromDrop(ev.dataTransfer);
+    if (paths.length === 0) {
+      log("Drop did not expose file paths. Drag from the in-app browser, or use the picker if your browser hides local paths.\n");
+      return;
+    }
+    if (kind === "source") {
+      if (paths.length > 1) log(`Dropped ${paths.length} files; using the first as the checkpoint.\n`);
+      selectSource(paths[0]);
+    } else {
+      addLoraPaths(paths);
+    }
+  });
+}
+
+function pathsFromDrop(dataTransfer) {
+  const values = [];
+  const addTextPaths = (text) => {
+    String(text || "").split(/\r?\n/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) return;
+      values.push(trimmed);
+    });
+  };
+  addTextPaths(dataTransfer.getData("text/uri-list"));
+  addTextPaths(dataTransfer.getData("text/plain"));
+
+  // Some Chromium/Electron contexts expose File.path for local drops. Normal
+  // browsers usually hide full local paths, so this is best-effort only.
+  Array.from(dataTransfer.files || []).forEach((file) => {
+    if (file.path) values.push(file.path);
+    else if (file.mozFullPath) values.push(file.mozFullPath);
+    else if (file.webkitRelativePath) values.push(`${state.modelsDir}/${file.webkitRelativePath}`);
+  });
+
+  const seen = new Set();
+  return values
+    .map(normalizeDroppedPath)
+    .filter(Boolean)
+    .filter((path) => {
+      if (seen.has(path)) return false;
+      seen.add(path);
+      return true;
+    });
+}
+
+function normalizeDroppedPath(value) {
+  let path = String(value || "").trim();
+  if (!path) return "";
+  if (path.startsWith("file://")) {
+    try {
+      path = decodeURIComponent(new URL(path).pathname);
+    } catch {
+      path = decodeURIComponent(path.replace(/^file:\/\//, ""));
+    }
+  }
+  return path.startsWith("/") ? path : "";
+}
+
 function addLoraRow() {
   state.loras.push({path: "", strength: 0.65, strategy: "Balanced", enabled: true});
   renderLoras();
 }
 
 function selectLora(path) {
+  const dir = path.substring(0, path.lastIndexOf("/"));
+  if (dir) state.lastLoraDir = dir;
   if (state.pendingLoraSlot >= 0 && state.loras[state.pendingLoraSlot]) {
     state.loras[state.pendingLoraSlot].path = path;
   } else {
@@ -260,13 +401,26 @@ function selectLora(path) {
   $("browser").close();
 }
 
+function addLoraPaths(paths) {
+  const existing = new Set(state.loras.map((lora) => lora.path).filter(Boolean));
+  const added = [];
+  paths.forEach((path) => {
+    if (!path || existing.has(path)) return;
+    state.loras.push({path, strength: 0.65, strategy: "Balanced", enabled: true});
+    existing.add(path);
+    added.push(path);
+  });
+  renderLoras();
+  if (added.length > 0) log(`Added ${added.length} LoRA file(s) from drop.\n`);
+}
+
 function renderLoras() {
   const root = $("lora-list");
   root.textContent = "";
   if (state.loras.length === 0) {
     const empty = document.createElement("p");
     empty.className = "muted-note";
-    empty.textContent = "No LoRAs selected. Add one or more LoRAs and choose a strategy for each.";
+    empty.textContent = "No LoRAs selected. Drag files from the in-app browser, or click + Add LoRA.";
     root.appendChild(empty);
     return;
   }
@@ -301,6 +455,8 @@ function renderLoras() {
 }
 
 async function selectSource(path) {
+  const dir = path.substring(0, path.lastIndexOf("/"));
+  if (dir) state.lastFileDir = dir;
   state.sourcePath = path;
   $("source-label").textContent = shortPath(path);
   $("browser").close();
@@ -364,6 +520,9 @@ async function startLoraMerge() {
         strategy: "Balanced",
         architecture: state.architecture,
         global_strength: Number($("lora-global-strength").value) || 1,
+        merge_device: $("lora-merge-device").value,
+        cuda_device: $("lora-cuda-device").value || "cuda:0",
+        vram_headroom_mb: Number($("lora-vram-headroom").value) || 1024,
         adaptive: $("lora-adaptive").checked,
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,

@@ -27,13 +27,13 @@ import (
 // IdleShutdown tracks browser connections and shuts down the server
 // after a grace period with zero active connections.
 type IdleShutdown struct {
-	mu          sync.Mutex
-	active      int
-	grace       time.Duration
-	shutdownAt  time.Time
-	running     bool
-	shutdownFn  func()
-	shutdownCtx context.Context
+	mu             sync.Mutex
+	active         int
+	grace          time.Duration
+	shutdownAt     time.Time
+	running        bool
+	shutdownFn     func()
+	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 }
 
@@ -475,6 +475,9 @@ type LoraMergeRequest struct {
 	Adaptive       bool       `json:"adaptive"`
 	DryRun         bool       `json:"dry_run"`
 	StrictMatching bool       `json:"strict_matching"`
+	MergeDevice    string     `json:"merge_device"`
+	CUDADevice     string     `json:"cuda_device"`
+	VRAMHeadroomMB int        `json:"vram_headroom_mb"`
 }
 
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
@@ -527,6 +530,19 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.GlobalStrength == 0 {
 		req.GlobalStrength = 1
+	}
+	if req.MergeDevice == "" {
+		req.MergeDevice = "auto"
+	}
+	if req.MergeDevice != "cpu" && req.MergeDevice != "auto" && req.MergeDevice != "cuda" {
+		writeError(w, http.StatusBadRequest, "merge_device must be cpu, auto, or cuda")
+		return
+	}
+	if req.CUDADevice == "" {
+		req.CUDADevice = "cuda:0"
+	}
+	if req.VRAMHeadroomMB <= 0 {
+		req.VRAMHeadroomMB = 1024
 	}
 	for i := range req.Loras {
 		req.Loras[i].Path = cleanPath(req.Loras[i].Path, s.modelsDir)

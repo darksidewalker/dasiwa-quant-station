@@ -1,6 +1,7 @@
 # core/gguf_engine.py
 import os, subprocess, sys, json, re, hashlib, time
-from core.metadata_manager import write_gguf_meta
+from core.metadata_manager import write_gguf_meta, calculate_civitai_hashes
+from core.safetensors_engine import write_quant_recipe
 from config import ROOT_DIR
 from safetensors import safe_open
 from core.layer_config_builder import BAKED_VAE_PATTERNS, PRESERVE_PATTERNS, RESCUE_PATTERNS
@@ -228,6 +229,13 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
                 log_acc += f"📝 GGUF Meta Injected: {os.path.basename(final_path)} ({msg})\n"
             else:
                 log_acc += f"⚠️ Meta Injection Failed: {msg}\n"
+            hashes = calculate_civitai_hashes(final_path)
+            recipe_path = write_quant_recipe(
+                final_path, source_path, model_name, model_type, fmt,
+                "ggufy", "n/a", False, False, is_full,
+                sens_path, cmd, success, msg, hashes,
+            )
+            log_acc += f"🧾 Quant recipe written: {os.path.basename(recipe_path)}\n"
         else:
             log_acc += "❌ Final GGUF file missing after conversion.\n"
         log_acc += f"✅ GGUF Done: {os.path.basename(final_path)}\n"

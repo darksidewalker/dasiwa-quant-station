@@ -23,7 +23,7 @@
           <span>Model Folder</span>
           <strong id="folder-label">models</strong>
         </button>
-        <button id="pick-source" class="picker-button" type="button" title="Select the checkpoint file to quantize or use as LoRA merge base">
+        <button id="pick-source" class="picker-button drop-target" type="button" title="Select or drop one checkpoint file to quantize or use as LoRA merge base">
           <span id="source-label-hint">Checkpoint (base)</span>
           <strong id="source-label">Choose file</strong>
         </button>
@@ -117,6 +117,22 @@
               <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
               <input id="lora-global-strength" type="number" min="0" max="2" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">
             </label>
+            <label class="field compact">
+              <span title="Choose whether LoRA merge math runs on CPU only, CUDA when possible, or automatic GPU/CPU fallback">Merge Device</span>
+              <select id="lora-merge-device" title="Auto uses CUDA when enough VRAM is free and falls back to CPU on OOM">
+                <option value="auto" selected>Auto GPU/CPU</option>
+                <option value="cpu">CPU only</option>
+                <option value="cuda">CUDA GPU</option>
+              </select>
+            </label>
+            <label class="field compact">
+              <span title="CUDA device string used for GPU LoRA merge, usually cuda:0">CUDA Device</span>
+              <input id="lora-cuda-device" type="text" value="cuda:0" title="PyTorch CUDA device for merge acceleration, for example cuda:0">
+            </label>
+            <label class="field compact">
+              <span title="Free VRAM kept in reserve before using CUDA for a tensor merge">VRAM Headroom MB</span>
+              <input id="lora-vram-headroom" type="number" min="256" step="256" value="1024" title="Minimum VRAM to leave free; tensors fall back to CPU if this margin would be crossed">
+            </label>
             <label class="checkline">
               <input id="lora-adaptive" type="checkbox" checked>
               <span title="Scale each LoRA proportionally so the combined strength stays near the global target">Adaptive scaling</span>
@@ -130,9 +146,9 @@
               <span title="Fail if any LoRA key doesn't match the base; uncheck to skip unmatched keys">Strict key matching</span>
             </label>
           </div>
-          <div id="lora-list" class="lora-list"></div>
+          <div id="lora-list" class="lora-list drop-target" title="Drop one or more LoRA files here to add them to the merge list"></div>
           <div class="lora-actions">
-            <button id="add-lora" class="ghost" type="button" title="Add a LoRA to the merge list">+ Add LoRA</button>
+            <button id="add-lora" class="ghost drop-target" type="button" title="Add a LoRA to the merge list, or drop one or more LoRA files here">+ Add LoRA</button>
           </div>
         </section>
 
@@ -176,6 +192,7 @@
     <div class="browser-actions">
       <button id="browser-up" type="button">Up</button>
       <button id="browser-select-folder" type="button">Use This Folder</button>
+      <button id="browser-add-selected" type="button" style="display:none">Add Selected</button>
     </div>
     <div id="browser-list" class="browser-list"></div>
   </dialog>

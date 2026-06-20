@@ -1,11 +1,14 @@
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
+from core import lora_merge_engine
 from core.lora_merge_engine import run_lora_merge
 from utils.lora_inspector import discover_lora_pairs, read_safetensors_manifest
 from utils.ltx23_layer_profiles import classify_ltx23_key, is_ltx23_preserved_key
@@ -13,6 +16,180 @@ from utils.wan22_layer_profiles import classify_wan22_key, is_wan22_preserved_ke
 
 
 class LoraMergeEngineTests(unittest.TestCase):
+    def test_merge_device_policy_helpers_validate_and_estimate_vram(self):
+        self.assertEqual(lora_merge_engine._normalize_merge_device(None), "auto")
+        self.assertEqual(lora_merge_engine._normalize_merge_device("cpu"), "cpu")
+        self.assertEqual(lora_merge_engine._normalize_merge_device("AUTO"), "auto")
+        with self.assertRaises(ValueError):
+            lora_merge_engine._normalize_merge_device("tpu")
+
+        small = lora_merge_engine._estimate_lora_merge_peak_bytes((3, 4), (2, 4), (3, 2))
+        large = lora_merge_engine._estimate_lora_merge_peak_bytes((30, 40), (20, 40), (30, 20))
+        self.assertGreater(small, 0)
+        self.assertGreater(large, small)
+
+    def test_cuda_oom_falls_back_to_cpu_and_writes_correct_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "model.diffusion_model.transformer_blocks.0.attn1.to_k.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_A.weight": torch.ones(2, 4),
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            with mock.patch.object(lora_merge_engine, "_cuda_available", return_value=True), \
+                 mock.patch.object(lora_merge_engine, "_has_cuda_headroom", return_value=True), \
+                 mock.patch.object(lora_merge_engine, "_merge_target_cuda", side_effect=torch.cuda.OutOfMemoryError("boom")), \
+                 mock.patch.object(torch.cuda, "empty_cache"):
+                events = list(run_lora_merge({
+                    "base_path": str(base),
+                    "loras": [{"path": str(lora), "strength": 0.5}],
+                    "output_path": str(out),
+                    "strategy": "Balanced",
+                    "architecture": "LTX-2.3",
+                    "global_strength": 1.0,
+                    "adaptive": False,
+                    "dry_run": False,
+                    "strict_matching": True,
+                    "merge_device": "cuda",
+                    "cuda_device": "cuda:0",
+                    "vram_headroom_mb": 1024,
+                }))
+
+            text = "".join(e.get("text", "") for e in events)
+            self.assertIn("oom=1", text)
+            merged = load_file(str(out))
+            self.assertTrue(torch.allclose(
+                merged["model.diffusion_model.transformer_blocks.0.attn1.to_k.weight"],
+                torch.ones(3, 4),
+            ))
+
+    def test_real_merge_streams_safetensors_without_save_file_dict_writer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "model.diffusion_model.transformer_blocks.0.attn1.to_k.weight": torch.zeros(3, 4),
+                "model.diffusion_model.transformer_blocks.0.attn1.to_v.weight": torch.full((3, 4), 7.0),
+                "bf16.weight": torch.ones(2, 2, dtype=torch.bfloat16),
+            }, str(base))
+            save_file({
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_A.weight": torch.ones(2, 4),
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            with mock.patch.object(lora_merge_engine, "save_file", side_effect=AssertionError("save_file should not be used for merge output")):
+                list(run_lora_merge({
+                    "base_path": str(base),
+                    "loras": [{"path": str(lora), "strength": 0.5}],
+                    "output_path": str(out),
+                    "strategy": "Balanced",
+                    "architecture": "LTX-2.3",
+                    "global_strength": 1.0,
+                    "adaptive": False,
+                    "dry_run": False,
+                    "strict_matching": True,
+                    "merge_device": "cpu",
+                }))
+
+            merged = load_file(str(out))
+            self.assertTrue(torch.allclose(
+                merged["model.diffusion_model.transformer_blocks.0.attn1.to_k.weight"],
+                torch.ones(3, 4),
+            ))
+            self.assertTrue(torch.allclose(
+                merged["model.diffusion_model.transformer_blocks.0.attn1.to_v.weight"],
+                torch.full((3, 4), 7.0),
+            ))
+            self.assertEqual(merged["bf16.weight"].dtype, torch.bfloat16)
+
+    def test_real_merge_logs_success_summary_when_all_matched_tensors_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "model.diffusion_model.transformer_blocks.0.attn1.to_k.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_A.weight": torch.ones(2, 4),
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            events = list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 0.5}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "LTX-2.3",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": False,
+                "strict_matching": True,
+                "merge_device": "cpu",
+            }))
+
+            text = "".join(e.get("text", "") for e in events)
+            self.assertIn("LoRA merge success summary: all_matched_applied=yes altered_targets=1/1", text)
+            statuses = [e.get("status") for e in events]
+            self.assertIn("LoRA merge complete: 1/1 targets altered", statuses)
+
+    def test_real_merge_warns_when_matched_tensor_is_not_altered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "zero.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "model.diffusion_model.transformer_blocks.0.attn1.to_k.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_A.weight": torch.zeros(2, 4),
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            events = list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 0.5}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "LTX-2.3",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": False,
+                "strict_matching": True,
+                "merge_device": "cpu",
+            }))
+
+            text = "".join(e.get("text", "") for e in events)
+            self.assertIn("LoRA merge success summary: all_matched_applied=yes altered_targets=0/1", text)
+            self.assertIn("WARNING: 1 matched target tensor(s) were not altered", text)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA not available")
+    def test_cuda_merge_matches_cpu_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = torch.zeros(3, 4)
+            lora_path = tmp / "style.safetensors"
+            save_file({
+                "down": torch.ones(2, 4),
+                "up": torch.ones(3, 2),
+            }, str(lora_path))
+            op = {"lora_path": str(lora_path), "down_key": "down", "up_key": "up", "alpha_key": None, "rank": 2, "scale": 0.5}
+            with safe_open(str(lora_path), framework="pt", device="cpu") as lf:
+                handles = {str(lora_path): lf}
+                cpu = lora_merge_engine._merge_target_cpu(base, [op], handles, adaptive=False)
+                cuda = lora_merge_engine._merge_target_cuda(base, [op], handles, adaptive=False, device="cuda:0")
+            self.assertTrue(torch.allclose(cpu, cuda))
+
     def test_lora_a_b_pair_maps_diffusion_model_prefix_to_base_prefix(self):
         with tempfile.TemporaryDirectory() as tmp:
             lora = Path(tmp) / "style.safetensors"

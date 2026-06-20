@@ -3,6 +3,7 @@ import json
 import struct
 import datetime
 import hashlib
+import zlib
 from core.metadata_configs import MODEL_METADATA_CONFIGS, COMMON_METADATA
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
@@ -28,6 +29,40 @@ def calculate_sha256(file_path):
         for byte_block in iter(lambda: f.read(65536), b""):
             sha256_hash.update(byte_block)
     return f"0x{sha256_hash.hexdigest()}"
+
+
+def calculate_civitai_hashes(file_path):
+    """Calculate common Civitai file hash fields for metadata/recipes."""
+    if not os.path.exists(file_path) or file_path == "PREVIEW_MODE":
+        placeholder = "HASH_WILL_BE_CALCULATED_ON_SAVE"
+        return {
+            "AutoV1": placeholder,
+            "AutoV2": placeholder,
+            "AutoV3": placeholder,
+            "SHA256": placeholder,
+            "CRC32": placeholder,
+        }
+
+    sha256_hash = hashlib.sha256()
+    crc = 0
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(1024 * 1024), b""):
+            sha256_hash.update(byte_block)
+            crc = zlib.crc32(byte_block, crc)
+
+    sha = sha256_hash.hexdigest().upper()
+    return {
+        "AutoV1": sha[:8],
+        "AutoV2": sha[:10],
+        "AutoV3": sha[:12],
+        "SHA256": sha,
+        "CRC32": f"{crc & 0xFFFFFFFF:08X}",
+    }
+
+
+def _civitai_hash_metadata(file_path):
+    hashes = calculate_civitai_hashes(file_path)
+    return {f"civitai.hash.{name}": value for name, value in hashes.items()}
 
 def get_current_meta(model_name, architecture, bits="FP8"):
     """
@@ -133,6 +168,7 @@ def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
     Returns dict of string -> string ready for save_file(..., metadata=...).
     """
     base = get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full)
+    base.update(_civitai_hash_metadata(file_path))
 
     if custom_meta:
         for k, v in custom_meta.items():
