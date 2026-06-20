@@ -3,7 +3,7 @@ import json
 import struct
 import datetime
 import hashlib
-from ui.assets import MODEL_METADATA_CONFIGS, COMMON_METADATA
+from core.metadata_configs import MODEL_METADATA_CONFIGS, COMMON_METADATA
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 

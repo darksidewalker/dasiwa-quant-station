@@ -17,10 +17,6 @@ def is_wan22_preserved_key(key: str) -> bool:
     return False
 
 
-def extract_block_index(key: str) -> Optional[int]:
-    m = re.search(r"transformer_blocks\.(\d+)\.", key)
-    return int(m.group(1)) if m else None
-
 
 def classify_wan22_key(key: str) -> str:
     """Classify a WAN 2.2 tensor key into a merge strategy category.

@@ -63,14 +63,8 @@ Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwe
 - **`utils/wan22_layer_profiles.py`**: WAN 2.2 tensor classification into categories (self_attn_qkv/out, cross_attn_qkv/out, ffn_in/out, modulation, caption_projection, patchify_or_output, norm, other). Strategy multipliers for Balanced/Motion/Visuals. No Audio strategy. Preserves modulation.lin, patch_embedding, baked companions. Norm layers always 0.0 multiplier.
 - **`utils/scanner_5d.py`**: 5D tensor validation tool.
 - **`utils/pattern_audit.py`**: Pattern coverage audit against checkpoint manifest.
-- **`utils/keeplist_compare.py`**: Preserve list comparison tool.
-- **`utils/exact_config.py`**: WAN 2.2/LTX-2.3 exact/reference config tooling.
 - **`utils/system.py`**: CPU/RAM/GPU/VRAM monitoring via nvidia-smi and psutil.
 - **`utils/file_ops.py`**: Filesystem utilities (size formatting, path operations).
-- **`utils/file_listing.py`**: Recursive file discovery with extension filtering.
-
-### Legacy
-- **`app.py`**: Legacy Gradio entry point. Still available through `./start-linux.sh --gradio`, but no longer the primary UI.
 
 ### Build/Startup
 - **`start-linux.sh`**: Preferred launcher. Installs/refreshes system tools, installs `uv`, syncs Python dependencies, refreshes `convert_to_quant`, installs `comfy-kitchen[cublas]`, ensures `bin/ggufy`, builds the Go binary, and launches the Go UI.
@@ -80,7 +74,6 @@ Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwe
 ## Launch And Update Semantics
 - `./start-linux.sh` is the normal start path. Performs setup/update work before launching the Go UI.
 - `./start-linux.sh --setup-only` performs dependency/binary setup and exits.
-- `./start-linux.sh --gradio` launches the legacy Gradio UI.
 - `./quantstation` starts the already-built Go binary directly. Does **not** sync dependencies, update `convert_to_quant`, refresh `ggufy`, or rebuild itself.
 - `./build.sh` rebuilds the Go binary to `quantstation` without running setup.
 - The Go UI has an **Update & Restart** button. Runs `bash start-linux.sh --setup-only`, rebuilds to `quantstation.next`, replaces `quantstation`, starts a new copy of the binary, then exits the old process.
@@ -134,13 +127,13 @@ Update the Go API format list in `internal/app/server.go`, frontend grouping in 
 Update the Go API format list and the GGUF mapping in `core/gguf_engine.py`.
 
 ### Adding an architecture
-Keep names synchronized between `internal/app/server.go`, `core/safetensors_engine.py`, and metadata templates in `ui/assets.py`/metadata generation code. Add `arch_detector.py` markers and `layer_config_builder.py` patterns only after real header/tensor verification. Add LoRA merge profiles in `utils/<arch>_layer_profiles.py` with tensor classification and strategy multipliers.
+Keep names synchronized between `internal/app/server.go`, `core/safetensors_engine.py`, and metadata templates in `core/metadata_configs.py`. Add `arch_detector.py` markers and `layer_config_builder.py` patterns only after real header/tensor verification. Add LoRA merge profiles in `utils/<arch>_layer_profiles.py` with tensor classification and strategy multipliers.
 
 ### Changing startup behavior
 Edit `start-linux.sh` and the `/api/update` path in `internal/app/server.go` together so CLI launch and in-app update stay equivalent.
 
 ### UI tweaks
-Primary UI styles live in `web/styles.css`; UI behavior lives in `web/app.js`. Legacy Gradio styles live in `ui/assets.py`.
+Primary UI styles live in `web/styles.css`; UI behavior lives in `web/app.js`.
 
 ### Debugging
 Check `logs/`, browser network/SSE output, and the Go server terminal.
@@ -156,6 +149,6 @@ Check `logs/`, browser network/SSE output, and the Go server terminal.
 - Do not revert user changes or unrelated dirty worktree files.
 - Do not prune code unless it is faulty.
 - Keep Go UI and Python bridge behavior aligned; the Go app is a shell over the proven Python quantization logic, not a rewrite of the quantizers.
-- For long-running quantization or update jobs, preserve streamed output behavior. Go should stream via SSE; Python/legacy Gradio should use subprocess streaming/yields.
+- For long-running quantization or update jobs, preserve streamed output behavior. Go should stream via SSE; Python bridge uses subprocess streaming/yields.
 - When adding LoRA merge strategies, update both the profile file and the frontend strategy list in `web/app.js` (`renderLoras()`).
 - When modifying preserve patterns, run the pattern audit tool against a real checkpoint to verify coverage before committing.

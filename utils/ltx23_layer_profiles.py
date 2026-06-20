@@ -15,10 +15,6 @@ def is_ltx23_preserved_key(key: str) -> bool:
     return bool(re.search(r"\.to_gate_logits(\.weight|\.bias)?$", key))
 
 
-def extract_block_index(key: str) -> Optional[int]:
-    m = re.search(r"transformer_blocks\.(\d+)\.", key)
-    return int(m.group(1)) if m else None
-
 
 def classify_ltx23_key(key: str) -> str:
     if is_ltx23_preserved_key(key):

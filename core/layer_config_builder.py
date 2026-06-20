@@ -279,13 +279,3 @@ def write_layer_config(model_type, base_format_ui_label, out_dir=None):
     log.append(f"[layer-config] Written: {os.path.basename(config_path)}")
     return config_path, log
 
-
-# Backwards-compat shim for callers that still use the old name.
-# Old signature: build_layer_config(source_path, model_type, filters_dir)
-# Source path is no longer needed (regex covers every model of an arch).
-def build_layer_config(source_path, model_type, filters_dir):
-    """
-    Deprecated entry point. Defaults to NVFP4 base for the legacy mixed mode.
-    Prefer write_layer_config() with an explicit base format.
-    """
-    return write_layer_config(model_type, "NVFP4", out_dir=filters_dir)

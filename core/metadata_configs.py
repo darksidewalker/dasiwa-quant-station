@@ -1,11 +1,11 @@
-# ui/assets.py
-
+# core/metadata_configs.py
 # Dictionary mapping architectures to their specific metadata fields.
-# Used by core/metadata_manager.py - do not rename or remove.
+# Used by core/metadata_manager.py.
 #
-# Keys must match the labels in core.safetensors_engine.ARCH_REGISTRY and
-# ui/layout.py's Architecture dropdown. Archs without an entry here fall
-# back to the WAN 2.2 template via get_current_meta() in metadata_manager.
+# Keys must match the labels in core.safetensors_engine.ARCH_REGISTRY.
+# Archs without an entry here fall back to the WAN 2.2 template via
+# get_current_meta() in metadata_manager.
+
 MODEL_METADATA_CONFIGS = {
     "Not set": {
         # Generic template used when the user declines to declare an
@@ -237,121 +237,3 @@ COMMON_METADATA = {
     "quantization.tool": "https://github.com/darksidewalker/dasiwa-quant-station",
     "quantization.bits": "{bits}"
 }
-
-
-# Softer dark palette. Terminal uses a muted teal instead of pure neon green
-# (less eye strain on long quant runs). Borders, backgrounds and accents use
-# GitHub-dark-inspired neutrals.
-CSS_STYLE = """
-/* Terminal output: monospace, soft teal on near-black */
-#terminal textarea {
-    background-color: #0d1117 !important;
-    color: #7dd3c0 !important;
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace !important;
-    font-size: 13px !important;
-    line-height: 1.5 !important;
-    border: 1px solid #21262d !important;
-    border-radius: 6px !important;
-}
-
-/* Hardware vitals: same monospace family, dim accent */
-#vitals textarea {
-    background-color: #0d1117 !important;
-    color: #8b949e !important;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
-    font-size: 12px !important;
-    border: 1px solid #21262d !important;
-    border-radius: 6px !important;
-}
-
-/* JSON editor: lighter than terminal so it reads as editable */
-#meta_editor {
-    border: 1px solid #30363d !important;
-    border-radius: 6px !important;
-}
-
-/* Card-style groups: subtle separation without heavy borders */
-.tool-card {
-    border: 1px solid #21262d !important;
-    border-radius: 8px !important;
-    padding: 12px !important;
-    background: #0d1117 !important;
-    margin-bottom: 8px !important;
-}
-
-/* Compact ggufy/safetensors target format selector */
-#q_format fieldset {
-    display: grid !important;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px !important;
-}
-
-#q_format label {
-    font-size: 0.78rem !important;
-    line-height: 1.2 !important;
-    padding: 5px 7px !important;
-}
-
-#q_format input[type="checkbox"] {
-    transform: scale(0.88);
-    margin-right: 5px !important;
-}
-
-#q_format .gradio-checkbox {
-    padding: 3px 5px !important;
-}
-
-/* Status banner */
-#status-banner {
-    border-left: 3px solid #7dd3c0 !important;
-    padding: 8px 12px !important;
-    background: rgba(125, 211, 192, 0.05) !important;
-    border-radius: 4px !important;
-}
-
-/* Section headings - smaller, less shouty than Gradio defaults */
-.section-heading h3 {
-    font-size: 0.85rem !important;
-    font-weight: 600 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 0.05em !important;
-    color: #8b949e !important;
-    margin: 0 0 8px 0 !important;
-}
-
-/* Primary action: muted teal instead of default Gradio orange */
-.primary-action {
-    background: linear-gradient(180deg, #2ea043 0%, #238636 100%) !important;
-    color: white !important;
-    font-weight: 600 !important;
-    border: 1px solid rgba(240, 246, 252, 0.1) !important;
-}
-
-/* Destructive action: muted red for STOP */
-.danger-action {
-    background: #21262d !important;
-    color: #f85149 !important;
-    border: 1px solid #f85149 !important;
-}
-.danger-action:hover {
-    background: #f85149 !important;
-    color: white !important;
-}
-"""
-
-
-def get_theme():
-    """Returns the configured Gradio theme.
-    Built lazily because gradio import is heavy and not all entry points
-    that touch assets.py need the theme (e.g. metadata utilities)."""
-    import gradio as gr
-    return gr.themes.Default(
-        primary_hue="emerald",
-        secondary_hue="slate",
-        neutral_hue="slate",
-    ).set(
-        body_background_fill_dark="#010409",
-        background_fill_primary_dark="#0d1117",
-        background_fill_secondary_dark="#161b22",
-        border_color_primary_dark="#30363d",
-    )

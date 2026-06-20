@@ -1,9 +1,9 @@
 # core/safetensors_engine.py
 import os, subprocess, sys
-from core.metadata_manager import inject_metadata, get_current_meta, get_specialized_meta, merge_custom_metadata
+from core.metadata_manager import inject_metadata, merge_custom_metadata
 from core.layer_config_builder import write_layer_config
 from utils.arch_detector import verify_architecture_match
-from config import CONVERT_PY, ROOT_DIR
+from config import ROOT_DIR
 from utils.file_ops import save_log
 
 FILTERS_DIR = os.path.join(ROOT_DIR, "filters")

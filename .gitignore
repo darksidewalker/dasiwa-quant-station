@@ -13,6 +13,7 @@ build/
 bin/
 /quantstation
 /quantstation.next
+/dasiwa
 *.gguf
 *.patch
 !lcpp.patch
@@ -39,3 +40,8 @@ Thumbs.db
 fix_5d_tensors_*
 .ggufy_sens_*.json
 ggufy_sens_*.json
+
+# --- Agent / AI Tool Config ---
+.agents/
+.hermes/
+skills-lock.json

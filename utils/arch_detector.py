@@ -112,20 +112,6 @@ def _detect_full_checkpoint_from_keys(keys, basename):
     return True, log
 
 
-def detect_full_checkpoint(safetensors_path):
-    """
-    Inspect the safetensors header and infer whether this is a full checkpoint.
-
-    Full means the file appears to bundle non-transformer companion modules
-    such as VAE, audio VAE, vocoder, text encoders, or audio encoders. The
-    detector reads only tensor keys from the safetensors header.
-
-    Returns:
-        (is_full_checkpoint: bool, confidence_log: list[str])
-    """
-    keys = _read_keys_only(safetensors_path)
-    return _detect_full_checkpoint_from_keys(keys, os.path.basename(safetensors_path))
-
 
 def inspect_checkpoint(safetensors_path):
     """

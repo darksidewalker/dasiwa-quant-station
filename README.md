@@ -51,7 +51,6 @@ The startup script syncs the environment before launch:
 ```bash
 ./start-linux.sh              # setup/update, build Go UI, launch
 ./start-linux.sh --setup-only # setup/update only
-./start-linux.sh --gradio     # launch the legacy Gradio UI
 ./quantstation                # launch the already-built Go binary only
 ./build.sh                    # rebuild Go binary without setup
 ```
@@ -154,14 +153,10 @@ utils/                       Detection, scan, audit, system helpers
   pattern_audit.py           Pattern coverage audit
   system.py                  CPU/RAM/GPU/VRAM monitoring
   file_ops.py                Filesystem utilities
-  file_listing.py            Recursive file discovery
-  keeplist_compare.py        Preserve list comparison
-  exact_config.py            Reference config tooling
 tests/                       Unit tests (LoRA merge engine, layer profiles)
 models/                      Local model tree
 logs/                        Conversion logs
 bin/ggufy                    GGUFY binary maintained by start-linux.sh
-app.py                       Legacy Gradio UI
 start-linux.sh               Preferred launcher
 build.sh                     Go binary rebuild
 lcpp.patch                   llama.cpp patch for Wan 2.2 GGUF support

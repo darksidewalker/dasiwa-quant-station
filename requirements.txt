@@ -3,10 +3,8 @@ torch
 torchvision
 torchaudio
 psutil
-gradio>=5.14
 gguf
 sentencepiece
 safetensors
 numpy
 tqdm
-prodigy-plus-schedule-free

@@ -2,25 +2,31 @@
 
 This document explains the expected behavior and conventions for automated agents (AI assistants) working on this repository.
 
-## UI & Pathing
-- The UI exposes a single `Model Directory` dropdown (`models_dir_dd`) that lists the repository `MODELS_DIR` and its immediate subfolders. Agents should prefer this dropdown pattern when referencing or populating UI tests.
-- Do not attempt to treat the UI as an upload interface. The app operates on files already present on the host filesystem under `MODELS_DIR`.
-- Use `config.MODELS_DIR` as the canonical source-of-truth for model storage paths. Helper `utils.file_ops.list_dirs()` returns a `gr.update` suitable to populate the directory dropdown.
+## Architecture
 
-## Callback Conventions
-- Callbacks expect a directory path string (not an uploaded file object). If a callback receives a file path, the code normalizes it to its containing directory.
-- The primary file dropdowns are populated from `utils.file_listing.get_model_list(models_dir)`.
+- **Go server** (`cmd/dasiwa/main.go`, `internal/app/server.go`) serves a static frontend at `http://127.0.0.1:7878`.
+- **Python bridge** (`scripts/go_bridge.py`) is invoked by the Go server for all quantization, LoRA merge, scan, and audit operations.
+- **Core engines** live in `core/` — gguf_engine, safetensors_engine, lora_merge_engine, layer_config_builder, metadata_manager, metadata_configs.
+- **Utilities** live in `utils/` — arch_detector, lora_inspector, layer profiles, scanner, audit, system monitoring, file_ops.
+- **Frontend** is vanilla JS/HTML/CSS in `web/`.
+
+## Pathing
+
+- Use `config.MODELS_DIR` as the canonical source-of-truth for model storage paths.
+- The Go server provides filesystem browser endpoints (`/api/browse`, `/api/files`) — no Python file listing is needed.
 
 ## Long-running Processes
-- Use `subprocess.Popen` or streaming approaches for long-running conversions so UI remains responsive; prefer the existing patterns in `core/gguf_engine.py` and `core/safetensors_engine.py`.
+
+- Use `subprocess.Popen` or streaming approaches for long-running conversions so the Go UI remains responsive.
+- Prefer the existing patterns in `core/gguf_engine.py` and `core/safetensors_engine.py`.
+- Go streams progress via SSE to the browser.
 
 ## Editing Guidance
-- When changing architecture registries or UI labels, update all three places: `core/safetensors_engine.ARCH_REGISTRY`, `ui/layout.py` Dropdown choices, and `ui/assets.py` `MODEL_METADATA_CONFIGS` keys.
-- Avoid altering unrelated files in the same commit; make small, focused edits and run the app locally to verify UI wiring.
+
+- When changing architecture registries or UI labels, update all three places: `core/safetensors_engine.ARCH_REGISTRY`, Go API format list in `internal/app/server.go`, and metadata templates in `core/metadata_configs.py`.
+- Avoid altering unrelated files in the same commit; make small, focused edits and run the app locally to verify behavior.
 
 ## Verification
-- To validate directory-dropdown behavior: run the app and ensure `Model Directory` lists `MODELS_DIR` and subfolders; selecting one should populate the `Safetensors file` dropdown.
 
-## Contacts & Credits
-- See `README.md` for project credits and external dependencies.
-
+- Run `python3 -m pytest tests/ -v` after any core engine changes.
+- Check `logs/`, browser network/SSE output, and the Go server terminal for debugging.

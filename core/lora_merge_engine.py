@@ -10,12 +10,6 @@ from utils.lora_inspector import discover_lora_pairs, read_safetensors_manifest
 from core.metadata_manager import merge_custom_metadata
 
 
-# Architecture-specific profile dispatch.
-_ARCH_PROFILES = {
-    "LTX-2.3": None,  # loaded lazily below
-    "WAN 2.2": None,
-}
-
 
 def _get_profile(arch: str):
     """Return (is_preserved, classify, strategy_mult) for *arch*."""

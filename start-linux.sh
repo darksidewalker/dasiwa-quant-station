@@ -112,14 +112,8 @@ if [ "$MODE" = "--setup-only" ]; then
     exit 0
 fi
 
-if [ "$MODE" = "--gradio" ]; then
-    echo "🚀 Starting Quant Station Gradio UI ..."
-    python app.py
-    exit $?
-fi
-
 if ! command -v go &> /dev/null; then
-    echo "❌ Go toolchain not found. Install Go or run ./start-linux.sh --gradio"
+    echo "❌ Go toolchain not found. Install Go."
     exit 1
 fi
 

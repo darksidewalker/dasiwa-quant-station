@@ -148,7 +148,6 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/system", s.handleSystem)
 	mux.HandleFunc("GET /api/browse", s.handleBrowse)
-	mux.HandleFunc("GET /api/files", s.handleFiles)
 	mux.HandleFunc("GET /api/inspect", s.handleInspect)
 	mux.HandleFunc("GET /api/metadata-preview", s.handleMetadataPreview)
 	mux.HandleFunc("POST /api/metadata/read", s.handleMetadataRead)
@@ -292,23 +291,6 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	})
 	parent := filepath.Dir(path)
 	writeJSON(w, map[string]any{"path": path, "parent": parent, "items": items})
-}
-
-func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	base := cleanPath(r.URL.Query().Get("path"), s.modelsDir)
-	var files []string
-	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isModelFile(path) {
-			return nil
-		}
-		rel, err := filepath.Rel(base, path)
-		if err == nil {
-			files = append(files, rel)
-		}
-		return nil
-	})
-	sort.Strings(files)
-	writeJSON(w, map[string]any{"files": files})
 }
 
 func isModelFile(path string) bool {
