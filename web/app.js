@@ -4,8 +4,11 @@ const state = {
   sourcePath: "",
   architecture: "WAN 2.2",
   strategy: "Optimizer-driven",
+  workflowMode: "quantize",
   formats: new Set(),
   browserMode: "file",
+  pendingLoraSlot: -1,
+  loras: [],
   browserPath: "",
   jobId: "",
   events: null,
@@ -131,6 +134,11 @@ function compactFormatLabel(label) {
 function wireEvents() {
   $("pick-folder").addEventListener("click", () => openBrowser("folder"));
   $("pick-source").addEventListener("click", () => openBrowser("file"));
+  document.querySelectorAll("#workflow-mode button").forEach((btn) => {
+    btn.addEventListener("click", () => setWorkflowMode(btn.dataset.mode));
+  });
+  $("add-lora").addEventListener("click", addLoraRow);
+  renderLoras();
   $("browser-close").addEventListener("click", () => $("browser").close());
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
   $("browser-select-folder").addEventListener("click", () => selectFolder(state.browserPath));
@@ -159,7 +167,13 @@ function wireEvents() {
     });
   });
 
-  $("start").addEventListener("click", startJob);
+  $("start").addEventListener("click", () => {
+    if (state.workflowMode === "lora") {
+      startLoraMerge();
+    } else {
+      startJob();
+    }
+  });
   $("stop").addEventListener("click", stopJob);
   $("clean-memory").addEventListener("click", cleanMemory);
   $("update-app").addEventListener("click", updateApp);
@@ -167,9 +181,29 @@ function wireEvents() {
   $("audit").addEventListener("click", () => runTool("audit"));
 }
 
+function setWorkflowMode(mode) {
+  state.workflowMode = mode;
+  document.querySelectorAll("#workflow-mode button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
+  document.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.workflowPanel !== mode);
+  });
+  // Show start button in both modes; label changes to match context.
+  const startBtn = $("start");
+  startBtn.classList.remove("hidden");
+  startBtn.textContent = mode === "lora" ? "Start Merge" : "Start Batch";
+  // Update checkpoint hint label per mode.
+  const hint = $("source-label-hint");
+  if (hint) {
+    hint.textContent = mode === "lora" ? "Base checkpoint" : "Checkpoint";
+  }
+  setStatus(mode === "quantize" ? "Quantize mode" : "LoRA merge mode");
+}
+
 async function openBrowser(mode) {
   state.browserMode = mode;
-  $("browser-title").textContent = mode === "folder" ? "Choose Model Folder" : "Choose Checkpoint";
+  $("browser-title").textContent = mode === "folder" ? "Choose Model Folder" : (mode === "lora" ? "Choose LoRA" : "Choose Checkpoint");
   $("browser-select-folder").style.display = mode === "folder" ? "" : "none";
   await browse(mode === "folder" ? state.modelsDir : (state.modelsDir || state.rootDir));
   $("browser").showModal();
@@ -193,6 +227,8 @@ async function browse(path) {
           browse(item.path);
         } else if (state.browserMode === "file") {
           selectSource(item.path);
+        } else if (state.browserMode === "lora") {
+          selectLora(item.path);
         }
       });
       list.appendChild(btn);
@@ -206,6 +242,62 @@ function selectFolder(path) {
   state.modelsDir = path;
   $("folder-label").textContent = shortPath(path);
   $("browser").close();
+}
+
+function addLoraRow() {
+  state.loras.push({path: "", strength: 0.65, strategy: "Balanced", enabled: true});
+  renderLoras();
+}
+
+function selectLora(path) {
+  if (state.pendingLoraSlot >= 0 && state.loras[state.pendingLoraSlot]) {
+    state.loras[state.pendingLoraSlot].path = path;
+  } else {
+    state.loras.push({path, strength: 0.65, strategy: "Balanced", enabled: true});
+  }
+  state.pendingLoraSlot = -1;
+  renderLoras();
+  $("browser").close();
+}
+
+function renderLoras() {
+  const root = $("lora-list");
+  root.textContent = "";
+  if (state.loras.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted-note";
+    empty.textContent = "No LoRAs selected. Add one or more LoRAs and choose a strategy for each.";
+    root.appendChild(empty);
+    return;
+  }
+  // WAN 2.2 has no audio components, so Audio strategy is not useful.
+  const allStrategies = ["Balanced", "Motion", "Visuals", "Audio"];
+  const strategies = state.architecture === "WAN 2.2"
+    ? allStrategies.filter((s) => s !== "Audio")
+    : allStrategies;
+  state.loras.forEach((lora, idx) => {
+    const row = document.createElement("div");
+    row.className = "lora-row";
+    row.innerHTML = `
+      <label class="checkline" title="Enable this LoRA for the merge"><input type="checkbox" ${lora.enabled ? "checked" : ""} data-role="enabled"><span>Merge</span></label>
+      <button class="ghost lora-pick" type="button" title="Choose a LoRA file">${lora.path ? shortPath(lora.path) : "Choose LoRA"}</button>
+      <select data-role="strategy" title="Merge strategy: how LoRA weights are applied">${strategies.map((s) => `<option value="${s}" ${s === lora.strategy ? "selected" : ""}>${s}</option>`).join("")}</select>
+      <input data-role="strength" type="number" min="0" max="2" step="0.05" value="${lora.strength}" title="Per-LoRA strength multiplier (0=none, 1=full)">
+      <button class="ghost" data-role="remove" type="button" title="Remove this LoRA from the list">Remove</button>
+    `;
+    row.querySelector(".lora-pick").addEventListener("click", () => {
+      state.pendingLoraSlot = idx;
+      openBrowser("lora");
+    });
+    row.querySelector('[data-role="enabled"]').addEventListener("change", (ev) => lora.enabled = ev.target.checked);
+    row.querySelector('[data-role="strategy"]').addEventListener("change", (ev) => lora.strategy = ev.target.value);
+    row.querySelector('[data-role="strength"]').addEventListener("input", (ev) => lora.strength = Number(ev.target.value) || 0);
+    row.querySelector('[data-role="remove"]').addEventListener("click", () => {
+      state.loras.splice(idx, 1);
+      renderLoras();
+    });
+    root.appendChild(row);
+  });
 }
 
 async function selectSource(path) {
@@ -240,6 +332,50 @@ async function refreshMetadata() {
     $("metadata").value = data.metadata;
   } catch {
     // Keep typing smooth if metadata generation is temporarily unavailable.
+  }
+}
+
+async function startLoraMerge() {
+  const basePath = state.sourcePath;
+  const selected = state.loras.filter((lora) => lora.enabled && lora.path);
+  if (!basePath) return log("Select a base checkpoint in the sidebar first.\n");
+  if (selected.length === 0) return log("Add and enable at least one LoRA.\n");
+  const dryRun = $("lora-dry-run").checked;
+  if (!dryRun && !$("lora-output").value) return log("Enter an output name before writing a merged checkpoint.\n");
+
+  $("start").disabled = true;
+  $("stop").disabled = false;
+  setStatus(dryRun ? "Starting LoRA dry run" : "Starting LoRA merge");
+  log(`\nStarting ${dryRun ? "LoRA dry run" : "LoRA merge"} with ${selected.length} LoRA(s)...\n`);
+
+  try {
+    const data = await api("/api/lora/merge", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        base_path: basePath,
+        models_dir: state.modelsDir,
+        output_name: $("lora-output").value,
+        loras: selected.map((lora) => ({
+          path: lora.path,
+          strength: Number(lora.strength) || 0,
+          strategy: lora.strategy,
+        })),
+        strategy: "Balanced",
+        architecture: state.architecture,
+        global_strength: Number($("lora-global-strength").value) || 1,
+        adaptive: $("lora-adaptive").checked,
+        dry_run: dryRun,
+        strict_matching: $("lora-strict").checked,
+      }),
+    });
+    state.jobId = data.job_id;
+    attachEvents(data.job_id);
+  } catch (err) {
+    log(`LoRA merge failed to start: ${err.message}\n`);
+    $("start").disabled = false;
+    $("stop").disabled = true;
+    setStatus("Error");
   }
 }
 

@@ -19,54 +19,58 @@
 
       <section class="panel source-panel">
         <h2>Source</h2>
-        <button id="pick-folder" class="picker-button" type="button">
+        <button id="pick-folder" class="picker-button" type="button" title="Select the folder containing your model files">
           <span>Model Folder</span>
           <strong id="folder-label">models</strong>
         </button>
-        <button id="pick-source" class="picker-button" type="button">
-          <span>Checkpoint</span>
+        <button id="pick-source" class="picker-button" type="button" title="Select the checkpoint file to quantize or use as LoRA merge base">
+          <span id="source-label-hint">Checkpoint (base)</span>
           <strong id="source-label">Choose file</strong>
         </button>
         <label class="field">
-          <span>Architecture</span>
+          <span title="Model architecture — auto-detected for safetensors sources">Architecture</span>
           <select id="architecture"></select>
         </label>
         <label class="field">
-          <span>Display Name</span>
-          <input id="model-name" type="text" placeholder="TreasureChest-v1">
+          <span title="Display name embedded in output metadata">Display Name</span>
+          <input id="model-name" type="text" placeholder="TreasureChest-v1" title="Display name embedded in output metadata">
         </label>
         <label class="checkline">
           <input id="full-checkpoint" type="checkbox">
-          <span>Full checkpoint</span>
+          <span title="Source contains VAE/text/audio modules alongside the main model">Full checkpoint</span>
         </label>
       </section>
 
       <section class="panel">
         <h2>Strategy</h2>
         <div class="segmented" id="strategy">
-          <button class="active" data-value="Optimizer-driven" type="button">Optimizer</button>
-          <button data-value="Simple" type="button">Simple</button>
+          <button class="active" data-value="Optimizer-driven" type="button" title="Use optimizer (e.g. Prodigy) for per-layer quantization decisions">Optimizer</button>
+          <button data-value="Simple" type="button" title="Uniform quantization strategy without optimizer analysis">Simple</button>
         </div>
         <label class="checkline">
           <input id="low-vram" type="checkbox">
-          <span>Low VRAM</span>
+          <span title="Reduce VRAM usage at the cost of slower quantization">Low VRAM</span>
         </label>
       </section>
 
       <section class="panel">
         <h2>Run</h2>
-        <button id="start" class="primary" type="button">Start Batch</button>
-        <button id="stop" class="danger" type="button" disabled>Stop</button>
-        <button id="clean-memory" class="secondary" type="button">Clean RAM / VRAM</button>
-        <button id="update-app" class="secondary" type="button">Update & Restart</button>
+        <button id="start" class="primary" type="button" title="Start quantization for all selected formats">Start Batch</button>
+        <button id="stop" class="danger" type="button" disabled title="Cancel the current job">Stop</button>
+        <button id="clean-memory" class="secondary" type="button" title="Free system RAM and GPU VRAM caches">Clean RAM / VRAM</button>
+        <button id="update-app" class="secondary" type="button" title="Update dependencies, rebuild, and restart the app">Update & Restart</button>
       </section>
     </aside>
 
     <main class="main">
       <div class="topbar">
         <div>
-          <h2>Video Model Quantization</h2>
+          <h2>Video Model Merger</h2>
           <p id="status">Idle</p>
+        </div>
+        <div class="mode-switch" id="workflow-mode">
+          <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
+          <button data-mode="lora" type="button" title="Merge one or more LoRAs into a base checkpoint">LoRA Merge</button>
         </div>
         <div id="hardware" class="hardware">
           <div class="meter" data-meter="cpu">
@@ -89,13 +93,48 @@
       </div>
 
       <section class="workspace">
-        <div class="format-band">
+        <div class="format-band" data-workflow-panel="quantize">
           <div class="section-title">
             <h3>Formats</h3>
-            <button id="refresh-files" class="ghost" type="button">Refresh</button>
+            <button id="refresh-files" class="ghost" type="button" title="Refresh the format chip list">Refresh</button>
           </div>
           <div id="formats" class="chips"></div>
         </div>
+
+        <section class="lora-card hidden" data-workflow-panel="lora">
+          <div class="section-title">
+            <div>
+              <h3>LoRA Merge</h3>
+              <p>Select a base checkpoint in the sidebar, then assign a merge strategy per LoRA.</p>
+            </div>
+          </div>
+          <div class="lora-controls">
+            <label class="field">
+              <span title="Filename for the merged output checkpoint">Output Name</span>
+              <input id="lora-output" type="text" placeholder="ltx23_merged_i2v.safetensors" title="Filename for the merged output checkpoint">
+            </label>
+            <label class="field compact">
+              <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
+              <input id="lora-global-strength" type="number" min="0" max="2" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">
+            </label>
+            <label class="checkline">
+              <input id="lora-adaptive" type="checkbox" checked>
+              <span title="Scale each LoRA proportionally so the combined strength stays near the global target">Adaptive scaling</span>
+            </label>
+            <label class="checkline">
+              <input id="lora-dry-run" type="checkbox" checked>
+              <span title="Validate key matching and plan the merge without writing a file">Dry run first</span>
+            </label>
+            <label class="checkline">
+              <input id="lora-strict" type="checkbox" checked>
+              <span title="Fail if any LoRA key doesn't match the base; uncheck to skip unmatched keys">Strict key matching</span>
+            </label>
+          </div>
+          <div id="lora-list" class="lora-list"></div>
+          <div class="lora-actions">
+            <button id="add-lora" class="ghost" type="button" title="Add a LoRA to the merge list">+ Add LoRA</button>
+          </div>
+        </section>
 
         <div class="grid">
           <section class="console-card">
@@ -109,16 +148,16 @@
             <div class="section-title">
               <h3>Metadata</h3>
               <div class="actions-inline">
-                <button id="refresh-meta" class="ghost" type="button">Refresh</button>
-                <button id="read-meta" class="ghost" type="button">Read</button>
-                <button id="inject-meta" class="ghost" type="button">Inject</button>
-                <button id="copy-meta" class="ghost" type="button">Copy</button>
+                <button id="refresh-meta" class="ghost" type="button" title="Regenerate metadata preview from current settings">Refresh</button>
+                <button id="read-meta" class="ghost" type="button" title="Read existing metadata from the source file">Read</button>
+                <button id="inject-meta" class="ghost" type="button" title="Write the metadata block into the source file">Inject</button>
+                <button id="copy-meta" class="ghost" type="button" title="Copy metadata JSON to clipboard">Copy</button>
               </div>
             </div>
             <textarea id="metadata" spellcheck="false"></textarea>
             <div class="tool-row">
-              <button id="scan" type="button">Scan 5D</button>
-              <button id="audit" type="button">Audit Patterns</button>
+              <button id="scan" type="button" title="Scan for 5D tensors in the source checkpoint">Scan 5D</button>
+              <button id="audit" type="button" title="Audit which tensor names match preserve/rescue patterns">Audit Patterns</button>
             </div>
           </section>
         </div>

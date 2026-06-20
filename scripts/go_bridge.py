@@ -26,6 +26,7 @@ from core.metadata_manager import (
     read_any_metadata,
     update_metadata_preview,
 )
+from core.lora_merge_engine import run_lora_merge
 from core.safetensors_engine import run_safe_conversion
 from utils.arch_detector import inspect_checkpoint
 from utils.file_ops import ensure_dirs
@@ -184,6 +185,7 @@ def cmd_quantize(args):
     optimizer = payload.get("optimizer") or "prodigy"
     low_vram = bool(payload.get("low_vram"))
     is_full = bool(payload.get("full_checkpoint"))
+    custom_metadata = payload.get("custom_metadata")  # user-edited metadata from UI
 
     log_acc = (
         f"Initializing Pipeline for: {model_name}\n"
@@ -225,6 +227,7 @@ def cmd_quantize(args):
             log_acc,
             low_vram=low_vram,
             is_full_checkpoint=is_full,
+            custom_metadata=custom_metadata,
         ))
         log_acc = last_log or log_acc
 
@@ -240,6 +243,13 @@ def cmd_quantize(args):
         ))
 
     _emit({"type": "done", "status": "Finished"})
+
+
+def cmd_lora_merge(args):
+    ensure_dirs()
+    payload = _load_payload(args)
+    for event in run_lora_merge(payload):
+        _emit(event)
 
 
 def main():
@@ -284,6 +294,10 @@ def main():
     p = sub.add_parser("quantize")
     p.add_argument("--json")
     p.set_defaults(func=cmd_quantize)
+
+    p = sub.add_parser("lora-merge")
+    p.add_argument("--json")
+    p.set_defaults(func=cmd_lora_merge)
 
     args = parser.parse_args()
     args.func(args)

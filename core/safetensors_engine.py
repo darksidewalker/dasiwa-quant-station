@@ -1,6 +1,6 @@
 # core/safetensors_engine.py
 import os, subprocess, sys
-from core.metadata_manager import inject_metadata, get_current_meta, get_specialized_meta
+from core.metadata_manager import inject_metadata, get_current_meta, get_specialized_meta, merge_custom_metadata
 from core.layer_config_builder import write_layer_config
 from utils.arch_detector import verify_architecture_match
 from config import CONVERT_PY, ROOT_DIR
@@ -11,7 +11,7 @@ FILTERS_DIR = os.path.join(ROOT_DIR, "filters")
 
 def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type,
                         optimizer_choice, options, log_acc, low_vram=False, actcal=False,
-                        is_full_checkpoint=False):
+                        is_full_checkpoint=False, custom_metadata=None):
 
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
@@ -334,8 +334,15 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
 
         # --- 4. FINALIZATION & METADATA ---
         if process.returncode == 0 and os.path.exists(final_path):
-            # This calls the new logic that merges your LTX23_metadata.json
-            meta = get_specialized_meta(model_type, model_name, final_path, fmt, is_full=is_full_checkpoint)
+            # Build metadata: merge_custom_metadata preserves required LTX 2.3
+            # functional fields while allowing user-edited custom metadata to
+            # overlay on top.
+            meta = merge_custom_metadata(
+                model_type, model_name, final_path,
+                bits=fmt,
+                custom_meta=custom_metadata,
+                is_full=is_full_checkpoint,
+            )
             
             # Inject the resulting dictionary into the safetensor
             success, msg = inject_metadata(final_path, meta)

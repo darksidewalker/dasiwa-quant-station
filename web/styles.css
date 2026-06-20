@@ -176,6 +176,29 @@ input, select, textarea {
   align-items: flex-start;
   min-width: 0;
 }
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  min-width: 250px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111418;
+}
+.mode-switch button {
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 12px;
+  color: var(--muted);
+  background: transparent;
+}
+.mode-switch button.active {
+  color: #07100b;
+  background: var(--green);
+  font-weight: 800;
+}
+.hidden { display: none !important; }
 
 .hardware {
   display: grid;
@@ -239,7 +262,7 @@ input, select, textarea {
   overflow: hidden;
 }
 
-.format-band, .console-card, .meta-card {
+.format-band, .lora-card, .console-card, .meta-card {
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 8px;
@@ -254,6 +277,49 @@ input, select, textarea {
   margin-bottom: 12px;
 }
 .section-title h3 { font-size: 14px; }
+.lora-card .section-title p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.lora-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 130px repeat(3, auto);
+  gap: 10px;
+  align-items: end;
+}
+.lora-controls .field { margin-bottom: 0; }
+.lora-controls .compact input { text-align: right; }
+.lora-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.lora-row {
+  display: grid;
+  grid-template-columns: 92px minmax(220px, 1fr) 150px 92px 82px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 8px;
+  background: rgba(10, 13, 16, .34);
+}
+.lora-row .lora-pick {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.lora-row input[type="number"] { text-align: right; }
+.lora-actions {
+  margin-top: 14px;
+}
+.muted-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
 .actions-inline {
   display: flex;
   flex-wrap: wrap;
@@ -394,4 +460,5 @@ dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(4px); }
   .topbar { flex-direction: column; }
   .hardware { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chips { grid-template-columns: 1fr; }
+  .lora-controls, .lora-row { grid-template-columns: 1fr; }
 }

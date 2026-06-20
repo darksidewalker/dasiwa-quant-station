@@ -102,6 +102,53 @@ def update_metadata_preview(name, architecture="WAN 2.2", is_full=False):
     meta = get_specialized_meta(architecture, name, "PREVIEW_MODE", is_full=is_full)
     return json.dumps(meta, indent=4)
 
+# Keys that MUST be present for a functional LTX 2.3 checkpoint.
+# These are overwritten by get_specialized_meta() and must never be
+# replaced by arbitrary user edits.
+_LTX23_REQUIRED_KEYS = {
+    "modelspec.architecture",
+    "modelspec.implementation",
+    "modelspec.license",
+    "modelspec.resolution",
+    "modelspec.resolution_hints",
+    "modelspec.resolution_native",
+    "modelspec.resolution_aspect",
+    "quantization.bits",
+    "quantization.tool",
+}
+
+def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
+                          custom_meta=None, is_full=False, extra_meta=None):
+    """
+    Build final metadata dict for safetensors output.
+
+    Priority order:
+      1. get_specialized_meta(...) provides the base template with all
+         required LTX 2.3 functional fields, resolution hints, etc.
+      2. custom_meta (user-edited JSON from UI) overlays on top, but
+         REQUIRED_KEYS are protected so user edits cannot break the
+         checkpoint.
+      3. extra_meta (e.g. merge provenance) overlays last.
+
+    Returns dict of string -> string ready for save_file(..., metadata=...).
+    """
+    base = get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full)
+
+    if custom_meta:
+        for k, v in custom_meta.items():
+            if k in _LTX23_REQUIRED_KEYS:
+                continue
+            base[k] = v
+
+    if extra_meta:
+        base.update(extra_meta)
+
+    # Ensure spacer exists for future header edits
+    if "__spacer" not in base:
+        base["__spacer"] = " " * 2048
+
+    return base
+
 def _read_safetensors_header(file_path):
     """
     Read the raw safetensors header without loading any tensor data.
