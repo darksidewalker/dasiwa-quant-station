@@ -301,7 +301,10 @@ function wireEvents() {
     $("browser").close();
   });
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
-  $("browser-select-folder").addEventListener("click", () => selectFolder(state.browserPath));
+  $("browser-select-folder").addEventListener("click", () => {
+    if (state.browserMode === "output") selectOutput(state.browserPath);
+    else selectFolder(state.browserPath);
+  });
   $("browser-add-selected").addEventListener("click", () => {
     if (state.selectedLoraPaths.size > 0) {
       addLoraPaths(Array.from(state.selectedLoraPaths));
@@ -408,8 +411,10 @@ function setWorkflowMode(mode) {
 
 async function openBrowser(mode) {
   state.browserMode = mode;
-  $("browser-title").textContent = mode === "folder" ? "Choose Model Folder" : (mode === "lora" ? "Choose LoRA" : "Choose Checkpoint");
-  $("browser-select-folder").style.display = mode === "folder" ? "" : "none";
+  $("browser-title").textContent = mode === "folder" ? "Choose Model Folder"
+    : (mode === "output" ? "Choose Output Folder"
+    : (mode === "lora" ? "Choose LoRA" : "Choose Checkpoint"));
+  $("browser-select-folder").style.display = (mode === "folder" || mode === "output") ? "" : "none";
   const addSel = $("browser-add-selected");
   if (addSel) addSel.style.display = mode === "lora" ? "" : "none";
   state.selectedLoraPaths.clear();
@@ -541,6 +546,12 @@ function clearSearch() {
 function selectFolder(path) {
   state.modelsDir = path;
   $("folder-label").textContent = shortPath(path);
+  $("browser").close();
+}
+
+function selectOutput(path) {
+  state.outputDir = path;
+  $("output-label").textContent = shortPath(path);
   $("browser").close();
 }
 
