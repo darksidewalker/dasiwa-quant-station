@@ -134,6 +134,13 @@ function compactFormatLabel(label) {
     .replace("GGUF ", "");
 }
 
+function updateArchDependentUI() {
+  const unchainLabel = $("krea2-unchain-label");
+  if (unchainLabel) {
+    unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
+  }
+}
+
 function wireEvents() {
   $("pick-folder").addEventListener("click", () => openBrowser("folder"));
   $("pick-source").addEventListener("click", () => openBrowser("file"));
@@ -186,11 +193,7 @@ function wireEvents() {
   $("architecture").addEventListener("change", () => {
     state.architecture = $("architecture").value;
     refreshMetadata();
-    // Show/hide Krea 2-specific options
-    const unchainLabel = $("krea2-unchain-label");
-    if (unchainLabel) {
-      unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
-    }
+    updateArchDependentUI();
   });
   $("model-name").addEventListener("input", refreshMetadata);
   $("full-checkpoint").addEventListener("change", refreshMetadata);
@@ -478,6 +481,7 @@ async function selectSource(path) {
       if (["WAN 2.2", "LTX-2.3", "Krea 2"].includes(info.architecture)) {
         state.architecture = info.architecture;
         $("architecture").value = info.architecture;
+        updateArchDependentUI();
       }
       $("full-checkpoint").checked = !!info.full_checkpoint;
       log(`Source inspected: ${path}\nArchitecture: ${info.architecture}\nFull checkpoint: ${info.full_checkpoint ? "yes" : "no"}\n\n`);
