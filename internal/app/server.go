@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -111,6 +112,7 @@ type Server struct {
 	rootDir   string
 	modelsDir string
 	python    string
+	version   string // SHA-256 prefix of the running binary
 	http      *http.Server
 	jobs      *JobStore
 	idle      *IdleShutdown
@@ -143,6 +145,8 @@ func NewServer() (*Server, error) {
 		jobs:      NewJobStore(),
 	}
 	s.idle = NewIdleShutdown(idleGrace, func() { s.shutdownIdle() })
+
+	s.version = computeBinaryHash()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/config", s.handleConfig)
@@ -227,7 +231,8 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"root_dir":   s.rootDir,
+		"version":   s.version,
+		"root_dir":  s.rootDir,
 		"models_dir": s.modelsDir,
 		"architectures": []string{
 			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "Hunyuan Video", "Flux.2",
@@ -848,6 +853,19 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out)
+}
+
+func computeBinaryHash() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "unknown"
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		return "unknown"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func newID() string {

@@ -17,7 +17,107 @@ const state = {
   selectedLoraPaths: new Set(),
   lastLoraDir: "",
   lastFileDir: "",
+  appVersion: "",
 };
+
+const SETTINGS_COOKIE = "dasiwa_settings";
+const SETTINGS_MAX_AGE_DAYS = 90;
+
+function saveSettings() {
+  const settings = {
+    v: state.appVersion,
+    mode: state.workflowMode,
+    arch: state.architecture,
+    strategy: state.strategy,
+    formats: [...state.formats],
+    modelName: $("model-name").value,
+    fullCheckpoint: $("full-checkpoint").checked,
+    lowVram: $("low-vram").checked,
+    loraOutput: $("lora-output").value,
+    loraGlobalStrength: $("lora-global-strength").value,
+    loraMergeDevice: $("lora-merge-device").value,
+    loraCudaDevice: $("lora-cuda-device").value,
+    loraVramHeadroom: $("lora-vram-headroom").value,
+    loraAdaptive: $("lora-adaptive").checked,
+    loraDryRun: $("lora-dry-run").checked,
+    loraStrict: $("lora-strict").checked,
+    krea2Unchain: $("krea2-unchain").checked,
+    loras: state.loras.map((l) => ({
+      path: l.path,
+      strength: l.strength,
+      strategy: l.strategy,
+      enabled: l.enabled,
+    })),
+  };
+  try {
+    const json = JSON.stringify(settings);
+    // Browser cookie limit is ~4096 bytes. URL encoding expands it further.
+    // Encode first so we check the real size that hits the wire.
+    const encoded = encodeURIComponent(json);
+    if (encoded.length > 3800) {
+      // Cookie too large — drop LoRA paths (keep other settings) and retry
+      const slim = {...settings, loras: settings.loras.map((l) => ({
+        path: shortPath(l.path),
+        strength: l.strength,
+        strategy: l.strategy,
+        enabled: l.enabled,
+      }))};
+      const slimJson = JSON.stringify(slim);
+      const slimEncoded = encodeURIComponent(slimJson);
+      if (slimEncoded.length > 3800) return; // Still too large, skip entirely
+      const expires = new Date(Date.now() + SETTINGS_MAX_AGE_DAYS * 864e5).toUTCString();
+      document.cookie = `${SETTINGS_COOKIE}=${slimEncoded};expires=${expires};path=/;SameSite=Lax`;
+      return;
+    }
+    const expires = new Date(Date.now() + SETTINGS_MAX_AGE_DAYS * 864e5).toUTCString();
+    document.cookie = `${SETTINGS_COOKIE}=${encoded};expires=${expires};path=/;SameSite=Lax`;
+  } catch {
+    // Cookie full or blocked — silently skip
+  }
+}
+
+function loadSettings() {
+  const name = `${SETTINGS_COOKIE}=`;
+  const cookies = document.cookie.split(";");
+  for (const c of cookies) {
+    const trimmed = c.trim();
+    if (!trimmed.startsWith(name)) continue;
+    try {
+      const json = decodeURIComponent(trimmed.substring(name.length));
+      const s = JSON.parse(json);
+      // Only restore if version matches (prevents stale settings after updates)
+      if (s.v !== state.appVersion) return false;
+      state.workflowMode = s.mode || "quantize";
+      state.architecture = s.arch || "WAN 2.2";
+      state.strategy = s.strategy || "Optimizer-driven";
+      state.formats = new Set(s.formats || []);
+      if (s.modelName) $("model-name").value = s.modelName;
+      $("full-checkpoint").checked = !!s.fullCheckpoint;
+      $("low-vram").checked = !!s.lowVram;
+      if (s.loraOutput != null) $("lora-output").value = s.loraOutput;
+      if (s.loraGlobalStrength != null) $("lora-global-strength").value = s.loraGlobalStrength;
+      if (s.loraMergeDevice) $("lora-merge-device").value = s.loraMergeDevice;
+      if (s.loraCudaDevice) $("lora-cuda-device").value = s.loraCudaDevice;
+      if (s.loraVramHeadroom != null) $("lora-vram-headroom").value = s.loraVramHeadroom;
+      $("lora-adaptive").checked = s.loraAdaptive ?? true;
+      $("lora-dry-run").checked = s.loraDryRun ?? true;
+      $("lora-strict").checked = s.loraStrict ?? true;
+      $("krea2-unchain").checked = !!s.krea2Unchain;
+      if (Array.isArray(s.loras)) {
+        state.loras = s.loras.map((l) => ({
+          path: l.path || "",
+          strength: l.strength ?? 0.65,
+          strategy: l.strategy || "Balanced",
+          enabled: l.enabled ?? true,
+        }));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,6 +168,7 @@ async function init() {
   state.rootDir = cfg.root_dir;
   state.modelsDir = cfg.models_dir;
   state.browserPath = cfg.models_dir;
+  state.appVersion = cfg.version || "unknown";
   $("folder-label").textContent = shortPath(cfg.models_dir);
 
   const arch = $("architecture");
@@ -77,11 +178,28 @@ async function init() {
     opt.textContent = name;
     arch.appendChild(opt);
   });
+
+  // Try to restore settings from cookie (version-gated)
+  const restored = loadSettings();
+
   arch.value = state.architecture;
 
   renderFormats(cfg.formats);
+  // Re-highlight format chips that were restored
+  if (restored) {
+    document.querySelectorAll(".chip").forEach((btn) => {
+      btn.classList.toggle("active", state.formats.has(btn.dataset.value));
+    });
+    // Restore strategy button highlight
+    document.querySelectorAll("#strategy button").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.value === state.strategy);
+    });
+    // Apply workflow mode to UI
+    setWorkflowMode(state.workflowMode);
+  }
 
   wireEvents();
+  updateArchDependentUI();
   refreshMetadata();
   refreshSystem();
   setInterval(refreshSystem, 5000);
@@ -116,6 +234,7 @@ function renderFormats(formats) {
         state.formats.add(fmt.value);
         btn.classList.add("active");
       }
+      saveSettings();
     });
       list.appendChild(btn);
     });
@@ -194,17 +313,31 @@ function wireEvents() {
     state.architecture = $("architecture").value;
     refreshMetadata();
     updateArchDependentUI();
+    saveSettings();
   });
-  $("model-name").addEventListener("input", refreshMetadata);
-  $("full-checkpoint").addEventListener("change", refreshMetadata);
+  $("model-name").addEventListener("input", () => { refreshMetadata(); saveSettings(); });
+  $("full-checkpoint").addEventListener("change", () => { refreshMetadata(); saveSettings(); });
+  $("low-vram").addEventListener("change", saveSettings);
 
   document.querySelectorAll("#strategy button").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("#strategy button").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
       state.strategy = btn.dataset.value;
+      saveSettings();
     });
   });
+
+  // LoRA control change listeners
+  $("lora-output").addEventListener("input", saveSettings);
+  $("lora-global-strength").addEventListener("input", saveSettings);
+  $("lora-merge-device").addEventListener("change", saveSettings);
+  $("lora-cuda-device").addEventListener("input", saveSettings);
+  $("lora-vram-headroom").addEventListener("input", saveSettings);
+  $("lora-adaptive").addEventListener("change", saveSettings);
+  $("lora-dry-run").addEventListener("change", saveSettings);
+  $("lora-strict").addEventListener("change", saveSettings);
+  $("krea2-unchain").addEventListener("change", saveSettings);
 
   $("start").addEventListener("click", () => {
     if (state.workflowMode === "lora") {
@@ -238,6 +371,7 @@ function setWorkflowMode(mode) {
     hint.textContent = mode === "lora" ? "Base checkpoint" : "Checkpoint";
   }
   setStatus(mode === "quantize" ? "Quantize mode" : "LoRA merge mode");
+  saveSettings();
 }
 
 async function openBrowser(mode) {
@@ -406,6 +540,7 @@ function selectLora(path) {
   }
   state.pendingLoraSlot = -1;
   renderLoras();
+  saveSettings();
   $("browser").close();
 }
 
@@ -455,12 +590,13 @@ function renderLoras() {
       state.pendingLoraSlot = idx;
       openBrowser("lora");
     });
-    row.querySelector('[data-role="enabled"]').addEventListener("change", (ev) => lora.enabled = ev.target.checked);
-    row.querySelector('[data-role="strategy"]').addEventListener("change", (ev) => lora.strategy = ev.target.value);
-    row.querySelector('[data-role="strength"]').addEventListener("input", (ev) => lora.strength = Number(ev.target.value) || 0);
+    row.querySelector('[data-role="enabled"]').addEventListener("change", (ev) => { lora.enabled = ev.target.checked; saveSettings(); });
+    row.querySelector('[data-role="strategy"]').addEventListener("change", (ev) => { lora.strategy = ev.target.value; saveSettings(); });
+    row.querySelector('[data-role="strength"]').addEventListener("input", (ev) => { lora.strength = Number(ev.target.value) || 0; saveSettings(); });
     row.querySelector('[data-role="remove"]').addEventListener("click", () => {
       state.loras.splice(idx, 1);
       renderLoras();
+      saveSettings();
     });
     root.appendChild(row);
   });
