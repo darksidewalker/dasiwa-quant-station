@@ -171,7 +171,37 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     yield _log(f"Dry-run report: matched={len(matched_ops)} skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n")
     if dry_run:
-        yield _log(json.dumps({"reports": reports[:200], "report_count": len(reports)}, indent=2) + "\n")
+        # Build per-LoRA summary for dry run
+        from collections import Counter, defaultdict
+        lora_stats = defaultdict(lambda: {"matched": 0, "skipped": 0, "unmatched": 0, "categories": Counter()})
+        unmatched_by_lora = defaultdict(list)
+        for rpt in reports:
+            ln = rpt["lora"]
+            st = rpt["status"]
+            if st == "matched":
+                lora_stats[ln]["matched"] += 1
+                lora_stats[ln]["categories"][rpt.get("category", "?")] += 1
+            elif st.startswith("skipped"):
+                lora_stats[ln]["skipped"] += 1
+            else:
+                lora_stats[ln]["unmatched"] += 1
+                unmatched_by_lora[ln].append(rpt["base_name"])
+
+        summary = {}
+        for ln, st in lora_stats.items():
+            summary[ln] = {
+                "matched": st["matched"],
+                "skipped": st["skipped"],
+                "unmatched": st["unmatched"],
+                "categories": dict(st["categories"]),
+                "unmatched_sample": unmatched_by_lora[ln][:10],
+            }
+
+        yield _log(json.dumps({
+            "per_lora_summary": summary,
+            "reports": reports[:200],
+            "report_count": len(reports),
+        }, indent=2) + "\n")
         yield _status("Dry run complete")
         yield {"type": "done", "status": "dry-run complete"}
         return

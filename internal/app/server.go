@@ -152,6 +152,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/system", s.handleSystem)
 	mux.HandleFunc("GET /api/browse", s.handleBrowse)
+	mux.HandleFunc("GET /api/search", s.handleSearch)
 	mux.HandleFunc("GET /api/inspect", s.handleInspect)
 	mux.HandleFunc("GET /api/metadata-preview", s.handleMetadataPreview)
 	mux.HandleFunc("POST /api/metadata/read", s.handleMetadataRead)
@@ -296,6 +297,51 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	})
 	parent := filepath.Dir(path)
 	writeJSON(w, map[string]any{"path": path, "parent": parent, "items": items})
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	type itemSearch struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	path := cleanPath(r.URL.Query().Get("path"), s.modelsDir)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeJSON(w, map[string]any{"path": path, "query": "", "items": []itemSearch{}})
+		return
+	}
+	queryLower := strings.ToLower(query)
+	var results []itemSearch
+	err := filepath.WalkDir(path, func(fp string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip inaccessible dirs
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() && !isModelFile(name) {
+			return nil
+		}
+		if d.IsDir() {
+			return nil // files only in search results
+		}
+		if strings.Contains(strings.ToLower(name), queryLower) {
+			results = append(results, itemSearch{Name: name, Path: fp})
+		}
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
+	})
+	writeJSON(w, map[string]any{"path": path, "query": query, "items": results})
 }
 
 func isModelFile(path string) bool {

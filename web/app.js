@@ -10,6 +10,9 @@ const state = {
   pendingLoraSlot: -1,
   loras: [],
   browserPath: "",
+  browserItems: [],
+  browserSearchQuery: "",
+  browserSearchRecursive: false,
   jobId: "",
   events: null,
   logBuffer: "",
@@ -289,7 +292,12 @@ function wireEvents() {
   });
   $("add-lora").addEventListener("click", () => openBrowser("lora"));
   renderLoras();
-  $("browser-close").addEventListener("click", () => $("browser").close());
+  $("browser-close").addEventListener("click", () => {
+    $("browser-search-input").value = "";
+    state.browserSearchQuery = "";
+    state.browserSearchRecursive = false;
+    $("browser").close();
+  });
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
   $("browser-select-folder").addEventListener("click", () => selectFolder(state.browserPath));
   $("browser-add-selected").addEventListener("click", () => {
@@ -299,6 +307,28 @@ function wireEvents() {
       $("browser").close();
     }
   });
+
+  // Search/filter in browser dialog
+  $("browser-search-input").addEventListener("input", () => {
+    state.browserSearchQuery = $("browser-search-input").value.trim();
+    state.browserSearchRecursive = false;
+    renderBrowserList();
+  });
+  $("browser-search-input").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      state.browserSearchQuery = $("browser-search-input").value.trim();
+      if (state.browserSearchQuery) {
+        state.browserSearchRecursive = true;
+        searchFiles(state.browserSearchQuery, state.browserPath);
+      }
+    }
+    if (ev.key === "Escape") {
+      clearSearch();
+    }
+  });
+  $("browser-clear-search").addEventListener("click", clearSearch);
+
   $("refresh-files").addEventListener("click", () => browse(state.modelsDir));
   $("clear-console").addEventListener("click", () => {
     state.logBuffer = "";
@@ -381,12 +411,15 @@ async function openBrowser(mode) {
   const addSel = $("browser-add-selected");
   if (addSel) addSel.style.display = mode === "lora" ? "" : "none";
   state.selectedLoraPaths.clear();
-  
+  state.browserSearchQuery = "";
+  state.browserSearchRecursive = false;
+  $("browser-search-input").value = "";
+
   let startPath;
   if (mode === "lora" && state.lastLoraDir) startPath = state.lastLoraDir;
   else if (mode === "file" && state.lastFileDir) startPath = state.lastFileDir;
   else startPath = mode === "folder" ? state.modelsDir : (state.modelsDir || state.rootDir);
-  
+
   await browse(startPath);
   $("browser").showModal();
 }
@@ -397,54 +430,110 @@ async function browse(path) {
     state.browserPath = data.path;
     $("browser").dataset.parent = data.parent;
     $("browser-path").textContent = data.path;
-    const list = $("browser-list");
-    list.textContent = "";
-    data.items.forEach((item) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "browser-item";
-      btn.draggable = !item.is_dir;
-      btn.addEventListener("dragstart", (ev) => {
-        ev.dataTransfer.effectAllowed = "copy";
-        ev.dataTransfer.setData("text/plain", item.path);
-        ev.dataTransfer.setData("text/uri-list", `file://${item.path}`);
-      });
-      
-      if (state.browserMode === "lora" && !item.is_dir) {
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = state.selectedLoraPaths.has(item.path);
-        cb.addEventListener("click", (ev) => ev.stopPropagation());
-        cb.addEventListener("change", () => {
-          if (cb.checked) state.selectedLoraPaths.add(item.path);
-          else state.selectedLoraPaths.delete(item.path);
-        });
-        btn.appendChild(cb);
-      }
-      
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = item.name;
-      btn.appendChild(nameSpan);
-      
-      const kindSpan = document.createElement("span");
-      kindSpan.className = "kind";
-      kindSpan.textContent = item.is_dir ? "folder" : "file";
-      btn.appendChild(kindSpan);
-
-      btn.addEventListener("click", () => {
-        if (item.is_dir) {
-          browse(item.path);
-        } else if (state.browserMode === "file") {
-          selectSource(item.path);
-        } else if (state.browserMode === "lora") {
-          selectLora(item.path);
-        }
-      });
-      list.appendChild(btn);
-    });
+    state.browserItems = data.items;
+    state.browserSearchQuery = "";
+    state.browserSearchRecursive = false;
+    $("browser-search-input").value = "";
+    renderBrowserList();
   } catch (err) {
     log(`Browse error: ${err.message}\n`);
   }
+}
+
+// Recursive search across all subdirectories (always from models root)
+async function searchFiles(query, path) {
+  try {
+    const data = await api(`/api/search?path=${encodeURIComponent(state.modelsDir)}&q=${encodeURIComponent(query)}`);
+    state.browserPath = data.path;
+    $("browser-path").textContent = `Search "${query}" in ${data.path}`;
+    // Convert search results to browser-item format with relative paths
+    const root = state.modelsDir;
+    state.browserItems = data.items.map((item) => ({
+      name: item.path.startsWith(root + "/")
+        ? item.path.slice(root.length + 1)
+        : item.name,
+      path: item.path,
+      is_dir: false,
+    }));
+    state.browserSearchRecursive = true;
+    renderBrowserList();
+  } catch (err) {
+    log(`Search error: ${err.message}\n`);
+  }
+}
+
+// Render the browser list from state.browserItems, optionally filtered by search query
+function renderBrowserList() {
+  const list = $("browser-list");
+  list.textContent = "";
+  const query = state.browserSearchQuery.toLowerCase();
+
+  let items = state.browserItems;
+  if (query && !state.browserSearchRecursive) {
+    // Client-side filter of current directory
+    items = items.filter((item) => item.name.toLowerCase().includes(query));
+  }
+
+  if (!items.length && query) {
+    const empty = document.createElement("p");
+    empty.className = "muted-note";
+    empty.textContent = state.browserSearchRecursive
+      ? `No files matching "${state.browserSearchQuery}" found.`
+      : `No items matching "${state.browserSearchQuery}" in this folder.`;
+    list.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "browser-item";
+    btn.draggable = !item.is_dir;
+    btn.addEventListener("dragstart", (ev) => {
+      ev.dataTransfer.effectAllowed = "copy";
+      ev.dataTransfer.setData("text/plain", item.path);
+      ev.dataTransfer.setData("text/uri-list", `file://${item.path}`);
+    });
+
+    if (state.browserMode === "lora" && !item.is_dir) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = state.selectedLoraPaths.has(item.path);
+      cb.addEventListener("click", (ev) => ev.stopPropagation());
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.selectedLoraPaths.add(item.path);
+        else state.selectedLoraPaths.delete(item.path);
+      });
+      btn.appendChild(cb);
+    }
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = item.name;
+    btn.appendChild(nameSpan);
+
+    const kindSpan = document.createElement("span");
+    kindSpan.className = "kind";
+    kindSpan.textContent = item.is_dir ? "folder" : "file";
+    btn.appendChild(kindSpan);
+
+    btn.addEventListener("click", () => {
+      if (item.is_dir && !state.browserSearchRecursive) {
+        browse(item.path);
+      } else if (state.browserMode === "file") {
+        selectSource(item.path);
+      } else if (state.browserMode === "lora") {
+        selectLora(item.path);
+      }
+    });
+    list.appendChild(btn);
+  });
+}
+
+function clearSearch() {
+  state.browserSearchQuery = "";
+  state.browserSearchRecursive = false;
+  $("browser-search-input").value = "";
+  renderBrowserList();
 }
 
 function selectFolder(path) {

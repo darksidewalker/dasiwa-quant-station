@@ -173,6 +173,9 @@ def _target_candidates(base: str) -> List[str]:
         bases.append(f"txtfusion.{block}.{family}.{leaf}")
     if base.startswith("diffusion_model."):
         bases.append("model." + base)
+        # Krea 2 base checkpoints use bare keys like blocks.X.attn.gate.weight
+        bare = base[len("diffusion_model."):]
+        bases.append(bare)
     if base.startswith("base_model.model.transformer_blocks."):
         bases.append(base.replace("base_model.model.transformer_blocks.", "model.diffusion_model.transformer_blocks.", 1))
     if base.startswith("base_model.model.diffusion_model."):

@@ -437,6 +437,9 @@ dialog {
 dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(4px); }
 .browser-head, .browser-actions { display: flex; justify-content: space-between; gap: 12px; padding: 14px; border-bottom: 1px solid var(--line); }
 .browser-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; word-break: break-all; }
+.browser-search { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: rgba(10,13,16,.34); }
+.browser-search input { flex: 1 1 auto; min-width: 0; padding: 8px 10px; font-size: 13px; }
+.browser-search .icon { flex: 0 0 auto; padding: 6px 8px; font-size: 16px; }
 .icon { border: 0; background: transparent; color: var(--muted); font-size: 20px; }
 .browser-list { max-height: 520px; overflow: auto; padding: 8px; }
 .browser-item {
