@@ -287,7 +287,7 @@ function wireEvents() {
   document.querySelectorAll("#workflow-mode button").forEach((btn) => {
     btn.addEventListener("click", () => setWorkflowMode(btn.dataset.mode));
   });
-  $("add-lora").addEventListener("click", addLoraRow);
+  $("add-lora").addEventListener("click", () => openBrowser("lora"));
   renderLoras();
   $("browser-close").addEventListener("click", () => $("browser").close());
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
@@ -523,11 +523,6 @@ function normalizeDroppedPath(value) {
     }
   }
   return path.startsWith("/") ? path : "";
-}
-
-function addLoraRow() {
-  state.loras.push({path: "", strength: 0.65, strategy: "Balanced", enabled: true});
-  renderLoras();
 }
 
 function selectLora(path) {
