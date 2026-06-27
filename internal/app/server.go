@@ -347,7 +347,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 func isModelFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".safetensors", ".gguf", ".ckpt", ".pt", ".bin":
+	case ".safetensors", ".gguf", ".ckpt", ".pt", ".bin", ".tmp":
 		return true
 	default:
 		return false
@@ -498,6 +498,7 @@ func (s *Server) handleMetadataInject(w http.ResponseWriter, r *http.Request) {
 
 type QuantizeRequest struct {
 	ModelsDir      string   `json:"models_dir"`
+	OutputDir      string   `json:"output_dir"`
 	SourcePath     string   `json:"source_path"`
 	ModelName      string   `json:"model_name"`
 	Formats        []string `json:"formats"`
@@ -517,6 +518,7 @@ type LoraSpec struct {
 type LoraMergeRequest struct {
 	BasePath       string     `json:"base_path"`
 	ModelsDir      string     `json:"models_dir"`
+	OutputDir      string     `json:"output_dir"`
 	OutputPath     string     `json:"output_path"`
 	OutputName     string     `json:"output_name"`
 	Loras          []LoraSpec `json:"loras"`
@@ -540,6 +542,9 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ModelsDir == "" {
 		req.ModelsDir = s.modelsDir
+	}
+	if req.OutputDir == "" {
+		req.OutputDir = req.ModelsDir
 	}
 	if req.ModelName == "" || req.SourcePath == "" || len(req.Formats) == 0 {
 		writeError(w, http.StatusBadRequest, "source, display name, and at least one format are required")
@@ -574,8 +579,12 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	req.BasePath = cleanPath(req.BasePath, s.modelsDir)
 	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
+	if req.OutputDir == "" {
+		req.OutputDir = req.ModelsDir
+	}
+	req.OutputDir = cleanPath(req.OutputDir, s.modelsDir)
 	if req.OutputPath != "" {
-		req.OutputPath = cleanPath(req.OutputPath, req.ModelsDir)
+		req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
 	}
 	if req.Strategy == "" {
 		req.Strategy = "Balanced"

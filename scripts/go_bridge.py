@@ -177,6 +177,7 @@ def cmd_quantize(args):
     ensure_dirs()
     payload = _load_payload(args)
     models_dir = os.path.realpath(os.path.expanduser(payload["models_dir"]))
+    output_dir = os.path.realpath(os.path.expanduser(payload.get("output_dir") or models_dir))
     source_path = os.path.realpath(os.path.expanduser(payload["source_path"]))
     model_name = payload["model_name"]
     formats = payload.get("formats") or []
@@ -191,6 +192,7 @@ def cmd_quantize(args):
         f"Initializing Pipeline for: {model_name}\n"
         f"Target Architecture: {model_type}\n"
         f"Full Checkpoint: {'Yes' if is_full else 'No'}\n"
+        f"Output directory: {output_dir}\n"
         + "-" * 40 + "\n"
     )
     safe_fmts = [
@@ -217,7 +219,7 @@ def cmd_quantize(args):
 
     if safe_fmts:
         stream(run_safe_conversion(
-            models_dir,
+            output_dir,
             source_path,
             safe_fmts,
             model_name,
@@ -233,7 +235,7 @@ def cmd_quantize(args):
 
     if gguf_fmts:
         stream(run_gguf_conversion(
-            models_dir,
+            output_dir,
             source_path,
             gguf_fmts,
             model_name,

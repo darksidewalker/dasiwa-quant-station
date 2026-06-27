@@ -306,11 +306,11 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
 
 def _default_output_path(payload: Dict[str, Any]) -> str:
-    models_dir = payload.get("models_dir") or os.path.dirname(payload["base_path"])
+    output_dir = payload.get("output_dir") or payload.get("models_dir") or os.path.dirname(payload["base_path"])
     output_name = payload.get("output_name") or "ltx23_lora_merged.safetensors"
     if not output_name.endswith(".safetensors"):
         output_name += ".safetensors"
-    return os.path.join(models_dir, output_name)
+    return os.path.join(output_dir, output_name)
 
 
 def _log(text: str) -> Dict[str, str]:

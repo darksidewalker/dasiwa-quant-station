@@ -13,6 +13,7 @@ const state = {
   browserItems: [],
   browserSearchQuery: "",
   browserSearchRecursive: false,
+  outputDir: "",
   jobId: "",
   events: null,
   logBuffer: "",
@@ -265,6 +266,7 @@ function updateArchDependentUI() {
 
 function wireEvents() {
   $("pick-folder").addEventListener("click", () => openBrowser("folder"));
+  $("pick-output").addEventListener("click", () => openBrowser("output"));
   $("pick-source").addEventListener("click", () => openBrowser("file"));
   wireDropTarget($("pick-source"), "source");
   wireDropTarget($("lora-list"), "lora");
