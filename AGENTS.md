@@ -61,7 +61,7 @@ Primary targets are WAN 2.2, LTX-2.3, and Krea 2 on NVIDIA Ada/Blackwell systems
 - **`utils/lora_inspector.py`**: LoRA pair discovery. Reads safetensors manifests, identifies A/B weight pairs, infers rank, generates target candidate keys with prefix normalization.
 - **`utils/ltx23_layer_profiles.py`**: LTX-2.3 tensor classification into categories (attn_qkv, attn_out, ff_in/out, audio_attn, audio_ff, audio/video connectors, caption_projection, patchify_or_output, norm, other). Strategy multipliers for Balanced/Motion/Visuals/Audio. Preserves adaln, gate logits, baked VAE/text/audio modules.
 - **`utils/wan22_layer_profiles.py`**: WAN 2.2 tensor classification into categories (self_attn_qkv/out, cross_attn_qkv/out, ffn_in/out, modulation, caption_projection, patchify_or_output, norm, other). Strategy multipliers for Balanced/Motion/Visuals. No Audio strategy. Preserves modulation.lin, patch_embedding, baked companions. Norm layers always 0.0 multiplier.
-- **`utils/krea2_layer_profiles.py`**: Krea 2 tensor classification into categories (attn_qkv, attn_out, attn_gate, ff_in/out, text_fusion, structural, other). Strategy multipliers for Balanced/Motion/Visuals. No Audio strategy (image model). Preserves modulation.lin, tproj, tmlp, txtmlp, first/last, txtfusion.projector, norm.scale, qknorm.
+- **`utils/krea2_layer_profiles.py`**: Krea 2 tensor classification into categories (attn_qkv, attn_out, attn_gate, ff_in/out, text_fusion, structural, other). Strategy multipliers for Balanced/Style/Content/Detail. Style boosts attention, Content boosts FF, Detail applies mild global boost. Preserves modulation.lin, tproj, tmlp, txtmlp, first/last, txtfusion.projector, norm.scale, qknorm.
 - **`utils/scanner_5d.py`**: 5D tensor validation tool.
 - **`utils/pattern_audit.py`**: Pattern coverage audit against checkpoint manifest.
 - **`utils/system.py`**: CPU/RAM/GPU/VRAM monitoring via nvidia-smi and psutil.
@@ -118,7 +118,7 @@ Primary targets are WAN 2.2, LTX-2.3, and Krea 2 on NVIDIA Ada/Blackwell systems
 - Preserved keys are never modified, regardless of LoRA content.
 - LTX-2.3 has an Audio strategy; WAN 2.2 and Krea 2 do not (no audio components).
 - Norm layers in WAN 2.2 always get 0.0 multiplier (untouched).
-- Krea 2 Motion strategy is a compatibility alias for Balanced (image model, no video).
+- Krea 2 uses image-specific strategies: Balanced/Style/Content/Detail.
 
 ## Common Workflows
 
@@ -141,7 +141,7 @@ Primary UI styles live in `web/styles.css`; UI behavior lives in `web/app.js`.
 Check `logs/`, browser network/SSE output, and the Go server terminal.
 
 ## Testing
-- `tests/test_lora_merge_engine.py`: 12 test cases covering LoRA pair discovery, LTX-2.3/WAN 2.2/Krea 2 profiles, dry run, merge with scaled deltas, preserved key skipping, per-LoRA strategy selection, Krea 2 underscore key mapping.
+- `tests/test_lora_merge_engine.py`: 19 test cases covering LoRA pair discovery, LTX-2.3/WAN 2.2/Krea 2 profiles, dry run, merge with scaled deltas, preserved key skipping, per-LoRA strategy selection, Krea 2 underscore key mapping, Krea 2 image strategies (Style/Content/Detail).
 - Run with: `python3 -m pytest tests/ -v` or `python3 tests/test_lora_merge_engine.py`
 
 ## Agent Rules

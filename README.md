@@ -106,9 +106,11 @@ Each strategy applies architecture-specific multipliers to tensor categories:
 - Preserves modulation.lin, patch_embedding, and baked companion modules.
 - Norm layers always get 0.0 multiplier (untouched).
 
-**Krea 2 strategies** (Balanced, Motion, Visuals):
+**Krea 2 strategies** (Balanced, Style, Content, Detail):
 - Classifies tensors into: attn_qkv, attn_out, attn_gate, ff_in, ff_out, text_fusion, structural, other.
-- No Audio strategy (Krea 2 is an image model). Motion is a compatibility alias for Balanced.
+- Style boosts attention (qkv/out/gate), reduces text_fusion — for aesthetic/style LoRAs.
+- Content boosts feed-forward, moderates attention — for subject/content LoRAs.
+- Detail applies mild global boost — for quality/detail LoRAs.
 - Preserves modulation.lin, tproj, tmlp, txtmlp, first/last layers, txtfusion.projector, norm.scale, qknorm.
 
 ## Architecture And Preservation

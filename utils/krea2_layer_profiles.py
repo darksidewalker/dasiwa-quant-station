@@ -49,39 +49,40 @@ _STRATEGY_MULTIPLIERS = {
         "structural": 0.0,
         "other": 0.80,
     },
-    "Visuals": {
-        "attn_qkv": 1.10,
-        "attn_out": 1.10,
+    "Style": {
+        # Boost attention routing for aesthetic/style LoRAs; dial back text_fusion
+        # so the LoRA reshapes visual style rather than prompt interpretation.
+        "attn_qkv": 1.15,
+        "attn_out": 1.15,
+        "attn_gate": 1.10,
+        "ff_in": 1.00,
+        "ff_out": 1.00,
+        "text_fusion": 0.70,
+        "structural": 0.0,
+        "other": 0.85,
+    },
+    "Content": {
+        # Boost feed-forward for subject/content LoRAs; keep attention routing
+        # closer to baseline so composition stays stable.
+        "attn_qkv": 0.90,
+        "attn_out": 0.90,
+        "attn_gate": 0.85,
+        "ff_in": 1.15,
+        "ff_out": 1.15,
+        "text_fusion": 0.85,
+        "structural": 0.0,
+        "other": 0.85,
+    },
+    "Detail": {
+        # Mild global boost for quality/detail LoRAs across all categories.
+        "attn_qkv": 1.05,
+        "attn_out": 1.05,
         "attn_gate": 1.00,
         "ff_in": 1.05,
         "ff_out": 1.05,
         "text_fusion": 0.85,
         "structural": 0.0,
         "other": 0.85,
-    },
-    "Motion": {
-        # Krea 2 is an image model; keep Motion as a compatibility alias rather
-        # than exposing special video behavior.
-        "attn_qkv": 1.00,
-        "attn_out": 1.00,
-        "attn_gate": 0.90,
-        "ff_in": 1.00,
-        "ff_out": 1.00,
-        "text_fusion": 0.80,
-        "structural": 0.0,
-        "other": 0.80,
-    },
-    "Audio": {
-        # Krea 2 has no audio layers; treated like Balanced if stale UI state
-        # submits it. The frontend filters Audio out for Krea 2.
-        "attn_qkv": 1.00,
-        "attn_out": 1.00,
-        "attn_gate": 0.90,
-        "ff_in": 1.00,
-        "ff_out": 1.00,
-        "text_fusion": 0.80,
-        "structural": 0.0,
-        "other": 0.80,
     },
 }
 

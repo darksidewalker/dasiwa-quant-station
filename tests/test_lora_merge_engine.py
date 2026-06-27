@@ -260,6 +260,63 @@ class LoraMergeEngineTests(unittest.TestCase):
             self.assertIn("matched=1", text)
             self.assertFalse(out.exists())
 
+    def test_krea2_strategies_apply_correct_multipliers(self):
+        from utils.krea2_layer_profiles import strategy_multiplier
+        # Balanced: neutral baseline
+        self.assertEqual(strategy_multiplier("Balanced", "attn_qkv"), 1.00)
+        self.assertEqual(strategy_multiplier("Balanced", "ff_in"), 1.00)
+        self.assertEqual(strategy_multiplier("Balanced", "text_fusion"), 0.80)
+        # Style: boost attention, reduce text_fusion
+        self.assertEqual(strategy_multiplier("Style", "attn_qkv"), 1.15)
+        self.assertEqual(strategy_multiplier("Style", "ff_in"), 1.00)
+        self.assertEqual(strategy_multiplier("Style", "text_fusion"), 0.70)
+        # Content: boost FF, reduce attention
+        self.assertEqual(strategy_multiplier("Content", "attn_qkv"), 0.90)
+        self.assertEqual(strategy_multiplier("Content", "ff_in"), 1.15)
+        self.assertEqual(strategy_multiplier("Content", "text_fusion"), 0.85)
+        # Detail: mild global boost
+        self.assertEqual(strategy_multiplier("Detail", "attn_qkv"), 1.05)
+        self.assertEqual(strategy_multiplier("Detail", "ff_in"), 1.05)
+        self.assertEqual(strategy_multiplier("Detail", "text_fusion"), 0.85)
+        # Structural always 0.0
+        for strat in ["Balanced", "Style", "Content", "Detail"]:
+            self.assertEqual(strategy_multiplier(strat, "structural"), 0.0)
+
+    def test_krea2_style_merge_applies_attention_boost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "blocks.0.attn.wq.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "lora_unet_blocks_0_attn_wq.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_wq.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 0.5, "strategy": "Style"}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "Krea 2",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": False,
+                "strict_matching": True,
+            }))
+
+            merged = load_file(str(out))
+            # Style: attn_qkv multiplier 1.15, strength 0.5, global 1.0
+            # delta = up @ down = ones(3,2) @ ones(2,4) = full(3,4, 2.0)
+            # result = 0 + 1.0 * 0.5 * 1.15 * 2.0 = 1.15
+            self.assertTrue(torch.allclose(
+                merged["blocks.0.attn.wq.weight"],
+                torch.full((3, 4), 1.15),
+            ))
+
     def test_profiles_classify_audio_and_preserve_keys(self):
         self.assertEqual(
             classify_ltx23_key("model.diffusion_model.transformer_blocks.0.audio_attn1.to_k.weight"),
