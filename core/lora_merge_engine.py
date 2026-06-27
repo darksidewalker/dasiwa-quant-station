@@ -8,7 +8,7 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from utils.lora_inspector import discover_lora_pairs, read_safetensors_manifest
+from utils.lora_inspector import discover_lora_pairs, discover_diff_patches, read_safetensors_manifest
 from core.metadata_manager import merge_custom_metadata
 
 
@@ -51,6 +51,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     merge_device = _normalize_merge_device(payload.get("merge_device"))
     cuda_device = payload.get("cuda_device") or "cuda:0"
     vram_headroom_mb = int(payload.get("vram_headroom_mb") or 1024)
+    krea2_unchain = bool(payload.get("krea2_unchain", False))
 
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
 
@@ -71,7 +72,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         lora_strategy = lora_spec.get("strategy") or strategy
         lora_manifest = read_safetensors_manifest(lora_path)
         pairs = discover_lora_pairs(lora_manifest)
-        yield _log(f"LoRA: {os.path.basename(lora_path)} | strategy={lora_strategy} | tensors={len(lora_manifest)} | pairs={len(pairs)}\n")
+        diff_patches = discover_diff_patches(lora_manifest)
+        yield _log(f"LoRA: {os.path.basename(lora_path)} | strategy={lora_strategy} | tensors={len(lora_manifest)} | pairs={len(pairs)} | diff_patches={len(diff_patches)}\n")
         with safe_open(lora_path, framework="pt", device="cpu") as lf:
             for pair in pairs:
                 candidates = [c for c in pair.target_candidates if c in base_keys]
@@ -109,6 +111,63 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     "scale": scale,
                 })
                 reports.append(_report(pair.base_name, target_key, "matched", lora_path, category=category, strategy=lora_strategy, scale=scale, rank=pair.rank))
+
+            # Process .diff patches (direct additive deltas, ComfyUI format)
+            for dp in diff_patches:
+                dp_candidates = [c for c in dp.target_candidates if c in base_keys]
+                if len(dp_candidates) == 0:
+                    unmatched += 1
+                    reports.append(_report(dp.diff_key, None, "unmatched_diff", lora_path))
+                    continue
+                if len(dp_candidates) > 1:
+                    ambiguous += 1
+                    reports.append(_report(dp.diff_key, None, "ambiguous_diff", lora_path, candidates=dp_candidates))
+                    if strict:
+                        continue
+                dp_target = dp_candidates[0]
+                if is_preserved(dp_target):
+                    skipped += 1
+                    reports.append(_report(dp.diff_key, dp_target, "skipped_preserve_diff", lora_path))
+                    continue
+                base_shape = base_manifest[dp_target].shape
+                if tuple(base_shape) != tuple(dp.diff_shape):
+                    unmatched += 1
+                    reports.append(_report(dp.diff_key, dp_target, "shape_mismatch_diff", lora_path, base_shape=base_shape, diff_shape=dp.diff_shape))
+                    continue
+                matched_ops.append({
+                    "lora_path": lora_path,
+                    "strategy": lora_strategy,
+                    "diff_key": dp.diff_key,
+                    "target_key": dp_target,
+                    "category": "diff_patch",
+                    "scale": global_strength * lora_strength,
+                    "is_diff": True,
+                })
+                reports.append(_report(dp.diff_key, dp_target, "matched_diff", lora_path, scale=global_strength * lora_strength))
+
+    # Built-in Krea 2 unchain: negate txtfusion.projector.weight positions 8–10
+    if krea2_unchain and architecture == "Krea 2":
+        unchain_target = "txtfusion.projector.weight"
+        if unchain_target in base_keys:
+            unchain_base_shape = base_manifest[unchain_target].shape
+            if tuple(unchain_base_shape) == (1, 12):
+                unchain_strength = 1.05
+                matched_ops.append({
+                    "lora_path": "__builtin_unchain__",
+                    "strategy": "Balanced",
+                    "diff_key": "__builtin_unchain__",
+                    "target_key": unchain_target,
+                    "category": "diff_patch",
+                    "scale": global_strength * unchain_strength,
+                    "is_diff": True,
+                    "is_builtin_unchain": True,
+                })
+                reports.append(_report(unchain_target, unchain_target, "matched_builtin_unchain", "__builtin__", scale=global_strength * unchain_strength))
+                yield _log(f"Builtin unchain patch: {unchain_target} positions 8–10 negated (strength={unchain_strength})\n")
+            else:
+                yield _log(f"Skipping unchain: {unchain_target} shape {unchain_base_shape} != (1, 12)\n")
+        else:
+            yield _log(f"Skipping unchain: {unchain_target} not found in base checkpoint\n")
 
     yield _log(f"Dry-run report: matched={len(matched_ops)} skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n")
     if dry_run:
@@ -159,7 +218,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         out_f.write(header)
         lora_handles = {
             path: stack.enter_context(safe_open(path, framework="pt", device="cpu"))
-            for path in sorted({op["lora_path"] for op in matched_ops})
+            for path in sorted({op["lora_path"] for op in matched_ops if op["lora_path"] != "__builtin_unchain__"})
         }
         with safe_open(base_path, framework="pt", device="cpu") as bf:
             for key in bf.keys():
@@ -369,14 +428,27 @@ def _merge_target_cpu(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handle
     original_dtype = base.dtype
     merged = base
     for op in ops:
-        lf = lora_handles[op["lora_path"]]
-        down = lf.get_tensor(op["down_key"]).to(torch.float32)
-        up = lf.get_tensor(op["up_key"]).to(torch.float32)
-        delta = _compute_delta(down, up, tuple(merged.shape))
-        scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"])
-        if adaptive:
-            scale *= _adaptive_multiplier(merged, delta)
-        merged = (merged.to(torch.float32) + delta * scale).to(original_dtype)
+        if op.get("is_builtin_unchain"):
+            # Built-in Krea 2 unchain: multiply positions 8–10 by (1 + scale)
+            # Equivalent to adding a diff equal to the base value * scale
+            merged = merged.to(torch.float32).clone()
+            for pos in [8, 9, 10]:
+                merged[0, pos] = merged[0, pos] * (1 + op["scale"])
+            merged = merged.to(original_dtype)
+        elif op.get("is_diff"):
+            # Direct additive delta (ComfyUI .diff format) — no matrix multiply, no adaptive
+            lf = lora_handles[op["lora_path"]]
+            diff = lf.get_tensor(op["diff_key"]).to(torch.float32)
+            merged = (merged.to(torch.float32) + diff * op["scale"]).to(original_dtype)
+        else:
+            lf = lora_handles[op["lora_path"]]
+            down = lf.get_tensor(op["down_key"]).to(torch.float32)
+            up = lf.get_tensor(op["up_key"]).to(torch.float32)
+            delta = _compute_delta(down, up, tuple(merged.shape))
+            scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"])
+            if adaptive:
+                scale *= _adaptive_multiplier(merged, delta)
+            merged = (merged.to(torch.float32) + delta * scale).to(original_dtype)
     return merged
 
 
@@ -386,15 +458,26 @@ def _merge_target_cuda(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handl
     with torch.no_grad():
         merged = base.to(device=device, dtype=torch.float32)
         for op in ops:
-            lf = lora_handles[op["lora_path"]]
-            down = lf.get_tensor(op["down_key"]).to(device=device, dtype=torch.float32)
-            up = lf.get_tensor(op["up_key"]).to(device=device, dtype=torch.float32)
-            delta = _compute_delta(down, up, target_shape)
-            scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"])
-            if adaptive:
-                scale *= _adaptive_multiplier(merged, delta)
-            merged = merged + delta * scale
-            del down, up, delta
+            if op.get("is_builtin_unchain"):
+                # Built-in Krea 2 unchain: multiply positions 8–10 by (1 + scale)
+                for pos in [8, 9, 10]:
+                    merged[0, pos] = merged[0, pos] * (1 + op["scale"])
+            elif op.get("is_diff"):
+                # Direct additive delta
+                lf = lora_handles[op["lora_path"]]
+                diff = lf.get_tensor(op["diff_key"]).to(device=device, dtype=torch.float32)
+                merged = merged + diff * op["scale"]
+                del diff
+            else:
+                lf = lora_handles[op["lora_path"]]
+                down = lf.get_tensor(op["down_key"]).to(device=device, dtype=torch.float32)
+                up = lf.get_tensor(op["up_key"]).to(device=device, dtype=torch.float32)
+                delta = _compute_delta(down, up, target_shape)
+                scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"])
+                if adaptive:
+                    scale *= _adaptive_multiplier(merged, delta)
+                merged = merged + delta * scale
+                del down, up, delta
         result = merged.to(device="cpu", dtype=original_dtype)
         del merged
         return result
@@ -408,6 +491,9 @@ def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lor
 
     estimated = 0
     for op in ops:
+        if op.get("is_diff"):
+            # Diff patches are tiny direct deltas — negligible VRAM
+            continue
         lf = lora_handles[op["lora_path"]]
         down_shape = tuple(lf.get_slice(op["down_key"]).get_shape())
         up_shape = tuple(lf.get_slice(op["up_key"]).get_shape())

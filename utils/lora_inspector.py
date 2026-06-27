@@ -24,6 +24,14 @@ class LoraPair:
     target_candidates: Tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class DiffPatch:
+    """A direct additive weight delta (ComfyUI .diff format)."""
+    diff_key: str
+    diff_shape: Tuple[int, ...]
+    target_candidates: Tuple[str, ...]
+
+
 def read_safetensors_manifest(path: str) -> Dict[str, TensorInfo]:
     manifest: Dict[str, TensorInfo] = {}
     with safe_open(path, framework="pt", device="cpu") as f:
@@ -71,6 +79,56 @@ def discover_lora_pairs(manifest: Dict[str, TensorInfo]) -> List[LoraPair]:
             target_candidates=tuple(_target_candidates(base)),
         ))
     return pairs
+
+
+def discover_diff_patches(manifest: Dict[str, TensorInfo]) -> List[DiffPatch]:
+    """Find .diff keys (ComfyUI direct-weight-patch format) and map them to targets."""
+    patches: List[DiffPatch] = []
+    for key in sorted(manifest):
+        if not key.endswith(".diff"):
+            continue
+        info = manifest[key]
+        # Strip .diff suffix, append .weight → base name for candidate generation
+        base = key[:-len(".diff")] + ".weight"
+        # Build candidates: the base itself plus prefix-normalized variants
+        candidates = tuple(_diff_target_candidates(base))
+        patches.append(DiffPatch(
+            diff_key=key,
+            diff_shape=info.shape,
+            target_candidates=candidates,
+        ))
+    return patches
+
+
+def _diff_target_candidates(base: str) -> List[str]:
+    """Generate key variants for a .diff→target mapping (prefix normalization).
+
+    Returns candidates both with and without a trailing .weight suffix so that
+    tensors like ``blocks.0.mod.lin`` (scale, no .weight) are also found.
+    """
+    bases = [base]
+    if base.startswith("diffusion_model."):
+        bases.append(base[len("diffusion_model."):])
+        bases.append("model." + base)
+    if base.startswith("model.diffusion_model."):
+        bases.append(base[len("model."):])
+    if base.startswith("base_model.model.diffusion_model."):
+        bases.append(base.replace("base_model.model.diffusion_model.", "model.diffusion_model.", 1))
+    out: List[str] = []
+    for b in bases:
+        # Emit the key as-is (covers .weight and bare keys alike)
+        if b not in out:
+            out.append(b)
+        # Also emit with / without .weight to cover both conventions
+        if b.endswith(".weight"):
+            bare = b[:-len(".weight")]
+            if bare not in out:
+                out.append(bare)
+        else:
+            with_weight = b + ".weight"
+            if with_weight not in out:
+                out.append(with_weight)
+    return out
 
 
 def _split_lora_key(key: str) -> Optional[Tuple[str, str]]:

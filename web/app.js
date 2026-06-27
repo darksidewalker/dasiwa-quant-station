@@ -186,6 +186,11 @@ function wireEvents() {
   $("architecture").addEventListener("change", () => {
     state.architecture = $("architecture").value;
     refreshMetadata();
+    // Show/hide Krea 2-specific options
+    const unchainLabel = $("krea2-unchain-label");
+    if (unchainLabel) {
+      unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
+    }
   });
   $("model-name").addEventListener("input", refreshMetadata);
   $("full-checkpoint").addEventListener("change", refreshMetadata);
@@ -530,6 +535,7 @@ async function startLoraMerge() {
         adaptive: $("lora-adaptive").checked,
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,
+        krea2_unchain: $("krea2-unchain").checked,
       }),
     });
     state.jobId = data.job_id;
