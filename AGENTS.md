@@ -1,9 +1,9 @@
 # AGENTS.md - Developer & AI Agent Guide
 
 ## Project Purpose
-**DaSiWa Quant Station** is a specialized quantization and LoRA merge toolkit for video diffusion models. It manages GGUF conversion, safetensors quantization, metadata injection, automatic architecture/full-checkpoint inspection, LoRA merging with architecture-specific tensor classification, and critical preservation of video/companion tensors to prevent corrupted outputs.
+**DaSiWa Quant Station** is a specialized quantization and LoRA merge toolkit for diffusion models. It manages GGUF conversion, safetensors quantization, metadata injection, automatic architecture/full-checkpoint inspection, LoRA merging with architecture-specific tensor classification, and critical preservation of video/companion tensors to prevent corrupted outputs.
 
-Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwell systems, while the safetensors path also exposes the broader upstream `convert_to_quant` preset set.
+Primary targets are WAN 2.2, LTX-2.3, and Krea 2 on NVIDIA Ada/Blackwell systems, while the safetensors path also exposes the broader upstream `convert_to_quant` preset set.
 
 ## Current Architecture
 
@@ -47,20 +47,21 @@ Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwe
   - Loads base checkpoint and LoRA safetensors files
   - Discovers LoRA A/B pairs via `utils/lora_inspector.py`
   - Matches LoRA tensors to base checkpoint candidates (handles prefix variations: `diffusion_model.` vs `model.diffusion_model.`)
-  - Dispatches to architecture-specific profiles (LTX-2.3, WAN 2.2) for tensor classification
+  - Dispatches to architecture-specific profiles (LTX-2.3, WAN 2.2, Krea 2) for tensor classification
   - Applies per-LoRA strategy multipliers with global strength scaling
   - Supports dry-run mode (reports recipe without writing output)
   - Strict matching mode (rejects unmatched LoRA tensors)
   - Preserves structural layers per architecture preserve tables
   - Generates merge recipe for reproducibility
-- **`core/layer_config_builder.py`**: Single source of truth for verified preserve/rescue regex tables. WAN 2.2 and LTX-2.3 have local verified patterns; other archs intentionally fall through to upstream `convert_to_quant` preset skip logic.
+- **`core/layer_config_builder.py`**: Single source of truth for verified preserve/rescue regex tables. WAN 2.2, LTX-2.3, and Krea 2 have local verified patterns; other archs intentionally fall through to upstream `convert_to_quant` preset skip logic.
 - **`core/metadata_manager.py`**: Handles modelspec metadata preview/read/injection for safetensors and GGUF where supported.
 
 ### Utilities
-- **`utils/arch_detector.py`**: Header-only source inspection. Detects known WAN 2.2/LTX-2.3 markers and whether a safetensors source appears to be a full checkpoint with companion modules.
+- **`utils/arch_detector.py`**: Header-only source inspection. Detects known WAN 2.2/LTX-2.3/Krea 2 markers and whether a safetensors source appears to be a full checkpoint with companion modules.
 - **`utils/lora_inspector.py`**: LoRA pair discovery. Reads safetensors manifests, identifies A/B weight pairs, infers rank, generates target candidate keys with prefix normalization.
 - **`utils/ltx23_layer_profiles.py`**: LTX-2.3 tensor classification into categories (attn_qkv, attn_out, ff_in/out, audio_attn, audio_ff, audio/video connectors, caption_projection, patchify_or_output, norm, other). Strategy multipliers for Balanced/Motion/Visuals/Audio. Preserves adaln, gate logits, baked VAE/text/audio modules.
 - **`utils/wan22_layer_profiles.py`**: WAN 2.2 tensor classification into categories (self_attn_qkv/out, cross_attn_qkv/out, ffn_in/out, modulation, caption_projection, patchify_or_output, norm, other). Strategy multipliers for Balanced/Motion/Visuals. No Audio strategy. Preserves modulation.lin, patch_embedding, baked companions. Norm layers always 0.0 multiplier.
+- **`utils/krea2_layer_profiles.py`**: Krea 2 tensor classification into categories (attn_qkv, attn_out, attn_gate, ff_in/out, text_fusion, structural, other). Strategy multipliers for Balanced/Motion/Visuals. No Audio strategy (image model). Preserves modulation.lin, tproj, tmlp, txtmlp, first/last, txtfusion.projector, norm.scale, qknorm.
 - **`utils/scanner_5d.py`**: 5D tensor validation tool.
 - **`utils/pattern_audit.py`**: Pattern coverage audit against checkpoint manifest.
 - **`utils/system.py`**: CPU/RAM/GPU/VRAM monitoring via nvidia-smi and psutil.
@@ -105,7 +106,7 @@ Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwe
 - `PRESERVE_PATTERNS`: Structural/routing/IO layers that stay at source precision via `{"skip": true}`.
 - `RESCUE_PATTERNS`: Layers that stay FP8 when the base format is lower-bit (`NVFP4` or `INT8`). On FP8 base they remain normal FP8, not BF16/FP16.
 - `BAKED_VAE_PATTERNS`: Unconditional companion-module skip patterns for VAE, audio VAE, vocoder, text encoders, audio encoders, projection layers, and similar full-checkpoint components.
-- Verified local pattern tables currently exist for **WAN 2.2** and **LTX-2.3**.
+- Verified local pattern tables currently exist for **WAN 2.2**, **LTX-2.3**, and **Krea 2**.
 - The 5D scanner and pattern audit tools are diagnostic aids; do not widen their architecture scope without verified patterns.
 
 ## LoRA Merge Rules
@@ -115,8 +116,9 @@ Primary targets are WAN 2.2 and LTX-2.3 style video models on NVIDIA Ada/Blackwe
 - Strict matching rejects the merge if any LoRA tensor has no base candidate.
 - Dry run mode reports the complete merge recipe (matched/skipped/total counts, per-LoRA strategy, tensor categories) without writing output.
 - Preserved keys are never modified, regardless of LoRA content.
-- LTX-2.3 has an Audio strategy; WAN 2.2 does not (no audio components).
+- LTX-2.3 has an Audio strategy; WAN 2.2 and Krea 2 do not (no audio components).
 - Norm layers in WAN 2.2 always get 0.0 multiplier (untouched).
+- Krea 2 Motion strategy is a compatibility alias for Balanced (image model, no video).
 
 ## Common Workflows
 
@@ -139,7 +141,7 @@ Primary UI styles live in `web/styles.css`; UI behavior lives in `web/app.js`.
 Check `logs/`, browser network/SSE output, and the Go server terminal.
 
 ## Testing
-- `tests/test_lora_merge_engine.py`: 9 test cases covering LoRA pair discovery, LTX-2.3 profiles, WAN 2.2 profiles, dry run, merge with scaled deltas, preserved key skipping, per-LoRA strategy selection.
+- `tests/test_lora_merge_engine.py`: 12 test cases covering LoRA pair discovery, LTX-2.3/WAN 2.2/Krea 2 profiles, dry run, merge with scaled deltas, preserved key skipping, per-LoRA strategy selection, Krea 2 underscore key mapping.
 - Run with: `python3 -m pytest tests/ -v` or `python3 tests/test_lora_merge_engine.py`
 
 ## Agent Rules

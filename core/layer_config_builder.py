@@ -126,6 +126,18 @@ PRESERVE_PATTERNS = {
     r"(^|\.)img_emb\.",
     r"(^|\.)head\.",
     ],
+    "Krea 2": [
+        r"(^|\.)mod\.lin$",
+        r"(^|\.)last\.modulation\.lin$",
+        r"(^|\.)first\.",
+        r"(^|\.)last\.",
+        r"(^|\.)tproj\.",
+        r"(^|\.)tmlp\.",
+        r"(^|\.)txtmlp\.",
+        r"(^|\.)txtfusion\.projector\.",
+        r"(^|\.)(pre|post)?norm\.scale$",
+        r"\.qknorm\.[qk]norm\.scale$",
+    ],
 }
 
 
@@ -150,6 +162,10 @@ RESCUE_PATTERNS = {
         r"\.cross_attn\.v$",
         # FFN second linear (down projection)
         r"\.ffn\.2$",
+    ],
+    "Krea 2": [
+        r"^blocks\.\d+\.attn\.(wq|wk|wv|wo|gate)\.weight$",
+        r"^blocks\.\d+\.mlp\.(gate|up|down)\.weight$",
     ],
 }
 

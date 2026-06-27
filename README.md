@@ -2,7 +2,7 @@
 
 DaSiWa Quant Station is a local quantization and LoRA merge workbench for video diffusion models. It combines a modern Go-powered web UI with proven Python quantization engines for GGUF and safetensors workflows, plus architecture-aware LoRA merging with per-LoRA strategy control.
 
-Built around the practical pain points of WAN 2.2 and LTX-2.3 style video checkpoints: preserving 5D/video-critical tensors, keeping full-checkpoint companion modules safe, injecting modelspec metadata, avoiding INT8 paths that produce corrupted video, and merging LoRAs with architecture-specific tensor classification.
+Built around the practical pain points of WAN 2.2, LTX-2.3, and Krea 2 style diffusion checkpoints: preserving 5D/video-critical tensors, keeping full-checkpoint companion modules safe, injecting modelspec metadata, avoiding INT8 paths that produce corrupted video, and merging LoRAs with architecture-specific tensor classification.
 
 ![Quant Station Preview](assets/DaSiWa-QuantStation.webp)
 
@@ -106,6 +106,11 @@ Each strategy applies architecture-specific multipliers to tensor categories:
 - Preserves modulation.lin, patch_embedding, and baked companion modules.
 - Norm layers always get 0.0 multiplier (untouched).
 
+**Krea 2 strategies** (Balanced, Motion, Visuals):
+- Classifies tensors into: attn_qkv, attn_out, attn_gate, ff_in, ff_out, text_fusion, structural, other.
+- No Audio strategy (Krea 2 is an image model). Motion is a compatibility alias for Balanced.
+- Preserves modulation.lin, tproj, tmlp, txtmlp, first/last layers, txtfusion.projector, norm.scale, qknorm.
+
 ## Architecture And Preservation
 
 The architecture selection controls the `convert_to_quant` preset and, for verified models, DaSiWa's local preservation table.
@@ -114,6 +119,7 @@ The architecture selection controls the `convert_to_quant` preset and, for verif
 |---|---:|---:|---|
 | WAN 2.2 | Yes | Yes | Verified local table for structural/video-sensitive layers. |
 | LTX-2.3 | Yes | Yes | Verified local table, including audio/video connector and gate-sensitive patterns. |
+| Krea 2 | Yes | Yes | Verified local table for image diffusion transformer. No convert_to_quant flag; uses generic quantization with local layer config. |
 | Hunyuan Video, Flux.2, Qwen Image, Z-Image, Z-Image Refiner, Anima, Radiance, Distillation, NeRF, text presets | No | Limited/none | Uses upstream `convert_to_quant` preset skip logic. |
 | Not set | No | Skipped | Runs without architecture flag, local layer config, or architecture verification. |
 
@@ -149,6 +155,7 @@ utils/                       Detection, scan, audit, system helpers
   lora_inspector.py          LoRA pair discovery, tensor manifest reading
   ltx23_layer_profiles.py    LTX-2.3 tensor classification + strategy multipliers
   wan22_layer_profiles.py    WAN 2.2 tensor classification + strategy multipliers
+  krea2_layer_profiles.py    Krea 2 tensor classification + strategy multipliers
   scanner_5d.py              5D tensor validation
   pattern_audit.py           Pattern coverage audit
   system.py                  CPU/RAM/GPU/VRAM monitoring

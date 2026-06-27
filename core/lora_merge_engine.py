@@ -15,6 +15,13 @@ from core.metadata_manager import merge_custom_metadata
 
 def _get_profile(arch: str):
     """Return (is_preserved, classify, strategy_mult) for *arch*."""
+    if arch == "Krea 2":
+        from utils.krea2_layer_profiles import (
+            classify_krea2_key as classify,
+            is_krea2_preserved_key as is_preserved,
+            strategy_multiplier as strat_mult,
+        )
+        return is_preserved, classify, strat_mult
     if arch == "WAN 2.2":
         from utils.wan22_layer_profiles import (
             classify_wan22_key as classify,

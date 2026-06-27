@@ -96,6 +96,23 @@ def _infer_rank(down_shape: Tuple[int, ...], up_shape: Tuple[int, ...]) -> int:
 
 def _target_candidates(base: str) -> List[str]:
     bases = [base]
+    krea_block_match = re.fullmatch(r"lora_unet_(blocks_\d+)_(attn|mlp)_(gate|wk|wo|wq|wv|down|up)", base)
+    if krea_block_match:
+        block, family, leaf = krea_block_match.groups()
+        bases.append(f"{block.replace('_', '.')}.{family}.{leaf}")
+    krea_simple_match = re.fullmatch(r"lora_unet_(first|last_linear|tmlp_\d+|tproj_\d+|txtmlp_\d+|txtfusion_projector)", base)
+    if krea_simple_match:
+        name = krea_simple_match.group(1)
+        name = name.replace("last_linear", "last.linear").replace("txtfusion_projector", "txtfusion.projector")
+        bases.append(name.replace("_", "."))
+    krea_txtfusion_match = re.fullmatch(
+        r"lora_unet_txtfusion_((?:layerwise|refiner)_blocks_\d+)_(attn|mlp)_(gate|wk|wo|wq|wv|down|up)",
+        base,
+    )
+    if krea_txtfusion_match:
+        block, family, leaf = krea_txtfusion_match.groups()
+        block = block.replace("layerwise_blocks_", "layerwise_blocks.").replace("refiner_blocks_", "refiner_blocks.")
+        bases.append(f"txtfusion.{block}.{family}.{leaf}")
     if base.startswith("diffusion_model."):
         bases.append("model." + base)
     if base.startswith("base_model.model.transformer_blocks."):

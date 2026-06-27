@@ -43,6 +43,14 @@ ARCH_MARKERS = {
         re.compile(r"^time_projection\.\d+\."),
         re.compile(r"^head\.head\."),
     ],
+    "Krea 2": [
+        # Observed in krea/Krea-2-Raw raw.safetensors / local krea2_raw.
+        re.compile(r"^blocks\.\d+\.attn\.wq\.weight$"),
+        re.compile(r"^blocks\.\d+\.attn\.qknorm\.qnorm\.scale$"),
+        re.compile(r"^blocks\.\d+\.mlp\.gate\.weight$"),
+        re.compile(r"^txtfusion\.layerwise_blocks\.\d+\.attn\.wq\.weight$"),
+        re.compile(r"^last\.modulation\.lin$"),
+    ],
 }
 
 FULL_CHECKPOINT_MARKERS = {

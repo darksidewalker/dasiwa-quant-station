@@ -128,6 +128,10 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # arch_detector, and assets.MODEL_METADATA_CONFIGS).
         "WAN 2.2":           {"flag": "--wan",               "optimizer": _OPTIMIZER_DEFAULT},
         "LTX-2.3":           {"flag": "--ltxv2",             "optimizer": _OPTIMIZER_DEFAULT},
+        # Krea 2 has verified local detection/layer rules, but current
+        # convert_to_quant exposes no dedicated --krea flag. Quantization uses
+        # the local layer config plus generic convert_to_quant behavior.
+        "Krea 2":            {"flag": None,                  "optimizer": _OPTIMIZER_DEFAULT},
         # Other convert_to_quant presets. No verified layer-name patterns
         # in this project yet, so layer-config is skipped and we rely on
         # the convert_to_quant preset's own skip rules.
@@ -312,10 +316,11 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         all_arch_flags = list(ARCH_FLAGS.values())
         present_arch = [f for f in all_arch_flags if f in cmd]
         if arch_flag is None:
-            # "Not set": zero arch flags is expected; multiple would be a bug.
+            # "Not set" and verified local-only archs such as Krea 2 expect
+            # zero upstream architecture flags; multiple would be a bug.
             if len(present_arch) > 0:
                 guard_errors.append(
-                    f"unexpected architecture flag(s) with 'Not set': {present_arch}"
+                    f"unexpected architecture flag(s) with '{model_type}': {present_arch}"
                 )
         else:
             if len(present_arch) == 0:

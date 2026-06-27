@@ -11,6 +11,7 @@ from safetensors.torch import load_file, save_file
 from core import lora_merge_engine
 from core.lora_merge_engine import run_lora_merge
 from utils.lora_inspector import discover_lora_pairs, read_safetensors_manifest
+from utils.krea2_layer_profiles import classify_krea2_key, is_krea2_preserved_key
 from utils.ltx23_layer_profiles import classify_ltx23_key, is_ltx23_preserved_key
 from utils.wan22_layer_profiles import classify_wan22_key, is_wan22_preserved_key
 
@@ -208,6 +209,56 @@ class LoraMergeEngineTests(unittest.TestCase):
                 pairs[0].target_candidates,
             )
             self.assertEqual(pairs[0].rank, 2)
+
+    def test_krea2_lora_unet_underscore_keys_map_to_base_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lora = Path(tmp) / "krea.safetensors"
+            save_file({
+                "lora_unet_blocks_0_attn_wq.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_wq.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            manifest = read_safetensors_manifest(str(lora))
+            pairs = discover_lora_pairs(manifest)
+
+            self.assertEqual(len(pairs), 1)
+            self.assertIn("blocks.0.attn.wq.weight", pairs[0].target_candidates)
+
+    def test_profiles_classify_krea2_keys(self):
+        self.assertEqual(classify_krea2_key("blocks.0.attn.wq.weight"), "attn_qkv")
+        self.assertEqual(classify_krea2_key("blocks.0.mlp.down.weight"), "ff_out")
+        self.assertTrue(is_krea2_preserved_key("blocks.0.mod.lin"))
+        self.assertTrue(is_krea2_preserved_key("last.linear.weight"))
+
+    def test_krea2_dry_run_reports_match_for_real_key_style(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "blocks.0.attn.wq.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "lora_unet_blocks_0_attn_wq.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_wq.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            events = list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 0.5}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "Krea 2",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": True,
+                "strict_matching": True,
+            }))
+
+            text = "".join(e.get("text", "") for e in events)
+            self.assertIn("matched=1", text)
+            self.assertFalse(out.exists())
 
     def test_profiles_classify_audio_and_preserve_keys(self):
         self.assertEqual(

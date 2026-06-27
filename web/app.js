@@ -424,9 +424,9 @@ function renderLoras() {
     root.appendChild(empty);
     return;
   }
-  // WAN 2.2 has no audio components, so Audio strategy is not useful.
+  // WAN 2.2 and Krea 2 have no audio components, so Audio strategy is not useful.
   const allStrategies = ["Balanced", "Motion", "Visuals", "Audio"];
-  const strategies = state.architecture === "WAN 2.2"
+  const strategies = ["WAN 2.2", "Krea 2"].includes(state.architecture)
     ? allStrategies.filter((s) => s !== "Audio")
     : allStrategies;
   state.loras.forEach((lora, idx) => {
@@ -466,7 +466,7 @@ async function selectSource(path) {
   if (path.endsWith(".safetensors")) {
     try {
       const info = await api(`/api/inspect?path=${encodeURIComponent(path)}`);
-      if (["WAN 2.2", "LTX-2.3"].includes(info.architecture)) {
+      if (["WAN 2.2", "LTX-2.3", "Krea 2"].includes(info.architecture)) {
         state.architecture = info.architecture;
         $("architecture").value = info.architecture;
       }
