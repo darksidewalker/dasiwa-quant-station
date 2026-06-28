@@ -149,6 +149,7 @@ func NewServer() (*Server, error) {
 	s.version = computeBinaryHash()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/ping", s.handlePing)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/system", s.handleSystem)
 	mux.HandleFunc("GET /api/browse", s.handleBrowse)
@@ -230,6 +231,12 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// handlePing is a lightweight health-check endpoint. It keeps the
+// idle-shutdown timer from firing while a browser tab is open.
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"version":   s.version,
@@ -244,6 +251,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"formats": []map[string]string{
 			{"label": "FP8", "value": "FP8"},
 			{"label": "NVFP4", "value": "NVFP4"},
+			{"label": "MXFP8", "value": "MXFP8"},
+			{"label": "Hybrid MXFP8", "value": "Hybrid MXFP8"},
 			{"label": "INT8 Tensor-wise", "value": "INT8 Tensor-wise"},
 			{"label": "INT8 Row-wise ConvRot (runtime)", "value": "INT8 Row-wise ConvRot Runtime"},
 			{"label": "GGUF F32", "value": "GGUF_F32"},

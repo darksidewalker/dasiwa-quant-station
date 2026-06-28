@@ -207,6 +207,21 @@ async function init() {
   refreshMetadata();
   refreshSystem();
   setInterval(refreshSystem, 5000);
+
+  // Background ping: keeps the server alive (prevents idle shutdown)
+  // and updates the green status dot next to the headline.
+  // Runs every 30 s — well within the 3-minute idle grace period.
+  pingServer();
+  setInterval(pingServer, 30000);
+}
+
+async function pingServer() {
+  try {
+    await fetch("/api/ping", {cache: "no-store"});
+    $("status-dot").classList.add("online");
+  } catch {
+    $("status-dot").classList.remove("online");
+  }
 }
 
 function renderFormats(formats) {

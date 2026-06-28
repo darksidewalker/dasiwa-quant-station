@@ -65,6 +65,20 @@ button { cursor: pointer; }
 
 .brand h1, .brand p, .topbar h2, .topbar p, h2, h3 { margin: 0; }
 .brand h1 { font-size: 20px; }
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  margin-left: 4px;
+  vertical-align: middle;
+  transition: background 0.3s ease;
+}
+.status-dot.online {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(80, 200, 120, 0.5);
+}
 .brand p, .topbar p, .field span, .picker-button span { color: var(--muted); font-size: 12px; }
 
 .panel {
