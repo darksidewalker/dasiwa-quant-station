@@ -9,18 +9,20 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, and Krea 2 style dif
 ## Highlights
 
 - **Modern local UI:** Go server with vanilla JS/CSS frontend at `http://127.0.0.1:7878`. Dark theme, responsive layout, no heavy frameworks.
-- **Safetensors quantization:** FP8, NVFP4, INT8 Tensor-wise, INT8 Row-wise ConvRot (runtime) through `silveroxides/convert_to_quant`.
+- **Safetensors quantization:** FP8, NVFP4, MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot (runtime) through `silveroxides/convert_to_quant`.
 - **GGUF conversion:** GGUF F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K through `ggufy` with sensitivity maps for video tensor preservation.
-- **LoRA merge:** Architecture-aware merging for WAN 2.2 and LTX-2.3. Per-LoRA strategy (Balanced/Motion/Visuals/Audio), per-LoRA strength, global strength scaling, dry-run mode, strict matching, adaptive mode.
-- **Layer safety:** Verified WAN 2.2 and LTX-2.3 preserve/rescue tables. Baked VAE/text/audio companion preservation for full checkpoints.
+- **LoRA merge:** Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2. Per-LoRA strategy (Balanced/Motion/Visuals/Audio or Balanced/Style/Content/Detail), per-LoRA strength, global strength scaling, dry-run mode, strict matching, adaptive mode, and shape-mismatch diagnostics.
+- **Layer safety:** Verified WAN 2.2, LTX-2.3, and Krea 2 preserve/rescue tables. Baked VAE/text/audio companion preservation for full checkpoints.
 - **Automatic inspection:** Header-only architecture and full-checkpoint detection when selecting a safetensors file.
 - **Metadata tools:** Preview, read, inject, and copy modelspec metadata from the UI. SHA256 hash calculation.
 - **Hardware monitor:** Real-time CPU%, RAM, GPU%, VRAM bars with 5-second polling.
 - **Memory cleanup:** One-button RAM/VRAM cache release (Go GC, Python GC, malloc_trim, PyTorch/CuPy cache).
 - **5D tensor scanner:** Validate video tensor shapes in safetensors files.
 - **Pattern audit:** Verify preserve/rescue pattern coverage against a checkpoint's tensor manifest.
+- **User-selectable output folder:** Choose a custom output directory for quant and LoRA merge results.
 - **Idle shutdown:** Server auto-exits after 3 minutes with no browser connections.
 - **Update & restart:** In-app dependency refresh, Go rebuild, and clean restart.
+- **DASIWA_MODELS_DIR:** Environment variable to override the default models directory.
 
 ## Quick Start
 
@@ -65,6 +67,8 @@ The Go UI has **Update & Restart**. It runs the setup-only path, rebuilds `quant
 |---|---|---|
 | FP8 | RTX 40/50-series quality baseline | Good default for video model compression. |
 | NVFP4 | Blackwell VRAM savings | More aggressive; sensitive layers rescued to FP8 where local tables exist. |
+| MXFP8 | Blackwell VRAM savings | Pure MXFP8 microscaling; requires SM >= 10.0 (Blackwell). Use Hybrid for Ada compatibility. |
+| Hybrid MXFP8 | Ada + Blackwell compatibility | Two-pass: MXFP8 quantize then hybrid conversion with tensorwise FP8 fallback. |
 | INT8 Tensor-wise | Safer INT8 path | Recommended INT8 choice for broad Comfy compatibility. |
 | INT8 ConvRot runtime | Experimental/runtime-specific INT8 | Requires inference code that reads ConvRot metadata and rotates activations. |
 | GGUF Q formats | GGUF/llama.cpp-style deployment | Uses `ggufy` plus sensitivity maps for verified video tensors. |
@@ -86,10 +90,11 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 
 1. Switch to **LoRA** mode in the workflow selector.
 2. Select a base checkpoint.
-3. Add one or more LoRAs. Each LoRA gets its own strategy (Balanced/Motion/Visuals/Audio) and strength multiplier.
+3. Add one or more LoRAs. Each LoRA gets its own strategy (Balanced/Motion/Visuals/Audio for LTX-2.3 and WAN 2.2, or Balanced/Style/Content/Detail for Krea 2) and strength multiplier.
 4. Set global strength scaling, toggle adaptive mode or strict matching.
 5. Use **Dry run** to preview the merge recipe without writing output.
 6. Enter an output name and start the merge.
+7. Shape-mismatch diagnostics automatically detect LoRAs trained on models with different hidden dimensions and warn before merge.
 
 ### LoRA Merge Strategies
 
@@ -130,7 +135,7 @@ Full checkpoints are detected from the source header when possible. When local l
 ### Layer Preservation Model
 
 - **PRESERVE_PATTERNS:** Structural/routing/IO layers that stay at source precision via `{"skip": true}`.
-- **RESCUE_PATTERNS:** Layers that stay FP8 when the base format is lower-bit (NVFP4 or INT8). On FP8 base they remain normal FP8, not BF16/FP16.
+- **RESCUE_PATTERNS:** Layers that stay FP8 when the base format is lower-bit (NVFP4, INT8, MXFP8, or Hybrid MXFP8). On FP8 base they remain normal FP8, not BF16/FP16.
 - **BAKED_VAE_PATTERNS:** Unconditional companion-module skip patterns for VAE, audio VAE, vocoder, text encoders, audio encoders, projection layers, and similar full-checkpoint components.
 
 ## Diagnostic Tools
@@ -144,6 +149,7 @@ Full checkpoints are detected from the source header when possible. When local l
 ```text
 cmd/dasiwa/main.go           Go entry point - web server at :7878
 internal/app/server.go       Go HTTP server, API routes, SSE job manager, idle shutdown
+internal/pathbrowser/        Pure Go directory browser (replaces Python bridge for browse)
 web/                         Primary frontend (HTML/CSS/JS, dark theme)
 scripts/go_bridge.py         Bridge from Go API to Python engines
 core/                        Quantization, metadata, and LoRA merge engines
@@ -175,10 +181,11 @@ lcpp.patch                   llama.cpp patch for Wan 2.2 GGUF support
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/config` | Architectures, formats, root/models directories |
-| GET | `/api/system` | CPU%, RAM, GPU%, VRAM metrics |
-| GET | `/api/browse` | Directory browser (models) |
-| GET | `/api/files` | Recursive model file listing |
+|| GET | `/api/config` | Architectures, formats, root/models directories, output_dir |
+|| GET | `/api/system` | CPU%, RAM, GPU%, VRAM metrics |
+|| GET | `/api/browse` | Directory browser (models) |
+|| GET | `/api/search` | File search (models) |
+|| GET | `/api/files` | Recursive model file listing |
 | GET | `/api/inspect` | Header-only architecture detection |
 | GET | `/api/metadata-preview` | Generate modelspec metadata preview |
 | POST | `/api/metadata/read` | Read metadata from safetensors/GGUF |
