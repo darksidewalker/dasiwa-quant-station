@@ -20,9 +20,10 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, and Krea 2 style dif
 - **5D tensor scanner:** Validate video tensor shapes in safetensors files.
 - **Pattern audit:** Verify preserve/rescue pattern coverage against a checkpoint's tensor manifest.
 - **User-selectable output folder:** Choose a custom output directory for quant and LoRA merge results.
+- **Backend status indicator:** Visual indicator showing backend service health in the UI.
 - **Idle shutdown:** Server auto-exits after 3 minutes with no browser connections.
 - **Update & restart:** In-app dependency refresh, Go rebuild, and clean restart.
-- **DASIWA_MODELS_DIR:** Environment variable to override the default models directory.
+- **LoRA shape diagnostics:** Automatic detection of systematic shape mismatches (e.g. LoRA trained on different hidden dimensions) with ratio analysis and actionable warnings.
 
 ## Quick Start
 
@@ -93,8 +94,8 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 3. Add one or more LoRAs. Each LoRA gets its own strategy (Balanced/Motion/Visuals/Audio for LTX-2.3 and WAN 2.2, or Balanced/Style/Content/Detail for Krea 2) and strength multiplier.
 4. Set global strength scaling, toggle adaptive mode or strict matching.
 5. Use **Dry run** to preview the merge recipe without writing output.
-6. Enter an output name and start the merge.
-7. Shape-mismatch diagnostics automatically detect LoRAs trained on models with different hidden dimensions and warn before merge.
+6. Shape-mismatch diagnostics automatically detect LoRAs trained on models with different hidden dimensions and warn before merge.
+7. Enter an output name and start the merge.
 
 ### LoRA Merge Strategies
 
