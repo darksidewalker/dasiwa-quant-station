@@ -12,6 +12,8 @@ from utils.lora_inspector import discover_lora_pairs, discover_diff_patches, rea
 from core.metadata_manager import merge_custom_metadata
 
 
+MAX_EFFECTIVE_LORA_STRENGTH = 2.0
+
 
 def _get_profile(arch: str):
     """Return (is_preserved, classify, strategy_mult) for *arch*."""
@@ -52,6 +54,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     cuda_device = payload.get("cuda_device") or "cuda:0"
     vram_headroom_mb = int(payload.get("vram_headroom_mb") or 1024)
     krea2_unchain = bool(payload.get("krea2_unchain", False))
+
+    _validate_lora_strengths(loras, global_strength)
 
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
 
@@ -403,6 +407,26 @@ def _normalize_merge_device(value: str | None) -> str:
     if device not in {"cpu", "auto", "cuda"}:
         raise ValueError(f"merge_device must be one of cpu, auto, cuda; got {value!r}")
     return device
+
+
+def _validate_lora_strengths(loras: List[Dict[str, Any]], global_strength: float) -> None:
+    """Reject unsafe LoRA strengths before touching the checkpoint.
+
+    Extremely high strengths can overwhelm Krea 2 gate/MLP tensors and produce
+    black images while still looking like a technically successful merge. Keep
+    the effective strength bounded and fail loudly instead of writing a broken
+    checkpoint.
+    """
+    for spec in loras:
+        lora_path = os.path.realpath(os.path.expanduser(spec.get("path", "")))
+        strength = float(spec.get("strength", 1.0))
+        effective = global_strength * strength
+        if abs(effective) > MAX_EFFECTIVE_LORA_STRENGTH:
+            name = os.path.basename(lora_path) or "LoRA"
+            raise ValueError(
+                f"{name} effective strength {effective:g} exceeds safe limit "
+                f"±{MAX_EFFECTIVE_LORA_STRENGTH:g}. Reduce per-LoRA/global strength before merging."
+            )
 
 
 def _cuda_available(device: str) -> bool:

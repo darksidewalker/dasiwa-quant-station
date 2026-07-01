@@ -29,6 +29,40 @@ class LoraMergeEngineTests(unittest.TestCase):
         self.assertGreater(small, 0)
         self.assertGreater(large, small)
 
+    def test_rejects_unsafe_effective_lora_strength_before_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "too_hot.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "blocks.0.attn.wq.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "lora_unet_blocks_0_attn_wq.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_wq.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            with self.assertRaisesRegex(ValueError, "effective strength 25 exceeds safe limit"):
+                list(run_lora_merge({
+                    "base_path": str(base),
+                    "loras": [{"path": str(lora), "strength": 25}],
+                    "output_path": str(out),
+                    "strategy": "Balanced",
+                    "architecture": "Krea 2",
+                    "global_strength": 1.0,
+                    "adaptive": False,
+                    "dry_run": False,
+                    "strict_matching": True,
+                    "merge_device": "cpu",
+                }))
+
+            self.assertFalse(out.exists())
+
+    def test_allows_negative_lora_strength_within_safe_limit(self):
+        lora = {"path": "/tmp/negative.safetensors", "strength": -1.0}
+        lora_merge_engine._validate_lora_strengths([lora], global_strength=1.0)
+
     def test_cuda_oom_falls_back_to_cpu_and_writes_correct_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

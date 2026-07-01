@@ -26,6 +26,7 @@ const state = {
 const SETTINGS_COOKIE = "dasiwa_settings";
 const SETTINGS_MAX_AGE_DAYS = 90;
 const PING_INTERVAL_MS = 30000;
+const MAX_EFFECTIVE_LORA_STRENGTH = 2;
 
 let pingTimer = null;
 
@@ -699,7 +700,7 @@ function renderLoras() {
       <label class="checkline" title="Enable this LoRA for the merge"><input type="checkbox" ${lora.enabled ? "checked" : ""} data-role="enabled"><span>Merge</span></label>
       <button class="ghost lora-pick" type="button" title="Choose a LoRA file">${lora.path ? shortPath(lora.path) : "Choose LoRA"}</button>
       <select data-role="strategy" title="Merge strategy: how LoRA weights are applied">${strategies.map((s) => `<option value="${s}" ${s === lora.strategy ? "selected" : ""}>${s}</option>`).join("")}</select>
-      <input data-role="strength" type="number" min="0" max="2" step="0.05" value="${lora.strength}" title="Per-LoRA strength multiplier (0=none, 1=full)">
+      <input data-role="strength" type="number" min="-2" max="2" step="0.05" value="${lora.strength}" title="Per-LoRA strength multiplier (-2..2; negative subtracts the LoRA, 0=none, 1=full)">
       <button class="ghost" data-role="remove" type="button" title="Remove this LoRA from the list">Remove</button>
     `;
     row.querySelector(".lora-pick").addEventListener("click", () => {
@@ -762,6 +763,11 @@ async function startLoraMerge() {
   if (!basePath) return log("Select a base checkpoint in the sidebar first.\n");
   if (selected.length === 0) return log("Add and enable at least one LoRA.\n");
   const dryRun = $("lora-dry-run").checked;
+  const globalStrength = Number($("lora-global-strength").value) || 1;
+  const unsafe = selected.find((lora) => Math.abs((Number(lora.strength) || 0) * globalStrength) > MAX_EFFECTIVE_LORA_STRENGTH);
+  if (unsafe) {
+    return log(`${shortPath(unsafe.path)} effective strength is too high. Keep per-LoRA × global strength within ±${MAX_EFFECTIVE_LORA_STRENGTH}.\n`);
+  }
   if (!dryRun && !$("lora-output").value) return log("Enter an output name before writing a merged checkpoint.\n");
 
   $("start").disabled = true;
@@ -784,7 +790,7 @@ async function startLoraMerge() {
         })),
         strategy: "Balanced",
         architecture: state.architecture,
-        global_strength: Number($("lora-global-strength").value) || 1,
+        global_strength: globalStrength,
         merge_device: $("lora-merge-device").value,
         cuda_device: $("lora-cuda-device").value || "cuda:0",
         vram_headroom_mb: Number($("lora-vram-headroom").value) || 1024,
