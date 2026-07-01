@@ -49,6 +49,8 @@ function saveSettings() {
     loraDryRun: $("lora-dry-run").checked,
     loraStrict: $("lora-strict").checked,
     krea2Unchain: $("krea2-unchain").checked,
+    lastFileDir: state.lastFileDir,
+    lastLoraDir: state.lastLoraDir,
     loras: state.loras.map((l) => ({
       path: l.path,
       strength: l.strength,
@@ -92,6 +94,8 @@ function loadSettings() {
     try {
       const json = decodeURIComponent(trimmed.substring(name.length));
       const s = JSON.parse(json);
+      state.lastFileDir = s.lastFileDir || "";
+      state.lastLoraDir = s.lastLoraDir || "";
       // Only restore if version matches (prevents stale settings after updates)
       if (s.v !== state.appVersion) return false;
       state.workflowMode = s.mode || "quantize";
@@ -667,11 +671,14 @@ function addLoraPaths(paths) {
   paths.forEach((path) => {
     if (!path || existing.has(path)) return;
     state.loras.push({path, strength: 0.65, strategy: "Balanced", enabled: true});
+    const dir = path.substring(0, path.lastIndexOf("/"));
+    if (dir) state.lastLoraDir = dir;
     existing.add(path);
     added.push(path);
   });
   renderLoras();
   if (added.length > 0) log(`Added ${added.length} LoRA file(s) from drop.\n`);
+  saveSettings();
 }
 
 function renderLoras() {
@@ -725,6 +732,7 @@ async function selectSource(path) {
   state.sourcePath = path;
   $("source-label").textContent = shortPath(path);
   $("browser").close();
+  saveSettings();
   if (!$("model-name").value) {
     $("model-name").value = path.split("/").pop().replace(/\.(safetensors|gguf|ckpt|pt|bin)$/i, "");
   }
@@ -743,6 +751,7 @@ async function selectSource(path) {
       log(`Source inspection failed: ${err.message}\n`);
     }
   }
+  saveSettings();
 }
 
 async function refreshMetadata() {
