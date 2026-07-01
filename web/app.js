@@ -210,9 +210,17 @@ async function init() {
 
   // Background ping: keeps the server alive (prevents idle shutdown)
   // and updates the green status dot next to the headline.
-  // Runs every 30 s — well within the 3-minute idle grace period.
-  pingServer();
-  setInterval(pingServer, 30000);
+  // Uses self-scheduling setTimeout so visibility-change events can
+  // immediately fire a new ping when the tab returns — browsers often
+  // suspend setInterval in background tabs, which would otherwise let
+  // the server's 3-minute idle timer expire.
+  schedulePing();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      schedulePing();
+    }
+  });
 }
 
 async function pingServer() {
@@ -222,6 +230,10 @@ async function pingServer() {
   } catch {
     $("status-dot").classList.remove("online");
   }
+}
+
+function schedulePing() {
+  setTimeout(pingServer, 30000);
 }
 
 function renderFormats(formats) {
