@@ -764,7 +764,7 @@ func (s *Server) runUpdateJob(ctx context.Context, job *Job) {
 		},
 		{
 			name: "build",
-			cmd:  exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.rootDir, "quantstation.next"), "./cmd/dasiwa"),
+			cmd:  exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.rootDir, "quantstation.next"), "./cmd/quantstation"),
 		},
 	}
 

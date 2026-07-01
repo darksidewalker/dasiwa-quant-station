@@ -118,7 +118,7 @@ if ! command -v go &> /dev/null; then
 fi
 
 echo "🔨 Building Go UI ..."
-go build -o "$PROJECT_DIR/quantstation" ./cmd/dasiwa
+go build -o "$PROJECT_DIR/quantstation" ./cmd/quantstation
 
 echo "🚀 Starting Quant Station Go UI ..."
 echo "🌐 Open: http://127.0.0.1:7878"
