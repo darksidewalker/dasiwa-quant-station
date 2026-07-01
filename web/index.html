@@ -112,7 +112,7 @@
             </label>
             <label class="field compact">
               <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
-              <input id="lora-global-strength" type="number" min="0" max="2" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">
+              <input id="lora-global-strength" type="number" min="-3" max="3" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (-3..3; 0=none, 1=full, negative subtracts)">
             </label>
             <label class="field compact">
               <span title="Choose whether LoRA merge math runs on CPU only, CUDA when possible, or automatic GPU/CPU fallback">Merge Device</span>

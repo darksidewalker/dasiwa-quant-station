@@ -12,7 +12,7 @@ from utils.lora_inspector import discover_lora_pairs, discover_diff_patches, rea
 from core.metadata_manager import merge_custom_metadata
 
 
-MAX_EFFECTIVE_LORA_STRENGTH = 2.0
+MAX_EFFECTIVE_LORA_STRENGTH = 3.0
 
 
 def _get_profile(arch: str):

@@ -26,7 +26,7 @@ const state = {
 const SETTINGS_COOKIE = "dasiwa_settings";
 const SETTINGS_MAX_AGE_DAYS = 90;
 const PING_INTERVAL_MS = 30000;
-const MAX_EFFECTIVE_LORA_STRENGTH = 2;
+const MAX_EFFECTIVE_LORA_STRENGTH = 3;
 
 let pingTimer = null;
 
@@ -700,7 +700,7 @@ function renderLoras() {
       <label class="checkline" title="Enable this LoRA for the merge"><input type="checkbox" ${lora.enabled ? "checked" : ""} data-role="enabled"><span>Merge</span></label>
       <button class="ghost lora-pick" type="button" title="Choose a LoRA file">${lora.path ? shortPath(lora.path) : "Choose LoRA"}</button>
       <select data-role="strategy" title="Merge strategy: how LoRA weights are applied">${strategies.map((s) => `<option value="${s}" ${s === lora.strategy ? "selected" : ""}>${s}</option>`).join("")}</select>
-      <input data-role="strength" type="number" min="-2" max="2" step="0.05" value="${lora.strength}" title="Per-LoRA strength multiplier (-2..2; negative subtracts the LoRA, 0=none, 1=full)">
+      <input data-role="strength" type="number" min="-3" max="3" step="0.05" value="${lora.strength}" title="Per-LoRA strength multiplier (-3..3; negative subtracts the LoRA, 0=none, 1=full)">
       <button class="ghost" data-role="remove" type="button" title="Remove this LoRA from the list">Remove</button>
     `;
     row.querySelector(".lora-pick").addEventListener("click", () => {

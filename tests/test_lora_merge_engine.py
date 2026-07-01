@@ -60,8 +60,13 @@ class LoraMergeEngineTests(unittest.TestCase):
             self.assertFalse(out.exists())
 
     def test_allows_negative_lora_strength_within_safe_limit(self):
-        lora = {"path": "/tmp/negative.safetensors", "strength": -1.0}
+        lora = {"path": "/tmp/negative.safetensors", "strength": -3.0}
         lora_merge_engine._validate_lora_strengths([lora], global_strength=1.0)
+
+    def test_rejects_strength_just_over_safe_limit(self):
+        lora = {"path": "/tmp/too_hot.safetensors", "strength": 3.05}
+        with self.assertRaisesRegex(ValueError, "exceeds safe limit"):
+            lora_merge_engine._validate_lora_strengths([lora], global_strength=1.0)
 
     def test_cuda_oom_falls_back_to_cpu_and_writes_correct_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
