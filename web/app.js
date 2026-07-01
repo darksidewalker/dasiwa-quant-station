@@ -25,6 +25,9 @@ const state = {
 
 const SETTINGS_COOKIE = "dasiwa_settings";
 const SETTINGS_MAX_AGE_DAYS = 90;
+const PING_INTERVAL_MS = 30000;
+
+let pingTimer = null;
 
 function saveSettings() {
   const settings = {
@@ -208,15 +211,13 @@ async function init() {
 
   // Background ping: keeps the server alive (prevents idle shutdown)
   // and updates the green status dot next to the headline.
-  // Uses self-scheduling setTimeout so visibility-change events can
-  // immediately fire a new ping when the tab returns — browsers often
-  // suspend setInterval in background tabs, which would otherwise let
-  // the server's 3-minute idle timer expire.
-  schedulePing();
+  // Uses self-scheduling setTimeout instead of setInterval so visibility
+  // changes can force an immediate ping without creating duplicate loops.
+  schedulePing(0);
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      schedulePing();
+      schedulePing(0);
     }
   });
 }
@@ -227,11 +228,14 @@ async function pingServer() {
     $("status-dot").classList.add("online");
   } catch {
     $("status-dot").classList.remove("online");
+  } finally {
+    schedulePing();
   }
 }
 
-function schedulePing() {
-  setTimeout(pingServer, 30000);
+function schedulePing(delay = PING_INTERVAL_MS) {
+  if (pingTimer !== null) clearTimeout(pingTimer);
+  pingTimer = setTimeout(pingServer, delay);
 }
 
 function renderFormats(formats) {
