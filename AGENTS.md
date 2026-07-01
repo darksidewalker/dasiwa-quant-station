@@ -12,7 +12,7 @@ Primary targets are WAN 2.2, LTX-2.3, and Krea 2 on NVIDIA Ada/Blackwell systems
 - **`internal/app/server.go`**: Go HTTP server with:
   - Static frontend hosting (`web/` directory)
   - Job manager with async goroutines, context cancellation, SSE event channels (buffer 512)
-  - Idle shutdown tracker (3-minute grace period after zero browser connections, then `os.Exit(0)`)
+  - Manual shutdown endpoint (`/api/shutdown`) used by the Quit button; no automatic idle shutdown
   - Hardware monitoring endpoint (`/api/system`) - CPU%, RAM, GPU%, VRAM
   - Filesystem browser (`/api/browse`, `/api/files`) - recursive model file discovery
   - Metadata endpoints (preview, read, inject)

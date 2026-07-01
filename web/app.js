@@ -209,8 +209,7 @@ async function init() {
   refreshSystem();
   setInterval(refreshSystem, 5000);
 
-  // Background ping: keeps the server alive (prevents idle shutdown)
-  // and updates the green status dot next to the headline.
+  // Background ping updates the green status dot next to the headline.
   // Uses self-scheduling setTimeout instead of setInterval so visibility
   // changes can force an immediate ping without creating duplicate loops.
   schedulePing(0);

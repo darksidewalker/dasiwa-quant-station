@@ -25,88 +25,6 @@ import (
 	"time"
 )
 
-// IdleShutdown tracks browser connections and shuts down the server
-// after a grace period with zero active connections.
-type IdleShutdown struct {
-	mu             sync.Mutex
-	active         int
-	grace          time.Duration
-	shutdownAt     time.Time
-	running        bool
-	shutdownFn     func()
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
-}
-
-// NewIdleShutdown creates a tracker that calls shutdownFn when no
-// connections have been active for [grace] duration.
-func NewIdleShutdown(grace time.Duration, shutdownFn func()) *IdleShutdown {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &IdleShutdown{
-		grace:          grace,
-		shutdownFn:     shutdownFn,
-		shutdownCtx:    ctx,
-		shutdownCancel: cancel,
-		running:        true,
-	}
-}
-
-// Enter is called at the start of each HTTP request.
-func (i *IdleShutdown) Enter() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.active++
-	i.shutdownAt = time.Time{}
-}
-
-// Leave is called when an HTTP request completes.
-func (i *IdleShutdown) Leave() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.active--
-	if i.active <= 0 {
-		i.active = 0
-		if i.shutdownAt.IsZero() {
-			i.shutdownAt = time.Now().Add(i.grace)
-			go i.watch()
-		}
-	}
-}
-
-func (i *IdleShutdown) watch() {
-	remaining := time.Until(i.shutdownAt)
-	if remaining <= 0 {
-		i.trigger()
-		return
-	}
-	select {
-	case <-time.After(remaining):
-		i.mu.Lock()
-		// Double-check: a new request may have reset the timer.
-		if i.active == 0 && !i.shutdownAt.IsZero() {
-			i.mu.Unlock()
-			i.trigger()
-		} else {
-			i.mu.Unlock()
-		}
-	case <-i.shutdownCtx.Done():
-		return
-	}
-}
-
-func (i *IdleShutdown) trigger() {
-	i.mu.Lock()
-	if !i.running {
-		i.mu.Unlock()
-		return
-	}
-	i.running = false
-	i.mu.Unlock()
-	i.shutdownCancel()
-	log.Printf("Idle shutdown: no browser connections for %s, shutting down", i.grace)
-	i.shutdownFn()
-}
-
 // Server is the HTTP server.
 type Server struct {
 	rootDir   string
@@ -115,14 +33,7 @@ type Server struct {
 	version   string // SHA-256 prefix of the running binary
 	http      *http.Server
 	jobs      *JobStore
-	idle      *IdleShutdown
 }
-
-// idleGrace is how long the server waits after the last browser
-// connection drops before shutting down. 3 minutes is long enough
-// to survive page reloads and brief tab-switching, short enough to
-// avoid leaving the process running forever.
-const idleGrace = 3 * time.Minute
 
 func NewServer() (*Server, error) {
 	root, err := os.Getwd()
@@ -151,7 +62,6 @@ func NewServer() (*Server, error) {
 		python:    py,
 		jobs:      NewJobStore(),
 	}
-	s.idle = NewIdleShutdown(idleGrace, func() { s.shutdownIdle() })
 
 	s.version = computeBinaryHash()
 
@@ -178,33 +88,10 @@ func NewServer() (*Server, error) {
 
 	s.http = &http.Server{
 		Addr:              "127.0.0.1:7878",
-		Handler:           idleTracker(s.idle, logRequests(mux)),
+		Handler:           logRequests(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s, nil
-}
-
-// shutdownIdle performs a graceful server shutdown triggered by idle timeout.
-// It waits up to 5 s for in-flight requests (SSE streams, etc.) to finish,
-// then forces a hard close and exits the process.
-func (s *Server) shutdownIdle() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := s.http.Shutdown(ctx); err != nil {
-		log.Printf("idle shutdown forced: %v", err)
-		s.http.Close()
-	}
-	os.Exit(0)
-}
-
-// idleTracker is middleware that reports each request entering/leaving
-// to the IdleShutdown tracker so it can fire the grace timer.
-func idleTracker(i *IdleShutdown, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		i.Enter()
-		defer i.Leave()
-		next.ServeHTTP(w, r)
-	})
 }
 
 func (s *Server) Addr() string {
@@ -239,8 +126,7 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// handlePing is a lightweight health-check endpoint. It keeps the
-// idle-shutdown timer from firing while a browser tab is open.
+// handlePing is a lightweight health-check endpoint for the UI status dot.
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
