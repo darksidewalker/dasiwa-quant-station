@@ -1,6 +1,5 @@
 # --- Application Folders ---
-models/*
-!models/put_model_files_here
+/models
 recipes/*.json
 logs/
 session_recipe.json

@@ -19,14 +19,6 @@
 
       <section class="panel source-panel">
         <h2>Source</h2>
-        <button id="pick-folder" class="picker-button" type="button" title="Select the folder containing your model files">
-          <span>Model Folder</span>
-          <strong id="folder-label">models</strong>
-        </button>
-        <button id="pick-output" class="picker-button" type="button" title="Select where quantized/merged output files will be saved">
-          <span>Output Folder</span>
-          <strong id="output-label">Same as Model Folder</strong>
-        </button>
         <button id="pick-source" class="picker-button drop-target" type="button" title="Select or drop one checkpoint file to quantize or use as LoRA merge base">
           <span id="source-label-hint">Checkpoint (base)</span>
           <strong id="source-label">Choose file</strong>
@@ -200,7 +192,6 @@
     </div>
     <div class="browser-actions">
       <button id="browser-up" type="button">Up</button>
-      <button id="browser-select-folder" type="button">Use This Folder</button>
       <button id="browser-add-selected" type="button" style="display:none">Add Selected</button>
     </div>
     <div class="browser-search">

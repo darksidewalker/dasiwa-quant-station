@@ -129,7 +129,14 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	models := filepath.Join(root, "models")
+	models := ""
+	if envModels := os.Getenv("DASIWA_MODELS_DIR"); envModels != "" {
+		models = cleanPath(envModels, root)
+	} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+		models = home
+	} else {
+		models = filepath.Join(root, "models")
+	}
 	_ = os.MkdirAll(models, 0o755)
 	_ = os.MkdirAll(filepath.Join(root, "logs"), 0o755)
 
@@ -240,8 +247,8 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"version":   s.version,
-		"root_dir":  s.rootDir,
+		"version":    s.version,
+		"root_dir":   s.rootDir,
 		"models_dir": s.modelsDir,
 		"architectures": []string{
 			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "Hunyuan Video", "Flux.2",
@@ -553,13 +560,16 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	if req.ModelsDir == "" {
 		req.ModelsDir = s.modelsDir
 	}
-	if req.OutputDir == "" {
-		req.OutputDir = req.ModelsDir
-	}
 	if req.ModelName == "" || req.SourcePath == "" || len(req.Formats) == 0 {
 		writeError(w, http.StatusBadRequest, "source, display name, and at least one format are required")
 		return
 	}
+	req.SourcePath = cleanPath(req.SourcePath, s.modelsDir)
+	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
+	if req.OutputDir == "" {
+		req.OutputDir = filepath.Dir(req.SourcePath)
+	}
+	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.SourcePath))
 	id := newID()
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &Job{
@@ -590,9 +600,9 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	req.BasePath = cleanPath(req.BasePath, s.modelsDir)
 	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
 	if req.OutputDir == "" {
-		req.OutputDir = req.ModelsDir
+		req.OutputDir = filepath.Dir(req.BasePath)
 	}
-	req.OutputDir = cleanPath(req.OutputDir, s.modelsDir)
+	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.BasePath))
 	if req.OutputPath != "" {
 		req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
 	}

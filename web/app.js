@@ -13,7 +13,6 @@ const state = {
   browserItems: [],
   browserSearchQuery: "",
   browserSearchRecursive: false,
-  outputDir: "",
   jobId: "",
   events: null,
   logBuffer: "",
@@ -173,7 +172,6 @@ async function init() {
   state.modelsDir = cfg.models_dir;
   state.browserPath = cfg.models_dir;
   state.appVersion = cfg.version || "unknown";
-  $("folder-label").textContent = shortPath(cfg.models_dir);
 
   const arch = $("architecture");
   cfg.architectures.forEach((name) => {
@@ -292,8 +290,6 @@ function updateArchDependentUI() {
 }
 
 function wireEvents() {
-  $("pick-folder").addEventListener("click", () => openBrowser("folder"));
-  $("pick-output").addEventListener("click", () => openBrowser("output"));
   $("pick-source").addEventListener("click", () => openBrowser("file"));
   wireDropTarget($("pick-source"), "source");
   wireDropTarget($("lora-list"), "lora");
@@ -328,10 +324,7 @@ function wireEvents() {
     $("browser").close();
   });
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
-  $("browser-select-folder").addEventListener("click", () => {
-    if (state.browserMode === "output") selectOutput(state.browserPath);
-    else selectFolder(state.browserPath);
-  });
+
   $("browser-add-selected").addEventListener("click", () => {
     if (state.selectedLoraPaths.size > 0) {
       addLoraPaths(Array.from(state.selectedLoraPaths));
@@ -449,10 +442,7 @@ function setWorkflowMode(mode) {
 
 async function openBrowser(mode) {
   state.browserMode = mode;
-  $("browser-title").textContent = mode === "folder" ? "Choose Model Folder"
-    : (mode === "output" ? "Choose Output Folder"
-    : (mode === "lora" ? "Choose LoRA" : "Choose Checkpoint"));
-  $("browser-select-folder").style.display = (mode === "folder" || mode === "output") ? "" : "none";
+  $("browser-title").textContent = mode === "lora" ? "Choose LoRA" : "Choose Checkpoint";
   const addSel = $("browser-add-selected");
   if (addSel) addSel.style.display = mode === "lora" ? "" : "none";
   state.selectedLoraPaths.clear();
@@ -463,7 +453,7 @@ async function openBrowser(mode) {
   let startPath;
   if (mode === "lora" && state.lastLoraDir) startPath = state.lastLoraDir;
   else if (mode === "file" && state.lastFileDir) startPath = state.lastFileDir;
-  else startPath = mode === "folder" ? state.modelsDir : (state.modelsDir || state.rootDir);
+  else startPath = state.modelsDir || state.rootDir;
 
   await browse(startPath);
   $("browser").showModal();
@@ -579,18 +569,6 @@ function clearSearch() {
   state.browserSearchRecursive = false;
   $("browser-search-input").value = "";
   renderBrowserList();
-}
-
-function selectFolder(path) {
-  state.modelsDir = path;
-  $("folder-label").textContent = shortPath(path);
-  $("browser").close();
-}
-
-function selectOutput(path) {
-  state.outputDir = path;
-  $("output-label").textContent = shortPath(path);
-  $("browser").close();
 }
 
 function wireDropTarget(el, kind) {
