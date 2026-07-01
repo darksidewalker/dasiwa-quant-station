@@ -166,6 +166,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/jobs/{id}/stop", s.handleJobStop)
 	mux.HandleFunc("POST /api/tools/scan", s.handleScan)
 	mux.HandleFunc("POST /api/tools/audit", s.handleAudit)
+	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
 	mux.Handle("/", noCache(http.FileServer(http.Dir(filepath.Join(root, "web")))))
 
 	s.http = &http.Server{
@@ -917,6 +918,15 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(out)
+}
+
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]string{"status": "shutting down"})
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		s.http.Shutdown(context.Background())
+		os.Exit(0)
+	}()
 }
 
 func computeBinaryHash() string {

@@ -411,8 +411,19 @@ function wireEvents() {
   $("stop").addEventListener("click", stopJob);
   $("clean-memory").addEventListener("click", cleanMemory);
   $("update-app").addEventListener("click", updateApp);
+  $("quit-btn").addEventListener("click", shutdownServer);
   $("scan").addEventListener("click", () => runTool("scan"));
   $("audit").addEventListener("click", () => runTool("audit"));
+}
+
+async function shutdownServer() {
+  try {
+    await fetch("/api/shutdown", {method: "POST"});
+  } catch {} finally {
+    // Try to close the tab — works for tabs opened by scripts, and leaves a hint otherwise.
+    window.close();
+    document.body.innerHTML = "<div style='display:flex;align-items:center;justify-content:center;height:100vh;background:#101214;color:#edf2f7;font-family:sans-serif'>Server shut down.</div>";
+  }
 }
 
 function setWorkflowMode(mode) {
