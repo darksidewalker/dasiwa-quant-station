@@ -81,6 +81,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
 	mux.HandleFunc("POST /api/jobs/{id}/stop", s.handleJobStop)
+	mux.HandleFunc("GET /api/jobs/{id}/summary", s.handleJobSummary)
 	mux.HandleFunc("POST /api/tools/scan", s.handleScan)
 	mux.HandleFunc("POST /api/tools/audit", s.handleAudit)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
@@ -89,7 +90,7 @@ func NewServer() (*Server, error) {
 	s.http = &http.Server{
 		Addr:              "127.0.0.1:7878",
 		Handler:           logRequests(mux),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 30 * time.Second, // SSE long-poll needs more than default 10s for large model processing
 	}
 	return s, nil
 }
@@ -785,6 +786,36 @@ func (s *Server) handleJobStop(w http.ResponseWriter, r *http.Request) {
 	}
 	job.cancel()
 	writeJSON(w, map[string]string{"status": "stopping"})
+}
+
+func (s *Server) handleJobSummary(w http.ResponseWriter, r *http.Request) {
+	job := s.jobs.Get(r.PathValue("id"))
+	if job == nil {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	job.mu.Lock()
+	status := job.Status
+	job.mu.Unlock()
+
+	if status == "" || status == "starting" {
+		writeJSON(w, map[string]any{"id": job.ID, "status": "running"})
+		return
+	}
+	// If the job is in a terminal state (finished/stopped/failed), mark it as no longer needed.
+	switch status {
+	case "finished", "stopped", "failed":
+		writeJSON(w, map[string]any{"id": job.ID, "status": status})
+	default:
+		if strings.Contains(status, "merge") || strings.Contains(status, "update") {
+			status = strings.ReplaceAll(strings.ToLower(status), " ", "_") + "-running"
+		} else if !strings.Contains(status, "-running") && !strings.HasSuffix(status, "stopped") && status != "finished" && status != "failed" {
+			if !strings.ContainsAny(status, "/\\ ") {
+				status = status + "-running"
+			}
+		}
+		writeJSON(w, map[string]any{"id": job.ID, "status": status})
+	}
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,10 @@ const state = {
   appVersion: "",
 };
 
+const JOB_PERSIST_KEY = "dasiwa_active_job";
+let consoleLogPersisted = "";
+const LOG_PERSIST_KEY = "dasiwa_console_log";
+
 const SETTINGS_COOKIE = "dasiwa_settings";
 const SETTINGS_MAX_AGE_DAYS = 90;
 const PING_INTERVAL_MS = 30000;
@@ -132,6 +136,70 @@ function loadSettings() {
 
 const $ = (id) => document.getElementById(id);
 
+// --- Job persistence helpers ---------------------------------------------------
+function saveActiveJob() {
+  try { localStorage.setItem(JOB_PERSIST_KEY, state.jobId); } catch {}
+}
+function loadPersistedJob() {
+  try { return localStorage.getItem(JOB_PERSIST_KEY); } catch { return null; }
+}
+function clearPersistedJob(id) {
+  if (id && id === localStorage.getItem(JOB_PERSIST_KEY)) {
+    try { localStorage.removeItem(JOB_PERSIST_KEY); } catch {}
+  }
+}
+
+// --- Console log persistence ---------------------------------------------------
+function persistConsoleLog() {
+  const el = $("console");
+  if (!el) return;
+  const text = el.textContent || "";
+  // Truncate to last 30k chars so localStorage stays under the ~5MB budget.
+  const truncated = text.length > 30000 ? text.slice(-30000) : text;
+  try { localStorage.setItem(LOG_PERSIST_KEY, truncated); } catch {}
+}
+
+async function restoreConsoleLog() {
+  let saved = "";
+  try { saved = localStorage.getItem(LOG_PERSIST_KEY) || ""; } catch {}
+  if (saved) {
+    const el = $("console");
+    if (el) el.textContent = saved;
+  }
+}
+
+// --- Job status polling --------------------------------------------------------
+const POLL_INTERVAL_MS = 60_000; // every minute in background
+let pollTimerId = null;         // monotonically increasing counter for clearTimeout
+function startPolling() {
+  stopPolling();
+  if (state.jobId) doJobStatusCheck(state.jobId);
+}
+
+async function doJobStatusCheck(jobIdToCheck) {
+  try {
+    const data = await api(`/api/jobs/${jobIdToCheck}/summary`);
+    // Update UI only when the job is still running — don't overwrite a "finished" state.
+    if (data.status && !["finished", "stopped", "failed"].includes(data.status)) {
+      setStatus(data.status || data.summary_status);
+    } else if (data.id) {
+      // Job completed while we were polling → clean up persisted job + events
+      clearPersistedJob(state.jobId);
+      if (state.events && state.events.readyState !== EventSource.CLOSED) {
+        state.events.close();
+      }
+      state.jobId = "";
+    }
+  } catch {} // silently fail — user sees stale status but app stays responsive.
+}
+
+function stopPolling() {
+  const idToClear = pollTimerId;
+  if (idToClear !== null) clearTimeout(idToClear);
+  pollTimerId = null;
+}
+// --- /Job status polling -------------------------------------------------------
+
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   if (!res.ok) {
@@ -161,11 +229,13 @@ function flushLog() {
     el.textContent = el.textContent.slice(-maxChars);
   }
   el.scrollTop = el.scrollHeight;
+  persistConsoleLog(); // save to localStorage after every flush
   state.logFlushPending = false;
 }
 
 function setStatus(text) {
   $("status").textContent = text;
+  startPolling(); // keep polling once a job is running.
 }
 
 function shortPath(path) {
@@ -219,6 +289,16 @@ async function init() {
   refreshSystem();
   setInterval(refreshSystem, 5000);
 
+  // Restore persisted console log so progress isn't lost across reloads.
+  restoreConsoleLog().then(() => {
+    // After logs are restored, check if there was a job running and try to reconnect.
+    const savedJobId = loadPersistedJob();
+    if (savedJobId) {
+      state.jobId = savedJobId;
+      attachEvents(savedJobId);
+    }
+  });
+
   // Background ping updates the green status dot next to the headline.
   // Uses self-scheduling setTimeout instead of setInterval so visibility
   // changes can force an immediate ping without creating duplicate loops.
@@ -227,6 +307,7 @@ async function init() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       schedulePing(0);
+      tryReconnectEvents();
     }
   });
 }
@@ -405,8 +486,11 @@ function wireEvents() {
 
   $("refresh-files").addEventListener("click", () => browse(state.modelsDir));
   $("clear-console").addEventListener("click", () => {
+    const currentJobId = state.jobId;
     state.logBuffer = "";
     $("console").textContent = "";
+    try { localStorage.removeItem(LOG_PERSIST_KEY); } catch {}
+    if (currentJobId) clearPersistedJob(currentJobId);
   });
   $("refresh-meta").addEventListener("click", refreshMetadata);
   $("read-meta").addEventListener("click", readMetadata);
@@ -938,13 +1022,24 @@ async function startJob() {
 }
 
 function attachEvents(id) {
+  saveActiveJob(); // persist jobId so reloads can reconnect to running jobs.
   if (state.events) state.events.close();
   state.events = new EventSource(`/api/jobs/${id}/events`);
+  let doneHandled = false;
+
+  function markDone() {
+    if (doneHandled) return;
+    doneHandled = true;
+    clearPersistedJob(id);
+    stopPolling();
+  }
+
   state.events.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
     if (ev.text) log(ev.text);
     if (ev.status) setStatus(ev.status);
     if (ev.type === "done" || ev.type === "error") {
+      markDone();
       if (ev.type === "error" && ev.text) log(`Error: ${ev.text}\n`);
       $("start").disabled = false;
       $("stop").disabled = true;
@@ -955,13 +1050,28 @@ function attachEvents(id) {
       }
     }
   };
+  // Do NOT close on error — let the browser's built-in auto-reconnect handle it.
+  // Visibilitychange + tryReconnectEvents() provides an extra push when tab comes back.
   state.events.onerror = () => {
-    log("Log stream disconnected.\n");
-    $("start").disabled = false;
-    $("stop").disabled = true;
-    $("update-app").disabled = false;
-    if (state.events) state.events.close();
+    log("Log stream disconnected (will retry automatically).\n");
   };
+
+  // Periodic poll to catch completion if SSE drops while page is open but idle.
+  let pollIntervalId = setInterval(() => doJobStatusCheck(id), POLL_INTERVAL_MS);
+  const origClose = state.events.close.bind(state.events);
+  state.events.close = () => {
+    clearInterval(pollIntervalId);
+    markDone();
+    origClose();
+  };
+}
+
+function tryReconnectEvents() {
+  // If there's no active event stream but we still have a job ID, reconnect.
+  if (state.jobId && (!state.events || state.events.readyState === EventSource.CLOSED)) {
+    log("Tab visible again — reconnecting to log stream...\n");
+    attachEvents(state.jobId);
+  }
 }
 
 async function stopJob() {
