@@ -301,26 +301,22 @@ class LoraMergeEngineTests(unittest.TestCase):
 
     def test_krea2_strategies_apply_correct_multipliers(self):
         from utils.krea2_layer_profiles import strategy_multiplier
-        # Balanced: ComfyUI/live-LoRA parity baseline for all non-structural tensors.
+        # Balanced: all non-structural tensors pass through (factor=1.0).
         self.assertEqual(strategy_multiplier("Balanced", "attn_qkv"), 1.00)
         self.assertEqual(strategy_multiplier("Balanced", "ff_in"), 1.00)
         self.assertEqual(strategy_multiplier("Balanced", "text_fusion"), 1.00)
         self.assertEqual(strategy_multiplier("Balanced", "attn_gate"), 1.00)
         self.assertEqual(strategy_multiplier("Balanced", "other"), 1.00)
-        # Style: boost attention, reduce text_fusion
-        self.assertEqual(strategy_multiplier("Style", "attn_qkv"), 1.15)
-        self.assertEqual(strategy_multiplier("Style", "ff_in"), 1.00)
-        self.assertEqual(strategy_multiplier("Style", "text_fusion"), 0.70)
-        # Content: boost FF, reduce attention
-        self.assertEqual(strategy_multiplier("Content", "attn_qkv"), 0.90)
-        self.assertEqual(strategy_multiplier("Content", "ff_in"), 1.15)
-        self.assertEqual(strategy_multiplier("Content", "text_fusion"), 0.85)
-        # Detail: mild global boost
-        self.assertEqual(strategy_multiplier("Detail", "attn_qkv"), 1.05)
-        self.assertEqual(strategy_multiplier("Detail", "ff_in"), 1.05)
-        self.assertEqual(strategy_multiplier("Detail", "text_fusion"), 0.85)
-        # Structural always 0.0
-        for strat in ["Balanced", "Style", "Content", "Detail"]:
+        # Style: only attention tensors pass through; FFN and text excluded (0.0).
+        self.assertEqual(strategy_multiplier("Style", "attn_qkv"), 1.00)
+        self.assertEqual(strategy_multiplier("Style", "ff_in"), 0.00)
+        self.assertEqual(strategy_multiplier("Style", "text_fusion"), 0.00)
+        # Content: only FFN tensors pass through; attention and text excluded (0.0).
+        self.assertEqual(strategy_multiplier("Content", "attn_qkv"), 0.00)
+        self.assertEqual(strategy_multiplier("Content", "ff_in"), 1.00)
+        self.assertEqual(strategy_multiplier("Content", "text_fusion"), 0.00)
+        # Structural always excluded (0.0).
+        for strat in ["Balanced", "Style", "Content"]:
             self.assertEqual(strategy_multiplier(strat, "structural"), 0.0)
 
     def test_missing_adaptive_payload_defaults_to_comfyui_parity(self):
@@ -357,7 +353,7 @@ class LoraMergeEngineTests(unittest.TestCase):
                 torch.full((3, 4), 101.0),
             ))
 
-    def test_krea2_style_merge_applies_attention_boost(self):
+    def test_krea2_style_merge_applies_attention_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             base = tmp / "base.safetensors"
@@ -384,12 +380,13 @@ class LoraMergeEngineTests(unittest.TestCase):
             }))
 
             merged = load_file(str(out))
-            # Style: attn_qkv multiplier 1.15, strength 0.5, global 1.0
+            # Style: attn_qkv filter=1.0 (apply), ff_in/text_fusion excluded (0.0) — pure selection, no boost.
             # delta = up @ down = ones(3,2) @ ones(2,4) = full(3,4, 2.0)
-            # result = 0 + 1.0 * 0.5 * 1.15 * 2.0 = 1.15
+            # result = base + global_strength * lora_strength * filter_multiplier * delta
+            #        = 0 + 1.0 * 0.5 * 1.0 * 2.0 = 1.0
             self.assertTrue(torch.allclose(
                 merged["blocks.0.attn.wq.weight"],
-                torch.full((3, 4), 1.15),
+                torch.full((3, 4), 1.0),
             ))
 
     def test_profiles_classify_audio_and_preserve_keys(self):
@@ -473,7 +470,7 @@ class LoraMergeEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             base = tmp / "base.safetensors"
-            motion = tmp / "motion.safetensors"
+            video = tmp / "video.safetensors"
             audio = tmp / "audio.safetensors"
             out = tmp / "merged.safetensors"
             save_file({
@@ -481,10 +478,12 @@ class LoraMergeEngineTests(unittest.TestCase):
                 "model.diffusion_model.transformer_blocks.0.audio_attn1.to_k.weight": torch.zeros(3, 4),
             }, str(base))
             save_file({
+                # Video LoRA: targets attn_qkv (non-audio tensor) → pass with Audio strategy? No — Video only applies non-audio tensors.
                 "diffusion_model.transformer_blocks.0.attn1.to_k.lora_A.weight": torch.ones(2, 4),
                 "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
-            }, str(motion))
+            }, str(video))
             save_file({
+                # Audio LoRA: targets audio_attn → pass with Audio strategy only.
                 "diffusion_model.transformer_blocks.0.audio_attn1.to_k.lora_A.weight": torch.ones(2, 4),
                 "diffusion_model.transformer_blocks.0.audio_attn1.to_k.lora_B.weight": torch.ones(3, 2),
             }, str(audio))
@@ -492,7 +491,9 @@ class LoraMergeEngineTests(unittest.TestCase):
             events = list(run_lora_merge({
                 "base_path": str(base),
                 "loras": [
-                    {"path": str(motion), "strength": 0.5, "strategy": "Visuals"},
+                    # Video: attn_qkv=1.0 (included in Video filter) → delta applied with full strength.
+                    {"path": str(video), "strength": 0.5, "strategy": "Video"},
+                    # Audio: audio_attn=1.0 (included in Audio filter), other=0.0 → only audio tensors get LoRA.
                     {"path": str(audio), "strength": 0.5, "strategy": "Audio"},
                 ],
                 "output_path": str(out),
@@ -505,16 +506,18 @@ class LoraMergeEngineTests(unittest.TestCase):
             }))
 
             text = "".join(e.get("text", "") for e in events)
-            self.assertIn("strategy=Visuals", text)
+            self.assertIn("strategy=Video", text)
             self.assertIn("strategy=Audio", text)
             merged = load_file(str(out))
+            # Video: attn_qkv filter=1.0 → delta * 0.5 * 1.0 = full(3,4,2)*0.5*1.0 = full(3,4,1.0), base + 1.0 = 1.0
             self.assertTrue(torch.allclose(
                 merged["model.diffusion_model.transformer_blocks.0.attn1.to_k.weight"],
-                torch.full((3, 4), 1.05),
+                torch.full((3, 4), 1.0),
             ))
+            # Audio: audio_attn filter=1.0 → delta * 0.5 * 1.0 = full(3,4,2)*0.5*1.0 = full(3,4,1.0), base + 1.0 = 1.0
             self.assertTrue(torch.allclose(
                 merged["model.diffusion_model.transformer_blocks.0.audio_attn1.to_k.weight"],
-                torch.full((3, 4), 1.2),
+                torch.full((3, 4), 1.0),
             ))
 
     # ---- WAN 2.2 tests ----

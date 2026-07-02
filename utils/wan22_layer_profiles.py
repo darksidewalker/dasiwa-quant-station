@@ -18,6 +18,7 @@ def is_wan22_preserved_key(key: str) -> bool:
 
 
 
+
 def classify_wan22_key(key: str) -> str:
     """Classify a WAN 2.2 tensor key into a merge strategy category.
 
@@ -70,7 +71,11 @@ def classify_wan22_key(key: str) -> str:
     return "other"
 
 
+# Filter-based strategy multipliers.
+# Each preset selects which tensor categories receive LoRA modifications (1.0)
+# and which are excluded from merging (0.0). No boosting — only selection.
 _STRATEGY_MULTIPLIERS = {
+    # Balanced: apply all non-preserved tensors uniformly.
     "Balanced": {
         "self_attn_qkv": 1.0,
         "self_attn_out": 1.0,
@@ -81,38 +86,30 @@ _STRATEGY_MULTIPLIERS = {
         "modulation": 1.0,
         "caption_projection": 1.0,
         "patchify_or_output": 1.0,
-        "norm": 0.0,
+        "norm": 1.0,
         "other": 1.0,
     },
+    # Motion-only: only attention modules (self + cross QKV/out) get merged;
+    # FFN and structural tensors excluded — focuses on motion dynamics in text-to-video.
     "Motion": {
-        "self_attn_qkv": 0.85,
-        "self_attn_out": 0.85,
-        "cross_attn_qkv": 1.1,
-        "cross_attn_out": 1.1,
-        "ffn_in": 0.65,
-        "ffn_out": 0.65,
-        "modulation": 0.8,
-        "caption_projection": 0.35,
-        "patchify_or_output": 0.35,
-        "norm": 0.0,
-        "other": 0.35,
+        "self_attn_qkv": 1.0,
+        "self_attn_out": 1.0,
+        "cross_attn_qkv": 1.0,
+        "cross_attn_out": 1.0,
+        # Non-attention components excluded from merge.
     },
+    # Visuals-only: only FFN, caption_projection and output-side tensors get merged;
+    # attention modules excluded — focuses on visual quality over motion dynamics.
     "Visuals": {
-        "self_attn_qkv": 1.05,
-        "self_attn_out": 1.05,
-        "cross_attn_qkv": 0.95,
-        "cross_attn_out": 0.95,
-        "ffn_in": 1.15,
-        "ffn_out": 1.15,
-        "modulation": 0.6,
-        "caption_projection": 0.45,
-        "patchify_or_output": 0.45,
-        "norm": 0.0,
-        "other": 0.45,
+        "ffn_in": 1.0,
+        "ffn_out": 1.0,
+        "caption_projection": 1.0,
+        "patchify_or_output": 1.0,
+        # Attention modules excluded from merge.
     },
 }
 
 
 def strategy_multiplier(strategy: str, category: str) -> float:
     table = _STRATEGY_MULTIPLIERS.get(strategy) or _STRATEGY_MULTIPLIERS["Balanced"]
-    return table.get(category, table.get("other", 0.5))
+    return table.get(category, table.get("other", 0.0))
