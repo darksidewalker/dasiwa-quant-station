@@ -177,9 +177,14 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         else:
             yield _log(f"Skipping unchain: {unchain_target} not found in base checkpoint\n")
 
-    yield _log(f"Dry-run report: matched={len(matched_ops)} skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n")
+    # Quick pre-merge match summary (used by tests and logs for all merge types).
+    yield _log(
+        f"Merge report: matched={len(matched_ops)} "
+        f"skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
+    )
+
     if dry_run:
-        # Build per-LoRA summary for dry run
+        # Build per-LoRA summary for dry run (computed but not yet displayed)
         from collections import Counter, defaultdict
         lora_stats = defaultdict(lambda: {"matched": 0, "skipped": 0, "unmatched": 0, "categories": Counter()})
         unmatched_by_lora = defaultdict(list)
@@ -205,11 +210,18 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 "unmatched_sample": unmatched_by_lora[ln][:10],
             }
 
+        # Output all reports first (details)
         yield _log(json.dumps({
             "per_lora_summary": summary,
             "reports": reports[:200],
             "report_count": len(reports),
         }, indent=2) + "\n")
+
+        # Quick human-readable summary right before done so it's visible at the bottom.
+        yield _log(
+            f"Dry run summary: matched={len(matched_ops)} "
+            f"skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
+        )
         yield _status("Dry run complete")
         yield {"type": "done", "status": "dry-run complete"}
         return
