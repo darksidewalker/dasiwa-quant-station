@@ -329,6 +329,8 @@ function wireEvents() {
     btn.addEventListener("click", () => setWorkflowMode(btn.dataset.mode));
   });
   $("add-lora").addEventListener("click", () => openBrowser("lora"));
+  $("load-recipe-btn").addEventListener("click", loadRecipe);
+
   renderLoras();
   $("browser-close").addEventListener("click", () => {
     $("browser-search-input").value = "";
@@ -1084,4 +1086,116 @@ function parseVramPercent(text) {
   return total > 0 ? clampPercent((used / total) * 100) : 0;
 }
 
-init().catch((err) => log(`Initialization failed: ${err.message}\n`));
+function loadRecipe() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".txt";
+  var picker = input; // keep ref for cleanup in error path.
+  input.addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      parseRecipeAndApply(text, file.name);
+    } catch (err) {
+      log("Load recipe failed: " + err.message + "\n");
+    } finally {
+      picker.remove();
+    }
+  });
+  document.body.appendChild(input);
+  input.click();
+}
+
+function parseRecipeAndApply(recipeText, fileName) {
+  var lines = recipeText.split("\n");
+
+  // Helper: read a "Key: value" line by searching for the label.
+  var i = 0;
+  function field(label) {
+    while (i < lines.length) {
+      var escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      var m = lines[i].match(new RegExp("^\\s*" + escaped + "[: ]+(.*)"));
+      if (m) { i++; return m[1].trim(); }
+      i++;
+    }
+    return "";
+  }
+
+  // Scan for the recipe header block.
+  var headerStart = -1;
+  for (var j = 0; j < lines.length; j++) {
+    if (~lines[j].indexOf("DaSiWa LoRA Merge Recipe")) { headerStart = j; break; }
+  }
+
+  if (headerStart >= 0) {
+    i = headerStart + 1;
+    var architecture      = field("Architecture");
+    var defaultStrategy   = field("Default strategy") || "Balanced";
+    var globalStrengthStr = field("Global strength");
+    var adaptive          = field("Adaptive scaling") === "yes";
+    var dryRun            = field("Dry run first") === "yes";
+    var strictMatch       = field("Strict matching") === "yes";
+    var krea2Unchain      = field("Krea2 unchain") === "yes";
+
+    // Parse LoRAs (each starts with a number and filename).
+    state.loras = [];
+    while (i < lines.length) {
+      var mLine = lines[i];
+      if (!mLine || ~mLine.indexOf("-".repeat(8))) break;
+      var loraMatch = mLine.match(/^\s*(\d+)\.\s+(.+)/);
+      if (loraMatch) {
+        i++; // skip the "1. filename" line
+        var name = loraMatch[2].trim();
+        var strength = 0.65;
+        var strategy = defaultStrategy;
+
+        while (i < lines.length) {
+          var sM = lines[i].match(/^\s*Strength:\s+(.*)/);
+          if (sM) { i++; strength = parseFloat(sM[1]) || 0.65; continue; }
+          var stM = lines[i].match(/^\s*Strategy:\s+(.*)/);
+          if (stM) { i++; strategy = stM[1] || defaultStrategy; continue; }
+          break;
+        }
+
+        state.loras.push({ path: name, strength: strength, strategy: strategy, enabled: true });
+      } else {
+        i++;
+      }
+    }
+
+    // Apply to UI.
+    if (architecture) {
+      var archSel = $("architecture");
+      for (var k = 0; k < archSel.options.length; k++) {
+        var opt = archSel.options[k];
+        if (opt.value === architecture) { state.architecture = opt.value; archSel.value = opt.value; break; }
+      }
+    }
+
+    var globalStrVal = Number(globalStrengthStr);
+    if (!isNaN(globalStrVal)) $("lora-global-strength").value = globalStrVal;
+    $("lora-adaptive").checked = adaptive;
+    $("lora-dry-run").checked = dryRun;
+    $("lora-strict").checked = strictMatch;
+
+    // Krea2 unchain checkbox visibility + state.
+    updateArchDependentUI();
+    var ucbLabel = $("krea2-unchain-label");
+    if (ucbLabel) {
+      ucbLabel.style.display = "none"; // only show when arch is actually Krea 2 in the dropdown.
+      $("krea2-unchain").checked = krea2Unchain;
+      if (architecture === "Krea 2") updateArchDependentUI();
+    }
+
+    renderLoras();
+    saveSettings();
+    log("Loaded recipe \"" + fileName + "\": " + state.loras.length + " LoRA(s), arch=" + state.architecture + ", strength=" + globalStrVal + "\n");
+  } else {
+    log("Not a DaSiWa LoRA Merge Recipe file.\n");
+    return;
+  }
+}
+
+
+init().catch(function(err) { log("Initialization failed: " + err.message + "\n"); });

@@ -598,6 +598,11 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
     base_name = os.path.basename(payload.get("base_path", "unknown"))
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    architecture = payload.get("architecture", "LTX-2.3")
+    dry_run = bool(payload.get("dry_run"))
+    strict = bool(payload.get("strict_matching"))
+    krea2_unchain = bool(payload.get("krea2_unchain", False))
+
     lines = [
         "=" * 64,
         "  DaSiWa LoRA Merge Recipe",
@@ -606,19 +611,13 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         f"Date:              {now}",
         f"Output:            {os.path.basename(output_path)}",
         f"Base checkpoint:   {base_name}",
-        f"Base path:         {os.path.realpath(os.path.expanduser(payload['base_path']))}",
+        f"Architecture:      {architecture}",
         f"Default strategy:  {strategy}",
         f"Global strength:   {global_strength}",
         f"Adaptive scaling:  {'yes' if adaptive else 'no'}",
-        f"Requested device:  {(device_summary or {}).get('requested', payload.get('merge_device', 'auto'))}",
-        f"CUDA device:       {(device_summary or {}).get('cuda_device', payload.get('cuda_device', 'cuda:0'))}",
-        f"CUDA tensors:      {(device_summary or {}).get('cuda_tensors', 0)}",
-        f"CPU tensors:       {(device_summary or {}).get('cpu_tensors', 0)}",
-        f"CUDA OOM retries:  {(device_summary or {}).get('cuda_oom', 0)}",
-        f"VRAM fallbacks:    {(device_summary or {}).get('insufficient_vram', 0)}",
-        f"Applied ops:       {(merge_summary or {}).get('applied_ops', len(matched_ops))}/{(merge_summary or {}).get('matched_ops', len(matched_ops))}",
-        f"Altered targets:   {(merge_summary or {}).get('altered_targets', 0)}/{(merge_summary or {}).get('target_tensors', 0)}",
-        f"Unaltered targets: {(merge_summary or {}).get('unaltered_targets', 0)}",
+        f"Dry run first:     {'yes' if dry_run else 'no'}",
+        f"Strict matching:   {'yes' if strict else 'no'}",
+        f"Krea2 unchain:     {'yes' if krea2_unchain else 'no'}",
         "",
         "-" * 64,
         "  LoRAs",
