@@ -46,7 +46,11 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     loras = payload.get("loras") or []
     strategy = payload.get("strategy") or "Balanced"
     global_strength = float(payload.get("global_strength", 1.0))
-    adaptive = bool(payload.get("adaptive", True))
+    # Default to ComfyUI parity: live LoRA application does not renormalize
+    # deltas by target/base tensor norms. Adaptive scaling is still available
+    # as an explicit creative/experimental option, but it must not silently
+    # change the meaning of a user-entered LoRA weight.
+    adaptive = bool(payload.get("adaptive", False))
     dry_run = bool(payload.get("dry_run", False))
     strict = bool(payload.get("strict_matching", True))
     architecture = payload.get("architecture") or "LTX-2.3"

@@ -42,12 +42,12 @@ _STRATEGY_MULTIPLIERS = {
     "Balanced": {
         "attn_qkv": 1.00,
         "attn_out": 1.00,
-        "attn_gate": 0.90,
+        "attn_gate": 1.00,
         "ff_in": 1.00,
         "ff_out": 1.00,
-        "text_fusion": 0.80,
+        "text_fusion": 1.00,
         "structural": 0.0,
-        "other": 0.80,
+        "other": 1.00,
     },
     "Style": {
         # Boost attention routing for aesthetic/style LoRAs; dial back text_fusion

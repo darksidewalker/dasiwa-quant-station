@@ -301,10 +301,12 @@ class LoraMergeEngineTests(unittest.TestCase):
 
     def test_krea2_strategies_apply_correct_multipliers(self):
         from utils.krea2_layer_profiles import strategy_multiplier
-        # Balanced: neutral baseline
+        # Balanced: ComfyUI/live-LoRA parity baseline for all non-structural tensors.
         self.assertEqual(strategy_multiplier("Balanced", "attn_qkv"), 1.00)
         self.assertEqual(strategy_multiplier("Balanced", "ff_in"), 1.00)
-        self.assertEqual(strategy_multiplier("Balanced", "text_fusion"), 0.80)
+        self.assertEqual(strategy_multiplier("Balanced", "text_fusion"), 1.00)
+        self.assertEqual(strategy_multiplier("Balanced", "attn_gate"), 1.00)
+        self.assertEqual(strategy_multiplier("Balanced", "other"), 1.00)
         # Style: boost attention, reduce text_fusion
         self.assertEqual(strategy_multiplier("Style", "attn_qkv"), 1.15)
         self.assertEqual(strategy_multiplier("Style", "ff_in"), 1.00)
@@ -320,6 +322,40 @@ class LoraMergeEngineTests(unittest.TestCase):
         # Structural always 0.0
         for strat in ["Balanced", "Style", "Content", "Detail"]:
             self.assertEqual(strategy_multiplier(strat, "structural"), 0.0)
+
+    def test_missing_adaptive_payload_defaults_to_comfyui_parity(self):
+        """Omitting adaptive must not silently amplify LoRA strength."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "blocks.0.attn.wq.weight": torch.full((3, 4), 100.0),
+            }, str(base))
+            save_file({
+                "lora_unet_blocks_0_attn_wq.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_wq.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 0.5}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "Krea 2",
+                "global_strength": 1.0,
+                "dry_run": False,
+                "strict_matching": True,
+                "merge_device": "cpu",
+            }))
+
+            merged = load_file(str(out))
+            # ComfyUI/live LoRA math: base + (up @ down) * strength = 100 + 2 * 0.5.
+            self.assertTrue(torch.allclose(
+                merged["blocks.0.attn.wq.weight"],
+                torch.full((3, 4), 101.0),
+            ))
 
     def test_krea2_style_merge_applies_attention_boost(self):
         with tempfile.TemporaryDirectory() as tmp:

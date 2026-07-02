@@ -315,29 +315,100 @@ input, select, textarea {
 .lora-controls .compact input { text-align: right; }
 .lora-list {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   margin-top: 10px;
   min-height: 42px;
   border: 1px dashed transparent;
   border-radius: 8px;
+  max-height: calc(50vh - 180px);
+  overflow-y: auto;
 }
 .lora-row {
   display: grid;
-  grid-template-columns: 92px minmax(220px, 1fr) 150px 92px 82px;
-  gap: 8px;
+  grid-template-columns: 28px minmax(130px, 1fr) auto auto 64px;
+  gap: 6px;
   align-items: center;
-  padding: 8px;
+  padding: 6px 8px;
   border: 1px solid rgba(255,255,255,.06);
   border-radius: 8px;
   background: rgba(10, 13, 16, .34);
 }
-.lora-row .lora-pick {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
+
+.lora-row button.lora-pick { font-size: 11px; padding: 4px 6px; text-align: left !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Strength column — slider gets flexible space, number input has fixed width */
+.strength-control > input[type="range"] { flex: 1 1 auto !important; min-width: 200px !important; max-width: none !important; }
+
+.lora-row .strength-num {
+  /* Unified rule — replaces the old split between .lora-row .strength-num and .lora-row .strength-control .strength-num */
+  width: auto !important;
+  min-width: unset !important;
+  max-width: none !important;
+  padding-left: 4px !important;
+  text-align: right !important;
+  color: var(--green);
+  font-variant-numeric: tabular-nums !important;
 }
-.lora-row input[type="number"] { text-align: right; }
+
+.lora-row button[data-role="remove"] { padding: 5px 8px; font-size: 12px; white-space: nowrap; }
+}
+.lora-row select, .lora-row button.ghost {
+  padding: 5px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.lora-row select { 
+  text-align: left !important; 
+  min-width: 76px !important;
+}
+/* Compact the Merge checkbox so it fits in the narrow first column */
+.lora-row label.checkline {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  color: #d8dee5;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+.lora-row label.checkline span {
+  display: none; /* hide the "Merge" text — checkbox is self-explanatory */
+}
+.strength-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.strength-control input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  height: 6px;
+  padding: 0;
+  margin: 0;
+  border-radius: 3px;
+  background: var(--line);
+  outline: none;
+}
+.strength-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--green);
+  cursor: pointer;
+  border: 2px solid rgba(7, 16, 11, .8);
+}
+.strength-control input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--green);
+  cursor: pointer;
+  border: 2px solid rgba(7, 16, 11, .8);
+}
+.lora-row .strength-control { overflow: visible; }
+
+.lora-row button[data-role="remove"] { padding: 5px 8px; font-size: 12px; white-space: nowrap; }
 .lora-actions {
   margin-top: 14px;
 }
@@ -449,7 +520,8 @@ dialog {
   padding: 0;
 }
 dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(4px); }
-.browser-head, .browser-actions { display: flex; justify-content: space-between; gap: 12px; padding: 14px; border-bottom: 1px solid var(--line); }
+.browser-head, .browser-actions { display: flex; justify-content: space-between; gap: 8px; padding: 14px; border-bottom: 1px solid var(--line); }
+.browser-actions > button:not(#browser-up) { margin-left: auto; }
 .browser-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; word-break: break-all; }
 .browser-search { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: rgba(10,13,16,.34); }
 .browser-search input { flex: 1 1 auto; min-width: 0; padding: 8px 10px; font-size: 13px; }
@@ -485,6 +557,7 @@ dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(4px); }
   flex: 0 0 auto;
 }
 .browser-item:hover { background: rgba(255,255,255,.06); }
+.browser-item.selected { background: var(--accent-soft); border-color: var(--accent); }
 .kind { color: var(--muted); font-size: 12px; }
 
 @media (max-width: 980px) {

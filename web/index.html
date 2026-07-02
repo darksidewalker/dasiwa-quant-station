@@ -131,8 +131,8 @@
               <input id="lora-vram-headroom" type="number" min="256" step="256" value="1024" title="Minimum VRAM to leave free; tensors fall back to CPU if this margin would be crossed">
             </label>
             <label class="checkline">
-              <input id="lora-adaptive" type="checkbox" checked>
-              <span title="Scale each LoRA proportionally so the combined strength stays near the global target">Adaptive scaling</span>
+              <input id="lora-adaptive" type="checkbox">
+              <span title="Experimental: renormalize LoRA deltas by tensor norms. Leave off for ComfyUI-like live LoRA parity.">Adaptive scaling</span>
             </label>
             <label class="checkline">
               <input id="lora-dry-run" type="checkbox" checked>
@@ -192,6 +192,7 @@
     </div>
     <div class="browser-actions">
       <button id="browser-up" type="button">Up</button>
+      <button id="browser-add-all" type="button" style="display:none">Select All</button>
       <button id="browser-add-selected" type="button" style="display:none">Add Selected</button>
     </div>
     <div class="browser-search">

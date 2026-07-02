@@ -110,7 +110,7 @@ function loadSettings() {
       if (s.loraMergeDevice) $("lora-merge-device").value = s.loraMergeDevice;
       if (s.loraCudaDevice) $("lora-cuda-device").value = s.loraCudaDevice;
       if (s.loraVramHeadroom != null) $("lora-vram-headroom").value = s.loraVramHeadroom;
-      $("lora-adaptive").checked = s.loraAdaptive ?? true;
+      $("lora-adaptive").checked = s.loraAdaptive ?? false;
       $("lora-dry-run").checked = s.loraDryRun ?? true;
       $("lora-strict").checked = s.loraStrict ?? true;
       $("krea2-unchain").checked = !!s.krea2Unchain;
@@ -172,6 +172,11 @@ function shortPath(path) {
   if (!path) return "";
   const parts = path.split("/");
   return parts.slice(-2).join("/");
+}
+
+// Format strength with English decimal separator (always ".") and up to 2 decimals
+function formatStrength(v) {
+  return Number(v || 0).toFixed(2);
 }
 
 async function init() {
@@ -333,11 +338,21 @@ function wireEvents() {
   });
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
 
+  $("browser-add-all").addEventListener("click", () => {
+    const paths = state.browserItems.filter((item) => !item.is_dir).map((item) => item.path);
+    for (const p of paths) {
+      state.selectedLoraPaths.add(p);
+    }
+    renderBrowserList();
+  });
+
   $("browser-add-selected").addEventListener("click", () => {
     if (state.selectedLoraPaths.size > 0) {
       addLoraPaths(Array.from(state.selectedLoraPaths));
       state.selectedLoraPaths.clear();
       $("browser").close();
+    } else {
+      log("No LoRA files selected.\n");
     }
   });
 
@@ -452,6 +467,8 @@ async function openBrowser(mode) {
   state.browserMode = mode;
   $("browser-title").textContent = mode === "lora" ? "Choose LoRA" : "Choose Checkpoint";
   const addSel = $("browser-add-selected");
+  const addAllBtn = $("browser-add-all");
+  if (addAllBtn) addAllBtn.style.display = mode === "lora" ? "" : "none";
   if (addSel) addSel.style.display = mode === "lora" ? "" : "none";
   state.selectedLoraPaths.clear();
   state.browserSearchQuery = "";
@@ -531,6 +548,9 @@ function renderBrowserList() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "browser-item";
+    if (state.browserMode === "lora" && !item.is_dir && state.selectedLoraPaths.has(item.path)) {
+      btn.classList.add("selected");
+    }
     btn.draggable = !item.is_dir;
     btn.addEventListener("dragstart", (ev) => {
       ev.dataTransfer.effectAllowed = "copy";
@@ -564,8 +584,19 @@ function renderBrowserList() {
         browse(item.path);
       } else if (state.browserMode === "file") {
         selectSource(item.path);
-      } else if (state.browserMode === "lora") {
-        selectLora(item.path);
+      } else if (state.browserMode === "lora" && !item.is_dir) {
+        // Toggle selection instead of immediately adding
+        const cb = btn.querySelector('input[type="checkbox"]');
+        if (cb) {
+          cb.checked = !cb.checked;
+          if (cb.checked) {
+            state.selectedLoraPaths.add(item.path);
+            btn.classList.add("selected");
+          } else {
+            state.selectedLoraPaths.delete(item.path);
+            btn.classList.remove("selected");
+          }
+        }
       }
     });
     list.appendChild(btn);
@@ -707,7 +738,10 @@ function renderLoras() {
       <label class="checkline" title="Enable this LoRA for the merge"><input type="checkbox" ${lora.enabled ? "checked" : ""} data-role="enabled"><span>Merge</span></label>
       <button class="ghost lora-pick" type="button" title="Choose a LoRA file">${lora.path ? shortPath(lora.path) : "Choose LoRA"}</button>
       <select data-role="strategy" title="Merge strategy: how LoRA weights are applied">${strategies.map((s) => `<option value="${s}" ${s === lora.strategy ? "selected" : ""}>${s}</option>`).join("")}</select>
-      <input data-role="strength" type="number" min="-3" max="3" step="0.05" value="${lora.strength}" title="Per-LoRA strength multiplier (-3..3; negative subtracts the LoRA, 0=none, 1=full)">
+      <div class="strength-control" title="Per-LoRA strength multiplier (-3..3; negative subtracts the LoRA, 0=none, 1=full)">
+        <input data-role="strength-slider" type="range" min="-3" max="3" step="0.05" value="${lora.strength}">
+        <input class="strength-num" type="number" min="-3" max="3" step="0.01" value="${formatStrength(lora.strength)}" title="Type a value directly (-3..3)">
+      </div>
       <button class="ghost" data-role="remove" type="button" title="Remove this LoRA from the list">Remove</button>
     `;
     row.querySelector(".lora-pick").addEventListener("click", () => {
@@ -716,7 +750,29 @@ function renderLoras() {
     });
     row.querySelector('[data-role="enabled"]').addEventListener("change", (ev) => { lora.enabled = ev.target.checked; saveSettings(); });
     row.querySelector('[data-role="strategy"]').addEventListener("change", (ev) => { lora.strategy = ev.target.value; saveSettings(); });
-    row.querySelector('[data-role="strength"]').addEventListener("input", (ev) => { lora.strength = Number(ev.target.value) || 0; saveSettings(); });
+    const sliderEl = row.querySelector('[data-role="strength-slider"]');
+    const numInput = row.querySelector('.strength-num');
+    function syncFromValue(cause) {
+      // cause: 'slider' or 'num' — update the other control without recursion
+      numInput.value = formatStrength(lora.strength);
+      sliderEl.value = lora.strength;
+    }
+    sliderEl.addEventListener("input", (ev) => {
+      lora.strength = Number(ev.target.value);
+      syncFromValue('slider');
+      saveSettings();
+    });
+    numInput.addEventListener("change", (ev) => {
+      const v = parseFloat(String(Number(ev.target.value).toFixed(2)));
+      if (!isNaN(v)) {
+        lora.strength = Math.max(-3, Math.min(3, v));
+        syncFromValue('num');
+        saveSettings();
+      } else {
+        // Invalid input — revert to current value
+        numInput.value = formatStrength(lora.strength);
+      }
+    });
     row.querySelector('[data-role="remove"]').addEventListener("click", () => {
       state.loras.splice(idx, 1);
       renderLoras();
