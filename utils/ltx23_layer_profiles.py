@@ -92,6 +92,11 @@ _STRATEGY_MULTIPLIERS = {
         "caption_projection": 1.0,
         "patchify_or_output": 1.0,
         "norm": 1.0,
+        # Audio tensors explicitly excluded — prevent fallback to 'other: 1.0'.
+        "audio_attn": 0.0,
+        "audio_attn_out": 0.0,
+        "audio_ff_in": 0.0,
+        "audio_ff_out": 0.0,
         "other": 1.0,
     },
 }

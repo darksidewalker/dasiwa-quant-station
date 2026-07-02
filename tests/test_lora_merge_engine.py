@@ -789,7 +789,7 @@ class LoraMergeEngineTests(unittest.TestCase):
             }))
 
             text = "".join(e.get("text", "") for e in events)
-            self.assertIn("skipped=1", text)
+            self.assertIn("skipped_preserve=1 skipped_strategy=0", text)
 
     def test_diff_patch_unmatched_when_no_base_key(self):
         with tempfile.TemporaryDirectory() as tmp:

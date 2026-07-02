@@ -70,7 +70,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     reports: List[Dict[str, Any]] = []
     matched_ops: List[Dict[str, Any]] = []
-    skipped = 0
+    skipped = 0          # preserve-pattern skips
+    strategy_skipped = 0 # tensors excluded by strategy multiplier (e.g. Video → audio)
     unmatched = 0
     ambiguous = 0
 
@@ -106,19 +107,27 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     reports.append(_report(pair.base_name, target_key, "shape_mismatch", lora_path, base_shape=base_shape, delta_shape=delta_shape))
                     continue
                 category = classify_key(target_key)
-                scale = global_strength * lora_strength * strat_mult(lora_strategy, category)
-                matched_ops.append({
-                    "lora_path": lora_path,
-                    "strategy": lora_strategy,
-                    "down_key": pair.down_key,
-                    "up_key": pair.up_key,
-                    "alpha_key": pair.alpha_key,
-                    "rank": pair.rank,
-                    "target_key": target_key,
-                    "category": category,
-                    "scale": scale,
-                })
-                reports.append(_report(pair.base_name, target_key, "matched", lora_path, category=category, strategy=lora_strategy, scale=scale, rank=pair.rank))
+                raw_mult = strat_mult(lora_strategy, category)
+                scale = global_strength * lora_strength * raw_mult
+                if raw_mult == 0.0:
+                    # Strategy explicitly excluded this tensor — report as skipped, not matched.
+                    strategy_skipped += 1
+                    reports.append(_report(pair.base_name, target_key, "skipped_strategy", lora_path,
+                                           category=category, strategy=lora_strategy, mult=raw_mult))
+                else:
+                    matched_ops.append({
+                        "lora_path": lora_path,
+                        "strategy": lora_strategy,
+                        "down_key": pair.down_key,
+                        "up_key": pair.up_key,
+                        "alpha_key": pair.alpha_key,
+                        "rank": pair.rank,
+                        "target_key": target_key,
+                        "category": category,
+                        "scale": scale,
+                    })
+                    reports.append(_report(pair.base_name, target_key, "matched", lora_path,
+                                           category=category, strategy=lora_strategy, scale=scale, rank=pair.rank))
 
             # Process .diff patches (direct additive deltas, ComfyUI format)
             for dp in diff_patches:
@@ -180,7 +189,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if dry_run:
         # Build per-LoRA summary for dry run (computed but not yet displayed)
         from collections import Counter, defaultdict
-        lora_stats = defaultdict(lambda: {"matched": 0, "skipped": 0, "unmatched": 0, "categories": Counter()})
+        lora_stats = defaultdict(lambda: {"matched": 0, "skipped_preserve": 0, "skipped_strategy": 0, "unmatched": 0, "categories": Counter()})
         unmatched_by_lora = defaultdict(list)
         for rpt in reports:
             ln = rpt["lora"]
@@ -188,17 +197,21 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             if st == "matched":
                 lora_stats[ln]["matched"] += 1
                 lora_stats[ln]["categories"][rpt.get("category", "?")] += 1
-            elif st.startswith("skipped"):
-                lora_stats[ln]["skipped"] += 1
+            elif st.startswith("skipped_preserve"):
+                lora_stats[ln]["skipped_preserve"] += 1
+            elif st == "skipped_strategy":
+                lora_stats[ln]["skipped_strategy"] += 1
             else:
                 lora_stats[ln]["unmatched"] += 1
                 unmatched_by_lora[ln].append(rpt["base_name"])
 
         summary = {}
         for ln, st in lora_stats.items():
+            total_skipped = st["skipped_preserve"] + st["skipped_strategy"]
             summary[ln] = {
                 "matched": st["matched"],
-                "skipped": st["skipped"],
+                "skipped": total_skipped,
+                "skipped_breakdown": {"preserve": st["skipped_preserve"], "strategy": st["skipped_strategy"]},
                 "unmatched": st["unmatched"],
                 "categories": dict(st["categories"]),
                 "unmatched_sample": unmatched_by_lora[ln][:10],
@@ -214,7 +227,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         # Quick human-readable summary right before done so it's visible at the bottom.
         yield _log(
             f"Dry run summary: matched={len(matched_ops)} "
-            f"skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
+            f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
         )
         yield _status("Dry run complete")
         yield {"type": "done", "status": "dry-run complete"}
@@ -319,7 +332,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     # Post-merge match summary (unconditional, for logs and tests).
     yield _log(
         f"Merge report: matched={len(matched_ops)} "
-        f"skipped={skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
+        f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
     )
 
     yield _status("LoRA merge complete")
