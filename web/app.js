@@ -268,6 +268,8 @@ function renderFormats(formats) {
     btn.className = "chip";
       btn.textContent = compactFormatLabel(fmt.label);
     btn.dataset.value = fmt.value;
+    const tip = formatTitle(fmt.value);
+    if (tip) btn.title = tip;
     btn.addEventListener("click", () => {
       if (state.formats.has(fmt.value)) {
         state.formats.delete(fmt.value);
@@ -293,6 +295,28 @@ function compactFormatLabel(label) {
     .replace("INT8 Row-wise ConvRot (runtime)", "INT8 ConvRot")
     .replace("INT8 Tensor-wise", "INT8 Tensor")
     .replace("GGUF ", "");
+}
+
+const FORMAT_TITLES = {
+  FP8:              "FP8 — Balanced mixed-precision quantization. Best quality/size trade-off for most use cases.",
+  NVFP4:            "NVFP4 (E2M1) — Low-bit tensor format for Blackwell GPUs (RTX 5090). Smallest size, good quality on supported hardware.",
+  MXFP8:            "MXFP8 (Block FP8) — Block-norm quantized FP8. Good balance of compression and fidelity, works across GPU generations.",
+  "Hybrid MXFP8":   "Hybrid MXFP8 — Combines block-norm and per-channel scaling for improved accuracy over pure MXFP8.",
+  "INT8 Tensor-wise": "INT8 (Tensor-wise) — Per-tensor scale quantization to INT8. Fastest inference, slightly lower quality than FP8.",
+  "INT8 Row-wise ConvRot Runtime": "INT8 ConvRot (Row-wise) — Per-row scaling with Hadamard rotation at runtime. Best INT8 fidelity; requires ConvRot support in the loader (e.g., ComfyUI).",
+  "GGUF_F32":       "GGUF F32 — Full FP32 precision stored in GGUF format. Largest file size, maximum compatibility.",
+  "GGUF_BF16":      "GGUF BF16 — Bfloat16 quantization (one bit less than FP16). Negligible quality loss vs full FP16; good for modern GPUs.",
+  "GGUF_F16":       "GGUF F16 — Float16. Good compatibility across GGUF-based runners like llama.cpp, Ollama, etc.",
+  "GGUF_Q8_0":      "GGUF Q8_0 — High-quality quantization (~7 bits). Very close to original quality; recommended for most GGUF use cases.",
+  "GGUF_Q6_K":      "GGUF Q6_K — Good compression with minimal quality loss. Decent balance of size and fidelity.",
+  "GGUF_Q5_K":      "GGUF Q5_K — Medium quantization (~4 bits). Noticeable quality drop but much smaller files; acceptable for many models.",
+  "GGUF_Q4_K":      "GGUF Q4_K — Popular compression point. Good balance of size and quality for GGUF runners on consumer GPUs.",
+  "GGUF_Q3_K":      "GGUF Q3_K — Aggressive quantization (~3 bits). Significant quality loss; use only when file size is critical.",
+  "GGUF_Q2_K":      "GGUF Q2_K — Extreme compression. Only for very constrained environments (e.g., mobile, edge devices).",
+};
+
+function formatTitle(value) {
+  return FORMAT_TITLES[value] || null;
 }
 
 function updateArchDependentUI() {
