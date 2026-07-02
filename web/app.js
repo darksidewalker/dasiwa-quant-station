@@ -724,15 +724,15 @@ function renderLoras() {
     root.appendChild(empty);
     return;
   }
-  // WAN 2.2 has no audio components, so Audio strategy is not useful.
-  // Krea 2 is an image model with its own strategy set.
-  const allStrategies = ["Balanced", "Motion", "Visuals", "Audio"];
-  const imageStrategies = ["Balanced", "Style", "Content", "Detail"];
+  // Filter-based presets: each selects which tensor categories pass through (1.0) and excludes the rest (0.0).
+  const ltxStrategies = ["Balanced", "Audio", "Video"];
+  const wan22Strategies = ["Balanced", "Motion", "Visuals"];
+  const krea2Strategies = ["Balanced", "Style", "Content"];
   const strategies = state.architecture === "Krea 2"
-    ? imageStrategies
+    ? krea2Strategies
     : state.architecture === "WAN 2.2"
-      ? allStrategies.filter((s) => s !== "Audio")
-      : allStrategies;
+      ? wan22Strategies
+      : ltxStrategies;
   state.loras.forEach((lora, idx) => {
     const row = document.createElement("div");
     row.className = "lora-row";
