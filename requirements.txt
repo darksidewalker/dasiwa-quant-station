@@ -8,3 +8,4 @@ sentencepiece
 safetensors
 numpy
 tqdm
+scipy
