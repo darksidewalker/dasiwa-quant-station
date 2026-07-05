@@ -136,6 +136,9 @@ PRESERVE_PATTERNS = {
         r"^tmlp\.",                          # 4 layers: tmlp.0/2.bias/weight
         r"^txtmlp\.",                        # 4 layers: txtmlp.1/3.bias/weight
         r"^txtfusion\.projector\.",          # 1 layer: txtfusion.projector.weight
+        # Real model also contains these sub-blocks (not in ComfyUI exports)
+        r"^txtfusion\.layerwise_blocks\.",   # 16 layers (same attn/mlp structure)
+        r"^txtfusion\.refiner_blocks\.",     # 16 layers (same attn/mlp structure)
     ],
 }
 
