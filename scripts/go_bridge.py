@@ -200,6 +200,8 @@ def cmd_quantize(args):
         if f in {
             "FP8",
             "NVFP4",
+            "MXFP8",
+            "Hybrid MXFP8",
             "INT8 Tensor-wise",
             "INT8 Row-wise ConvRot Runtime",
             "INT8 Row-wise ConvRot",

@@ -49,7 +49,7 @@ MODEL_METADATA_CONFIGS = {
         "modelspec.title": "{model_name}",
         "modelspec.author": "Darksidewalker",
         "modelspec.description": "Krea 2 text-to-image diffusion transformer quantized via DaSiWa Station.",
-        "modelspec.architecture": "krea2_raw",
+        "modelspec.architecture": "krea-2",
         "modelspec.implementation": "https://huggingface.co/krea/Krea-2-Raw",
         "modelspec.license": "Krea Open Source License and Custom License Addendum Distribution Restriction",
         "modelspec.tags": "text-to-image, diffusion-transformer, krea2, DaSiWa",
@@ -132,6 +132,7 @@ MODEL_METADATA_CONFIGS = {
         "modelspec.license": "CircleStone Labs Non-Commercial License",
         "modelspec.tags": "diffusion, anima, DaSiWa, anime, art, illustration",
         "modelspec.resolution": "1024x1024",
+        "quantization.bits": "BF16",
     },
     "Radiance": {
         "modelspec.title": "{model_name}",

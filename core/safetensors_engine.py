@@ -86,6 +86,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             "--comfy_quant",
         ],
         "NVFP4": ["--nvfp4", "--comfy_quant"],
+        "MXFP8": ["--mxfp8", "--comfy_quant"],
     }
 
     # Base formats where the automatic layer config is meaningful.
@@ -94,6 +95,8 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     LAYER_CONFIG_ELIGIBLE = {
         "FP8",
         "NVFP4",
+        "MXFP8",
+        "Hybrid MXFP8",
         "INT8 Tensor-wise",
         "INT8 Row-wise ConvRot Runtime",
         "INT8 Row-wise ConvRot",
@@ -259,6 +262,221 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                 "NOTE: INT8 Row-wise ConvRot requires a runtime that reads "
                 ".comfy_quant convrot metadata and rotates activations.\n"
             )
+
+        # --- 2b. HYBRID MXFP8 TWO-PASS HANDLING ---
+        # Hybrid MXFP8 is a two-pass process:
+        #   Pass 1: Quantize source → temporary MXFP8 file (same flags as plain MXFP8)
+        #   Pass 2: convert_to_quant --make-hybrid-mxfp8 on the MXFP8 temp, stealing
+        #           tensorwise scales from a separate FP8 quantization.
+        is_hybrid_mxfp8 = fmt == "Hybrid MXFP8"
+
+        if is_hybrid_mxfp8:
+            log_acc += "[Hybrid MXFP8] Starting two-pass workflow...\n"
+            yield log_acc, f"[1/2] Quantizing source → temporary MXFP8..."
+
+            # Build the pass-1 command (plain MXFP8) — inherits layer config + arch + strategy
+            cmd_pass1 = list(cmd)  # already assembled above with --mxfp8 flags from FLAG_MAP? No.
+            # Hybrid is NOT in FLAG_MAP, so rebuild manually for pass 1:
+            cmd_pass1 = ["convert_to_quant", "-i", source_path]
+
+            temp_mxfp8_path = final_path.rsplit(".", 1)[0] + "_temp.mxfp8.safetensors"
+            cmd_pass1.extend(["-o", temp_mxfp8_path, "--save-quant-metadata"])
+
+            if low_vram:
+                cmd_pass1.append("--low-memory")
+
+            # MXFP8 flags (same as plain MXFP8)
+            cmd_pass1.extend(FLAG_MAP["MXFP8"])
+
+            # Layer config for pass 1
+            if layer_config_path:
+                cmd_pass1.extend(["--layer-config", layer_config_path])
+
+            # Architecture flag
+            arch_entry = ARCH_REGISTRY.get(model_type)
+            if arch_entry is None:
+                log_acc += f"❌ FATAL: Unknown architecture '{model_type}'. Aborting batch.\n"
+                yield log_acc, "Aborted: unknown architecture"
+                return
+            arch_flag_h1 = arch_entry["flag"]
+            if arch_flag_h1 is not None:
+                cmd_pass1.append(arch_flag_h1)
+
+            # Strategy flags for pass 1
+            if options == "Simple":
+                cmd_pass1.append("--simple")
+            elif options == "Optimizer-driven":
+                opt_params = arch_entry["optimizer"]
+                cmd_pass1.extend(["--optimizer", optimizer_choice])
+                cmd_pass1.extend(opt_params)
+
+            log_acc += f"[Hybrid MXFP8] Pass 1 command: {' '.join(cmd_pass1)}\n"
+            yield log_acc, f"[1/2] Quantizing source → temporary MXFP8..."
+
+            # Run pass 1 subprocess
+            proc = subprocess.Popen(
+                cmd_pass1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, universal_newlines=True
+            )
+            cur_line = ""
+            while True:
+                ch = proc.stdout.read(1)
+                if not ch and proc.poll() is not None:
+                    break
+                if ch in ['\n', '\r']:
+                    clean = cur_line.strip()
+                    is_spam = any(x in clean.lower() for x in ["optimizing", "step", "worse_count", "%|"])
+                    if clean and "100%" in clean:
+                        log_acc += f"[Hybrid MXFP8] Pass 1 complete.\n"
+                        yield log_acc, "[2/3] Generating FP8 scale reference..."
+                    elif clean and not is_spam:
+                        log_acc += f"{clean}\n"
+                        yield log_acc, "[1/2] Quantizing source → temporary MXFP8..."
+                    cur_line = ""
+                else:
+                    cur_line += ch
+            proc.wait()
+
+            if proc.returncode != 0 or not os.path.exists(temp_mxfp8_path):
+                log_acc += f"❌ Hybrid MXFP8 Pass 1 failed (rc={proc.returncode}). Aborting.\n"
+                yield log_acc, "Aborted: hybrid pass-1 failed"
+                # Clean up temp file if it exists
+                try:
+                    os.remove(temp_mxfp8_path)
+                except OSError:
+                    pass
+                return
+
+            # --- Pass 2 needs FP8 tensorwise scales ---
+            log_acc += "[Hybrid MXFP8] Generating temporary FP8 for tensorwise scales...\n"
+            yield log_acc, "Generating FP8 scale reference..."
+
+            temp_fp8_path = final_path.rsplit(".", 1)[0] + "_temp.fp8.safetensors"
+            cmd_fp8_scales = ["convert_to_quant", "-i", source_path,
+                              "-o", temp_fp8_path, "--save-quant-metadata"]
+            if low_vram:
+                cmd_fp8_scales.append("--low-memory")
+            # Plain FP8 (tensorwise) for scales — no optimizer needed, just --simple + --comfy_quant
+            cmd_fp8_scales.extend(FLAG_MAP["FP8"])
+            cmd_fp8_scales.append("--simple")
+
+            log_acc += f"[Hybrid MXFP8] FP8 scales command: {' '.join(cmd_fp8_scales)}\n"
+            yield log_acc, "Generating FP8 scale reference..."
+
+            proc_fp8 = subprocess.Popen(
+                cmd_fp8_scales, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, universal_newlines=True
+            )
+            cur_line = ""
+            while True:
+                ch = proc_fp8.stdout.read(1)
+                if not ch and proc_fp8.poll() is not None:
+                    break
+                if ch in ['\n', '\r']:
+                    clean = cur_line.strip()
+                    is_spam = any(x in clean.lower() for x in ["optimizing", "step", "worse_count", "%|"])
+                    if clean and "100%" in clean:
+                        log_acc += "[Hybrid MXFP8] FP8 scale reference complete.\n"
+                        yield log_acc, "[3/3] Converting MXFP8 → Hybrid MXFP8..."
+                    elif clean and not is_spam:
+                        log_acc += f"{clean}\n"
+                        yield log_acc, "[2/3] Generating FP8 scale reference..."
+                    cur_line = ""
+                else:
+                    cur_line += ch
+            proc_fp8.wait()
+
+            if proc_fp8.returncode != 0 or not os.path.exists(temp_fp8_path):
+                log_acc += f"❌ FP8 scale generation failed (rc={proc_fp8.returncode}). Aborting.\n"
+                yield log_acc, "Aborted: fp8-scale generation failed"
+                for tmp in [temp_mxfp8_path, temp_fp8_path]:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                return
+
+            # --- Pass 2: --make-hybrid-mxfp8 on MXFP8 file with FP8 scales ---
+            log_acc += "[Hybrid MXFP8] Converting to Hybrid (pass 2)...\n"
+            yield log_acc, "[3/3] Converting MXFP8 → Hybrid MXFP8..."
+
+            cmd_pass2 = [
+                "convert_to_quant", "-i", temp_mxfp8_path,
+                "-o", final_path, "--save-quant-metadata",
+                "--make-hybrid-mxfp8",
+                "--tensor-scales", temp_fp8_path,
+            ]
+
+            log_acc += f"[Hybrid MXFP8] Pass 2 command: {' '.join(cmd_pass2)}\n"
+            yield log_acc, "[3/3] Converting MXFP8 → Hybrid MXFP8..."
+
+            proc_h = subprocess.Popen(
+                cmd_pass2, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, universal_newlines=True
+            )
+            has_done = False
+            cur_line = ""  # Reset from FP8 phase; stale content would bleed into Pass 2
+            while True:
+                ch = proc_h.stdout.read(1)
+                if not ch and proc_h.poll() is not None:
+                    break
+                if ch in ['\n', '\r']:
+                    clean = cur_line.strip()
+                    is_spam = any(x in clean.lower() for x in ["optimizing", "step"])
+                    if clean and "100%" in clean and not has_done:
+                        log_acc += f"[Hybrid MXFP8] Pass 2 complete.\n"
+                        yield log_acc, "Cleaning up temporary files..."
+                        has_done = True
+                    elif clean and not is_spam:
+                        log_acc += f"{clean}\n"
+                        yield log_acc, "[3/3] Converting MXFP8 → Hybrid MXFP8..."
+                    cur_line = ""
+                else:
+                    cur_line += ch
+            proc_h.wait()
+
+            # Clean up temporary files
+            for tmp in [temp_mxfp8_path, temp_fp8_path]:
+                try:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                        log_acc += f"[Hybrid MXFP8] Removed temp file {os.path.basename(tmp)}\n"
+                except OSError:
+                    pass
+
+            # Check final result and inject metadata / recipe
+            if proc_h.returncode == 0 and os.path.exists(final_path):
+                meta = merge_custom_metadata(
+                    model_type, model_name, final_path,
+                    bits=fmt,
+                    custom_meta=custom_metadata,
+                    is_full=is_full_checkpoint,
+                )
+                success, msg = inject_metadata(final_path, meta)
+                hashes = calculate_civitai_hashes(final_path)
+
+                if success:
+                    log_acc += f"📝 Meta Injected [{model_type}]: {os.path.basename(final_path)}\n"
+                    yield log_acc, "Metadata injected successfully"
+                else:
+                    log_acc += f"⚠️ Metadata injection failed: {msg}\n"
+                    yield log_acc, f"Warning: metadata injection failed ({msg})"
+
+                recipe_path = write_quant_recipe(
+                    final_path, source_path, model_name, model_type, fmt,
+                    options, optimizer_choice, low_vram, actcal,
+                    is_full_checkpoint, layer_config_path, cmd_pass2,
+                    success, msg, hashes,
+                )
+                log_acc += f"🧾 Quant recipe written: {os.path.basename(recipe_path)}\n"
+                yield log_acc, "Recipe file written"
+
+            else:
+                log_acc += f"❌ Hybrid MXFP8 Pass 2 failed. Return code: {proc_h.returncode}\n"
+
+            save_log(model_name, log_acc)
+            yield log_acc, "Finished Batch"
+            continue  # Skip the normal single-pass path below
         
         # Flush layer config log and attach the flag if resolved
         for line in layer_config_log:

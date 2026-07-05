@@ -74,8 +74,9 @@ def get_current_meta(model_name, architecture, bits="FP8"):
     # Get architecture-specific fields (fallback to WAN 2.2 if not found)
     base_config = MODEL_METADATA_CONFIGS.get(architecture, MODEL_METADATA_CONFIGS.get("WAN 2.2"))
     
-    # Merge with common fields (Date, Tool, Bits)
-    full_template = {**base_config, **COMMON_METADATA}
+    # Merge with common fields (Date, Tool, Bits). Architecture-specific
+    # overrides (e.g. Anima -> BF16) take precedence over the common defaults.
+    full_template = {**COMMON_METADATA, **base_config}
     
     # Perform string replacement for all template tokens
     final_meta = {}
