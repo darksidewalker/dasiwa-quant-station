@@ -127,16 +127,15 @@ PRESERVE_PATTERNS = {
     r"(^|\.)head\.",
     ],
     "Krea 2": [
-        r"(^|\.)mod\.lin$",
-        r"(^|\.)last\.modulation\.lin$",
-        r"(^|\.)first\.",
-        r"(^|\.)last\.",
-        r"(^|\.)tproj\.",
-        r"(^|\.)tmlp\.",
-        r"(^|\.)txtmlp\.",
-        r"(^|\.)txtfusion\.projector\.",
-        r"(^|\.)(pre|post)?norm\.scale$",
-        r"\.qknorm\.[qk]norm\.scale$",
+        # Empirically verified against bf16/fp8/int8/nvfp4 ComfyUI exports.
+        # Only these 15 layers remain at source precision across ALL formats.
+        # Verified May 2026 against krea2TurboOfficialComfy checkpoints.
+        r"^first\.",                          # 2 layers: first.bias, first.weight
+        r"^last\.linear\.",                  # 2 layers: last.linear.bias/weight
+        r"^tproj\.",                         # 2 layers: tproj.1.bias/weight
+        r"^tmlp\.",                          # 4 layers: tmlp.0/2.bias/weight
+        r"^txtmlp\.",                        # 4 layers: txtmlp.1/3.bias/weight
+        r"^txtfusion\.projector\.",          # 1 layer: txtfusion.projector.weight
     ],
 }
 
