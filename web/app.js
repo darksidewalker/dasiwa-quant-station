@@ -833,9 +833,9 @@ function renderLoras() {
     return;
   }
   // Filter-based presets: each selects which tensor categories pass through (1.0) and excludes the rest (0.0).
-  const ltxStrategies = ["Balanced", "Audio", "Video"];
+  const ltxStrategies = ["Balanced", "Motion", "Visuals", "Audio"];
   const wan22Strategies = ["Balanced", "Motion", "Visuals"];
-  const krea2Strategies = ["Balanced", "Style", "Content"];
+  const krea2Strategies = ["Balanced", "Style", "Content", "Detail"];
   const strategies = state.architecture === "Krea 2"
     ? krea2Strategies
     : state.architecture === "WAN 2.2"
@@ -1230,7 +1230,7 @@ function loadRecipe() {
     if (!file) return;
     try {
       const text = await file.text();
-      parseRecipeAndApply(text, file.name);
+      await parseRecipeAndApply(text, file.name);
     } catch (err) {
       log("Load recipe failed: " + err.message + "\n");
     } finally {
@@ -1241,7 +1241,27 @@ function loadRecipe() {
   input.click();
 }
 
-function parseRecipeAndApply(recipeText, fileName) {
+async function resolveRecipeModelPath(name, kind) {
+  var trimmed = String(name || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("/")) return trimmed;
+
+  try {
+    var data = await api(`/api/search?path=${encodeURIComponent(state.modelsDir)}&q=${encodeURIComponent(trimmed)}`);
+    var exact = (data.items || []).filter((item) => item.name === trimmed);
+    if (exact.length === 1) return exact[0].path;
+    if (exact.length > 1) {
+      log(`Recipe ${kind} "${trimmed}" matched multiple files; using ${exact[0].path}\n`);
+      return exact[0].path;
+    }
+    log(`Recipe ${kind} "${trimmed}" was not found under ${state.modelsDir}; keeping filename only.\n`);
+  } catch (err) {
+    log(`Recipe ${kind} lookup failed for "${trimmed}": ${err.message}\n`);
+  }
+  return trimmed;
+}
+
+async function parseRecipeAndApply(recipeText, fileName) {
   var lines = recipeText.split("\n");
 
   // Helper: read a "Key: value" line by searching for the label.
@@ -1264,6 +1284,8 @@ function parseRecipeAndApply(recipeText, fileName) {
 
   if (headerStart >= 0) {
     i = headerStart + 1;
+    var outputName        = field("Output");
+    var baseCheckpoint    = field("Base checkpoint");
     var architecture      = field("Architecture");
     var defaultStrategy   = field("Default strategy") || "Balanced";
     var globalStrengthStr = field("Global strength");
@@ -1272,11 +1294,18 @@ function parseRecipeAndApply(recipeText, fileName) {
     var strictMatch       = field("Strict matching") === "yes";
     var krea2Unchain      = field("Krea2 unchain") === "yes";
 
+    // Move to the LoRA section before parsing entries. Header field scanning
+    // intentionally stops before the separator, so skip section labels/blanks.
+    while (i < lines.length && lines[i].indexOf("LoRAs") < 0) i++;
+    if (i < lines.length) i++;
+    while (i < lines.length && (!lines[i].trim() || lines[i].indexOf("-".repeat(8)) >= 0)) i++;
+
     // Parse LoRAs (each starts with a number and filename).
     state.loras = [];
     while (i < lines.length) {
       var mLine = lines[i];
-      if (!mLine || ~mLine.indexOf("-".repeat(8))) break;
+      if (!mLine || !mLine.trim()) { i++; continue; }
+      if (mLine.indexOf("-".repeat(8)) >= 0) break;
       var loraMatch = mLine.match(/^\s*(\d+)\.\s+(.+)/);
       if (loraMatch) {
         i++; // skip the "1. filename" line
@@ -1286,7 +1315,12 @@ function parseRecipeAndApply(recipeText, fileName) {
 
         while (i < lines.length) {
           var sM = lines[i].match(/^\s*Strength:\s+(.*)/);
-          if (sM) { i++; strength = parseFloat(sM[1]) || 0.65; continue; }
+          if (sM) {
+            i++;
+            var parsedStrength = parseFloat(sM[1]);
+            strength = isNaN(parsedStrength) ? 0.65 : parsedStrength;
+            continue;
+          }
           var stM = lines[i].match(/^\s*Strategy:\s+(.*)/);
           if (stM) { i++; strategy = stM[1] || defaultStrategy; continue; }
           break;
@@ -1307,6 +1341,19 @@ function parseRecipeAndApply(recipeText, fileName) {
       }
     }
 
+    if (baseCheckpoint) {
+      var resolvedBase = await resolveRecipeModelPath(baseCheckpoint, "base checkpoint");
+      await selectSource(resolvedBase);
+    }
+
+    if (outputName) {
+      $("lora-output").value = outputName.replace(/\.(safetensors|gguf|ckpt|pt|bin)$/i, "");
+    }
+
+    for (var r = 0; r < state.loras.length; r++) {
+      state.loras[r].path = await resolveRecipeModelPath(state.loras[r].path, "LoRA");
+    }
+
     var globalStrVal = Number(globalStrengthStr);
     if (!isNaN(globalStrVal)) $("lora-global-strength").value = globalStrVal;
     $("lora-adaptive").checked = adaptive;
@@ -1324,7 +1371,7 @@ function parseRecipeAndApply(recipeText, fileName) {
 
     renderLoras();
     saveSettings();
-    log("Loaded recipe \"" + fileName + "\": " + state.loras.length + " LoRA(s), arch=" + state.architecture + ", strength=" + globalStrVal + "\n");
+    log("Loaded recipe \"" + fileName + "\": " + (state.sourcePath ? "base=" + shortPath(state.sourcePath) + ", " : "") + state.loras.length + " LoRA(s), arch=" + state.architecture + ", strength=" + globalStrVal + "\n");
   } else {
     log("Not a DaSiWa LoRA Merge Recipe file.\n");
     return;

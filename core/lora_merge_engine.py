@@ -621,7 +621,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
     import datetime
 
     recipe_path = output_path.rsplit(".", 1)[0] + ".txt"
-    base_name = os.path.basename(payload.get("base_path", "unknown"))
+    base_path = payload.get("base_path", "unknown")
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     architecture = payload.get("architecture", "LTX-2.3")
@@ -636,7 +636,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         "",
         f"Date:              {now}",
         f"Output:            {os.path.basename(output_path)}",
-        f"Base checkpoint:   {base_name}",
+        f"Base checkpoint:   {base_path}",
         f"Architecture:      {architecture}",
         f"Default strategy:  {strategy}",
         f"Global strength:   {global_strength}",
@@ -652,7 +652,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
     ]
 
     for i, spec in enumerate(loras, 1):
-        lora_name = os.path.basename(os.path.realpath(os.path.expanduser(spec["path"])))
+        lora_name = os.path.realpath(os.path.expanduser(spec["path"]))
         lora_strength = spec.get("strength", "1.0")
         lora_strategy = spec.get("strategy") or strategy
         lines.append(f"  {i}. {lora_name}")
