@@ -2,7 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.metadata_manager import calculate_civitai_hashes, merge_custom_metadata
+from core.metadata_manager import (
+    calculate_civitai_hashes,
+    merge_custom_metadata,
+    normalize_quantization_bits,
+    update_metadata_preview,
+)
 from core.safetensors_engine import write_quant_recipe
 
 
@@ -55,6 +60,20 @@ class QuantMetadataTests(unittest.TestCase):
             self.assertIn("Format:            FP8", text)
             self.assertIn("Metadata injected: yes", text)
             self.assertIn("AutoV3:            DDDDDDDDDDDD", text)
+
+    def test_quantization_bits_labels_match_actual_quant_target(self):
+        self.assertEqual(
+            normalize_quantization_bits("INT8 Row-wise ConvRot Runtime"),
+            "INT8 Row-wise ConvRot (runtime)",
+        )
+        self.assertEqual(
+            normalize_quantization_bits("INT8 Row-wise ConvRot"),
+            "INT8 Tensor-wise",
+        )
+
+    def test_metadata_preview_uses_target_quantization_placeholder(self):
+        preview = update_metadata_preview("preview-model", "WAN 2.2")
+        self.assertIn('"quantization.bits": "{target_quantization}"', preview)
 
 
 if __name__ == "__main__":

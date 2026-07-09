@@ -64,12 +64,31 @@ def _civitai_hash_metadata(file_path):
     hashes = calculate_civitai_hashes(file_path)
     return {f"civitai.hash.{name}": value for name, value in hashes.items()}
 
+
+def normalize_quantization_bits(bits):
+    """Return the canonical metadata label for a selected quant target."""
+    labels = {
+        "FP8": "FP8",
+        "NVFP4": "NVFP4",
+        "MXFP8": "MXFP8",
+        "Hybrid MXFP8": "Hybrid MXFP8",
+        "INT8 Tensor-wise": "INT8 Tensor-wise",
+        "INT8 Row-wise ConvRot Runtime": "INT8 Row-wise ConvRot (runtime)",
+        # Stale sessions may still send the old value. It intentionally maps
+        # to the non-ConvRot command path in safetensors_engine, so metadata
+        # must describe the real output instead of the stale UI label.
+        "INT8 Row-wise ConvRot": "INT8 Tensor-wise",
+    }
+    return labels.get(bits, bits)
+
+
 def get_current_meta(model_name, architecture, bits="FP8"):
     """
     Standard asset-based metadata template (Fallback logic).
     Used if no specialized JSON dump is found in the core folder.
     """
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    bits = normalize_quantization_bits(bits)
     
     # Get architecture-specific fields (fallback to WAN 2.2 if not found)
     base_config = MODEL_METADATA_CONFIGS.get(architecture, MODEL_METADATA_CONFIGS.get("WAN 2.2"))
@@ -95,6 +114,7 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8", 
     PRIORITY 1: Loads the FULL content of {Arch}_metadata.json from /core.
     PRIORITY 2: Falls back to asset-based template.
     """
+    bits = normalize_quantization_bits(bits)
     core_dir = os.path.dirname(os.path.abspath(__file__))
     
     # Cleaning logic: "LTX-2.3" -> "LTX23", "WAN 2.2" -> "WAN22"
@@ -134,8 +154,15 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8", 
 
 def update_metadata_preview(name, architecture="WAN 2.2", is_full=False):
     """Called by UI to generate the preview for the Gradio JSON box."""
-    # We pass a placeholder path so SHA256 returns the "WILL BE CALCULATED" string
-    meta = get_specialized_meta(architecture, name, "PREVIEW_MODE", is_full=is_full)
+    # Preview is architecture-only; the real quant target is selected later by
+    # the quantization job, so show a placeholder instead of a misleading FP8.
+    meta = get_specialized_meta(
+        architecture,
+        name,
+        "PREVIEW_MODE",
+        bits="{target_quantization}",
+        is_full=is_full,
+    )
     return json.dumps(meta, indent=4)
 
 # Keys that MUST be present for a functional LTX 2.3 checkpoint.
