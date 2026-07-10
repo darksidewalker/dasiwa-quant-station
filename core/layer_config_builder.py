@@ -128,19 +128,19 @@ PRESERVE_PATTERNS = {
     ],
     "Krea 2": [
         # Empirically verified against bf16/fp8/int8/nvfp4 ComfyUI exports.
-        # Only these 15 layers remain at source precision across ALL formats.
-        # Verified May 2026 against krea2TurboOfficialComfy checkpoints.
-        # NOTE: audit strips .weight suffix before matching, so patterns
-        # must match WITHOUT trailing dot or dollar sign.
-        r"^first",                            # 2 layers: first.bias, first.weight
-        r"^last\.linear",                     # 2 layers: last.linear.bias/weight
-        r"^tproj",                            # 2 layers: tproj.1.bias/weight
-        r"^tmlp",                             # 4 layers: tmlp.0/2.bias/weight
-        r"^txtmlp",                           # 4 layers: txtmlp.1/3.bias/weight
-        r"^txtfusion\.projector",             # 1 layer: txtfusion.projector.weight
+        # These patterns are intentionally fullmatch-safe: convert_to_quant's
+        # layer-config matcher may require the regex to cover the whole key.
+        # Keep suffix-tolerant forms so both raw keys (first.weight) and audit
+        # stems (first) match.
+        r"^first($|\..*)",                    # 2 layers: first.bias, first.weight
+        r"^last\.linear($|\..*)",             # 2 layers: last.linear.bias/weight
+        r"^tproj($|\..*)",                    # 2 layers: tproj.1.bias/weight
+        r"^tmlp($|\..*)",                     # 4 layers: tmlp.0/2.bias/weight
+        r"^txtmlp($|\..*)",                   # 4 layers: txtmlp.1/3.bias/weight
+        r"^txtfusion\.projector($|\..*)",     # 1 layer: txtfusion.projector.weight
         # Real model also contains these sub-blocks (not in ComfyUI exports)
-        r"^txtfusion\.layerwise_blocks",      # 16 layers (same attn/mlp structure)
-        r"^txtfusion\.refiner_blocks",        # 16 layers (same attn/mlp structure)
+        r"^txtfusion\.layerwise_blocks($|\..*)",  # same attn/mlp structure
+        r"^txtfusion\.refiner_blocks($|\..*)",    # same attn/mlp structure
     ],
 }
 
@@ -168,10 +168,10 @@ RESCUE_PATTERNS = {
         r"\.ffn\.2$",
     ],
     "Krea 2": [
-        # Audit strips .weight suffix before matching (pattern_audit.py:86),
-        # so patterns here must match WITHOUT the trailing .weight.
-        r"^blocks\.\d+\.attn\.(wq|wk|wv|wo|gate)$",
-        r"^blocks\.\d+\.mlp\.(gate|up|down)$",
+        # convert_to_quant matches raw tensor keys including .weight/.bias;
+        # pattern_audit strips .weight first. Match both forms.
+        r"^blocks\.\d+\.attn\.(wq|wk|wv|wo|gate)($|\.(weight|bias))$",
+        r"^blocks\.\d+\.mlp\.(gate|up|down)($|\.(weight|bias))$",
     ],
 }
 
