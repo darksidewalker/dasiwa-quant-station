@@ -257,6 +257,15 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         if fmt in FLAG_MAP:
             cmd.extend(FLAG_MAP[fmt])
 
+        # convert_to_quant's dedicated NVFP4/MXFP8 CLI paths currently do
+        # not apply --layer-config.  Force the unified mixed-format path when
+        # we have explicit per-layer rules so Krea 2 structural tensors stay
+        # preserved and rescue layers can be promoted to FP8.
+        if layer_config_path and fmt == "NVFP4":
+            cmd.extend(["--custom-type", "nvfp4"])
+        elif layer_config_path and fmt == "MXFP8":
+            cmd.extend(["--custom-type", "mxfp8"])
+
         if fmt == "INT8 Row-wise ConvRot Runtime":
             log_acc += (
                 "NOTE: INT8 Row-wise ConvRot requires a runtime that reads "
