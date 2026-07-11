@@ -29,7 +29,7 @@ Design:
     Layers that are sensitive under lower-bit formats but do not need to be
     BF16/FP16 when the base format is already FP8.
       - Base = float8_e4m3fn (FP8): no override, use the FP8 base
-      - Base = nvfp4: mark as {"format":"float8_e4m3fn"} -> bump to FP8
+      - Base = nvfp4: for architectures with rescue patterns, bump to FP8
       - Base = int8_*: no rescue (all transformer weights stay INT8)
 """
 import os
@@ -138,9 +138,8 @@ PRESERVE_PATTERNS = {
         r"^tmlp($|\..*)",                     # 4 layers: tmlp.0/2.bias/weight
         r"^txtmlp($|\..*)",                   # 4 layers: txtmlp.1/3.bias/weight
         r"^txtfusion\.projector($|\..*)",     # 1 layer: txtfusion.projector.weight
-        # Real model also contains these sub-blocks (not in ComfyUI exports)
-        r"^txtfusion\.layerwise_blocks($|\..*)",  # same attn/mlp structure
-        r"^txtfusion\.refiner_blocks($|\..*)",    # same attn/mlp structure
+        r"^.*(^|\.)qknorm\.[qk]norm\.scale$", # attention Q/K norm scales
+        r"^.*(^|\.)(pre|post)norm\.scale$",   # transformer norm scales
     ],
 }
 
@@ -167,12 +166,7 @@ RESCUE_PATTERNS = {
         # FFN second linear (down projection)
         r"\.ffn\.2$",
     ],
-    "Krea 2": [
-        # convert_to_quant matches raw tensor keys including .weight/.bias;
-        # pattern_audit strips .weight first. Match both forms.
-        r"^blocks\.\d+\.attn\.(wq|wk|wv|wo|gate)($|\.(weight|bias))$",
-        r"^blocks\.\d+\.mlp\.(gate|up|down)($|\.(weight|bias))$",
-    ],
+    "Krea 2": [],
 }
 
 def build_layer_config_dict(model_type, base_format_ui_label):
@@ -217,7 +211,10 @@ def build_layer_config_dict(model_type, base_format_ui_label):
     }
 
     # Rescue-layer behavior depends on base format.
-    # NVFP4: rescue sensitive layers to FP8 (INT8 is too lossy for them).
+    # NVFP4: rescue sensitive layers to FP8 when an architecture defines
+    # rescue patterns. Krea 2 intentionally has no rescue list: the working
+    # NVFP4 recipe quantizes transformer attn/MLP weights to NVFP4 and only
+    # preserves structural/normalization tensors.
     # INT8 (tensor-wise and ConvRot): do NOT rescue. Winnougan's working
     # int8tensormixed model keeps ALL transformer weights (attention + FFN)
     # as INT8 — rescuing to FP8 breaks compatibility with ComfyUI-INT8-Fast.
@@ -226,7 +223,7 @@ def build_layer_config_dict(model_type, base_format_ui_label):
     elif base_fmt == "nvfp4":
         for pat in rescue_patterns:
             config[pat] = {"format": "float8_e4m3fn", "scaling_mode": "tensor"}
-        rescue_action = "rescue to float8_e4m3fn"
+        rescue_action = "rescue to float8_e4m3fn" if rescue_patterns else "no rescue (all eligible weights NVFP4)"
     elif base_fmt == "int8_tensorwise":
         # INT8 tensor-wise: no rescue, all transformer weights stay INT8.
         rescue_action = "no rescue (all INT8)"

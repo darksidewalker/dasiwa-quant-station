@@ -25,7 +25,10 @@ class LayerConfigBuilderTests(unittest.TestCase):
             "tmlp.0.weight",
             "txtmlp.1.weight",
             "txtfusion.projector.weight",
-            "txtfusion.layerwise_blocks.0.attn.wq.weight",
+            "blocks.0.attn.qknorm.qnorm.scale",
+            "blocks.0.prenorm.scale",
+            "txtfusion.layerwise_blocks.0.attn.qknorm.qnorm.scale",
+            "txtfusion.layerwise_blocks.0.prenorm.scale",
         ):
             self.assertEqual(action_for(key), {"skip": True}, key)
 
@@ -38,12 +41,11 @@ class LayerConfigBuilderTests(unittest.TestCase):
             "blocks.0.mlp.gate.weight",
             "blocks.0.mlp.up.weight",
             "blocks.0.mlp.down.weight",
+            "txtfusion.layerwise_blocks.0.attn.wq.weight",
+            "txtfusion.layerwise_blocks.0.mlp.up.weight",
+            "txtfusion.refiner_blocks.0.attn.wq.weight",
         ):
-            self.assertEqual(
-                action_for(key),
-                {"format": "float8_e4m3fn", "scaling_mode": "tensor"},
-                key,
-            )
+            self.assertEqual(action_for(key), {"format": "nvfp4"}, key)
 
 
 if __name__ == "__main__":
