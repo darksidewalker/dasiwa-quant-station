@@ -93,38 +93,38 @@ PRESERVE_PATTERNS = {
         # Catches: adaln_single, audio_adaln_single, audio_prompt_adaln_single,
         # prompt_adaln_single, and all av_ca_*_adaln_single (gate/scale_shift
         # variants for the audio-video cross-attention modules).
-        r"adaln_single\.",
+        r"^.*(^|\.)[^.]*adaln_single\..*",
         # All connector blocks (audio + video)
-        r"(audio|video)_embeddings_connector\.",
+        r"^.*(^|\.)(audio|video)_embeddings_connector\..*",
         # Caption / patchify / proj_out / scale_shift_table per lcpp.patch
-        r"(^|\.)caption_projection\.",
-        r"(^|\.)patchify_proj($|\.)",
-        r"(^|\.)proj_out($|\.)",
+        r"^.*(^|\.)caption_projection\..*",
+        r"^.*(^|\.)patchify_proj($|\..*)",
+        r"^.*(^|\.)proj_out($|\..*)",
         # Audio-specific patchify and proj_out (verified via author's
         # reference FP8 file - they preserve these at BF16).
-        r"(^|\.)audio_patchify_proj($|\.)",
-        r"(^|\.)audio_proj_out($|\.)",
-        r"scale_shift_table",
+        r"^.*(^|\.)audio_patchify_proj($|\..*)",
+        r"^.*(^|\.)audio_proj_out($|\..*)",
+        r"^.*scale_shift_table.*",
         # Gate logits for gated attention (apply_gated_attention=true in
         # LTX23 config). Small tables that determine attention routing -
         # corrupting these changes which tokens get attended to.
-        r"\.to_gate_logits$",
+        r"^.*\.to_gate_logits($|\..*)",
         # RMS norm scales on Q and K projections (qk_norm: rms_norm in
         # LTX23 config). 1D tensors so already auto-skipped by --ltxv2,
         # but the pattern makes audit/comparison reports accurate.
-        r"\.[qk]_norm$",
+        r"^.*\.[qk]_norm($|\..*)",
     ],
     "WAN 2.2": [
     # Patterns use (^|\.) to match both naked keys and keys still carrying
     # the model.diffusion_model. prefix, depending on what convert_to_quant
     # passes to the layer config matcher.
-    r"(^|\.)modulation($|\.)",
-    r"(^|\.)patch_embedding\.",
-    r"(^|\.)text_embedding\.",
-    r"(^|\.)time_projection\.",
-    r"(^|\.)time_embedding\.",
-    r"(^|\.)img_emb\.",
-    r"(^|\.)head\.",
+    r"^.*(^|\.)modulation($|\..*)",
+    r"^.*(^|\.)patch_embedding($|\..*)",
+    r"^.*(^|\.)text_embedding($|\..*)",
+    r"^.*(^|\.)time_projection($|\..*)",
+    r"^.*(^|\.)time_embedding($|\..*)",
+    r"^.*(^|\.)img_emb($|\..*)",
+    r"^.*(^|\.)head($|\..*)",
     ],
     "Krea 2": [
         # Empirically verified against bf16/fp8/int8/nvfp4 ComfyUI exports.
@@ -132,12 +132,16 @@ PRESERVE_PATTERNS = {
         # layer-config matcher may require the regex to cover the whole key.
         # Keep suffix-tolerant forms so both raw keys (first.weight) and audit
         # stems (first) match.
-        r"^first($|\..*)",                    # 2 layers: first.bias, first.weight
-        r"^last\.linear($|\..*)",             # 2 layers: last.linear.bias/weight
-        r"^tproj($|\..*)",                    # 2 layers: tproj.1.bias/weight
-        r"^tmlp($|\..*)",                     # 4 layers: tmlp.0/2.bias/weight
-        r"^txtmlp($|\..*)",                   # 4 layers: txtmlp.1/3.bias/weight
-        r"^txtfusion\.projector($|\..*)",     # 1 layer: txtfusion.projector.weight
+        # Match both bare Krea 2 keys and keys that still carry a wrapper
+        # prefix (model.diffusion_model.*). Some conversion paths pass raw
+        # safetensors keys through unchanged; missing the prefixed form packs
+        # structural tensors and produces broken NVFP4 outputs.
+        r"^(.*\.)?first($|\..*)",                    # 2 layers: first.bias, first.weight
+        r"^(.*\.)?last\.linear($|\..*)",             # 2 layers: last.linear.bias/weight
+        r"^(.*\.)?tproj($|\..*)",                    # 2 layers: tproj.1.bias/weight
+        r"^(.*\.)?tmlp($|\..*)",                     # 4 layers: tmlp.0/2.bias/weight
+        r"^(.*\.)?txtmlp($|\..*)",                   # 4 layers: txtmlp.1/3.bias/weight
+        r"^(.*\.)?txtfusion\.projector($|\..*)",     # 1 layer: txtfusion.projector.weight
         r"^.*(^|\.)qknorm\.[qk]norm\.scale$", # attention Q/K norm scales
         r"^.*(^|\.)(pre|post)norm\.scale$",   # transformer norm scales
     ],
@@ -149,25 +153,33 @@ PRESERVE_PATTERNS = {
 # BF16/FP16; official LTX-2 FP8 cast policy quantizes these transformer
 # linears rather than preserving them wholesale.
 RESCUE_PATTERNS = {
-    "LTX-2.3": [
-        # Official LTX-2 FP8 cast targets these transformer linears. For
-        # lower-bit bases, rescue them to FP8 instead of BF16.
-        # Keys end in .weight/.bias so the anchor must account for that suffix.
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_[qkv]\.(weight|bias)$",
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\..*\.to_out\.\d+\.(weight|bias)$",
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.0(\.proj)?\.(weight|bias)$",
-        r"^(?!.*_embeddings_connector).*\.transformer_blocks\.\d+\.(audio_)?ff\.net\.2\.(weight|bias)$",
-    ],
+    # Lightricks' official LTX-2.3 NVFP4 checkpoint is QAD-style, not an
+    # FP8-rescue mixed quant: transformer blocks 2..45 are packed NVFP4 while
+    # blocks 0, 1, 46, and 47 remain BF16. Keep LTX rescue empty and add the
+    # official block-range preserve below only for the NVFP4 base format.
+    "LTX-2.3": [],
     "WAN 2.2": [
-        # WAN uses split q/k/v/o (never fused). to_v in self + cross attn.
-        # WAN's preserve table doesn't overlap with these patterns.
-        r"\.self_attn\.v$",
-        r"\.cross_attn\.v$",
-        # FFN second linear (down projection)
-        r"\.ffn\.2$",
+        # WAN 2.2 I2V/T2V 14B MoE high/low checkpoints use split q/k/v/o
+        # projections. Public NVFP4-mixed 14B I2V checkpoints keep attn.v and
+        # ffn.2 at FP8 to reduce ghosting/quality loss while leaving q/k/o and
+        # ffn.0 packed as NVFP4. The optional suffix keeps these patterns valid
+        # in both quantization (raw keys ending .weight/.bias) and GGUF/audit
+        # contexts that strip the .weight suffix before matching.
+        r"(^|.*\.)self_attn\.v(\.(weight|bias))?$",
+        r"(^|.*\.)cross_attn\.v(\.(weight|bias))?$",
+        r"(^|.*\.)ffn\.2(\.(weight|bias))?$",
     ],
     "Krea 2": [],
 }
+
+
+# Format-specific preserves for LTX-2.3 NVFP4. These mirror the public
+# Lightricks/LTX-2.3-nvfp4 header: first two and last two transformer blocks
+# are BF16, while the middle blocks are NVFP4/U8. Kept separate from
+# PRESERVE_PATTERNS so FP8/INT8/GGUF policies are not changed accidentally.
+LTX23_NVFP4_OFFICIAL_PRESERVE_PATTERNS = [
+    r"^.*\.transformer_blocks\.(0|1|46|47)($|\..*)",
+]
 
 def build_layer_config_dict(model_type, base_format_ui_label):
     """
@@ -221,6 +233,8 @@ def build_layer_config_dict(model_type, base_format_ui_label):
     if base_fmt == "float8_e4m3fn":
         rescue_action = "base FP8 (no extra override)"
     elif base_fmt == "nvfp4":
+        if model_type == "LTX-2.3":
+            preserve_patterns.extend(LTX23_NVFP4_OFFICIAL_PRESERVE_PATTERNS)
         for pat in rescue_patterns:
             config[pat] = {"format": "float8_e4m3fn", "scaling_mode": "tensor"}
         rescue_action = "rescue to float8_e4m3fn" if rescue_patterns else "no rescue (all eligible weights NVFP4)"
