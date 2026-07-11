@@ -29,7 +29,7 @@ class _FakeProcess:
 
 
 class SafetensorsEngineCommandTests(unittest.TestCase):
-    def test_krea2_nvfp4_uses_dedicated_nvfp4_path_not_custom_type(self):
+    def _capture_commands(self, architecture, formats=("NVFP4",), strategy="Simple"):
         commands = []
 
         def fake_popen(cmd, *args, **kwargs):
@@ -49,13 +49,18 @@ class SafetensorsEngineCommandTests(unittest.TestCase):
                 list(run_safe_conversion(
                     tmpdir,
                     source,
-                    ["NVFP4"],
-                    "KreaTest",
-                    "Krea 2",
+                    list(formats),
+                    "CommandTest",
+                    architecture,
                     "prodigy",
-                    "Simple",
+                    strategy,
                     "",
                 ))
+
+        return commands
+
+    def test_krea2_nvfp4_uses_dedicated_nvfp4_path_not_custom_type(self):
+        commands = self._capture_commands("Krea 2")
 
         self.assertEqual(len(commands), 1)
         cmd = commands[0]
@@ -64,6 +69,55 @@ class SafetensorsEngineCommandTests(unittest.TestCase):
         self.assertIn("--layer-config", cmd)
         self.assertNotIn("--custom-type", cmd)
         self.assertNotIn("nvfp4", cmd[cmd.index("--nvfp4") + 1:cmd.index("--krea2")])
+
+    def test_all_nvfp4_architectures_use_dedicated_nvfp4_path(self):
+        expected_flags = {
+            "Not set": None,
+            "WAN 2.2": "--wan",
+            "LTX-2.3": "--ltxv2",
+            "Krea 2": "--krea2",
+            "Flux.2": "--flux2",
+            "Hunyuan Video": "--hunyuan",
+            "Qwen Image": "--qwen",
+            "Z-Image": "--zimage",
+            "Z-Image Refiner": "--zimage_refiner",
+            "Anima": "--anima",
+            "Radiance": "--radiance",
+            "Distillation Large": "--distillation_large",
+            "Distillation Small": "--distillation_small",
+            "NeRF Large": "--nerf_large",
+            "NeRF Small": "--nerf_small",
+            "T5-XXL": "--t5xxl",
+            "Qwen 3.5": "--qwen35",
+            "Mistral": "--mistral",
+            "Visual": "--visual",
+            "Generic Text": "--generic_text",
+        }
+
+        for architecture, expected_flag in expected_flags.items():
+            with self.subTest(architecture=architecture):
+                commands = self._capture_commands(architecture)
+                self.assertEqual(len(commands), 1)
+                cmd = commands[0]
+                self.assertIn("--nvfp4", cmd)
+                self.assertIn("--comfy_quant", cmd)
+                self.assertNotIn("--custom-type", cmd)
+                if expected_flag is None:
+                    self.assertNotIn("--layer-config", cmd)
+                else:
+                    self.assertIn(expected_flag, cmd)
+
+    def test_optimizer_driven_nvfp4_also_uses_dedicated_path(self):
+        for architecture in ("WAN 2.2", "LTX-2.3", "Krea 2", "Flux.2"):
+            with self.subTest(architecture=architecture):
+                commands = self._capture_commands(architecture, strategy="Optimizer-driven")
+                self.assertEqual(len(commands), 1)
+                cmd = commands[0]
+                self.assertIn("--nvfp4", cmd)
+                self.assertIn("--comfy_quant", cmd)
+                self.assertNotIn("--custom-type", cmd)
+                self.assertIn("--optimizer", cmd)
+                self.assertNotIn("--simple", cmd)
 
 
 if __name__ == "__main__":
