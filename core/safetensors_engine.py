@@ -257,13 +257,16 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         if fmt in FLAG_MAP:
             cmd.extend(FLAG_MAP[fmt])
 
-        # convert_to_quant's dedicated NVFP4/MXFP8 CLI paths currently do
-        # not apply --layer-config.  Force the unified mixed-format path when
-        # we have explicit per-layer rules so Krea 2 structural tensors stay
-        # preserved and rescue layers can be promoted to FP8.
-        if layer_config_path and fmt == "NVFP4":
-            cmd.extend(["--custom-type", "nvfp4"])
-        elif layer_config_path and fmt == "MXFP8":
+        # convert_to_quant has two NVFP4 implementations:
+        #   1) the dedicated --nvfp4 path writes real Comfy/NVIDIA NVFP4:
+        #      *.weight=U8 packed, *.weight_scale=F8 block scales,
+        #      *.weight_scale_2=F32 tensor scale.
+        #   2) the unified mixed path (--nvfp4 --custom-type nvfp4) currently
+        #      writes FP8 weights plus scalar weight_scale and marks them nvfp4,
+        #      which ComfyUI rejects with dim/view errors.
+        # Never force the unified path for NVFP4. Architecture flags such as
+        # --krea2 provide the high-precision preserves for the dedicated path.
+        if layer_config_path and fmt == "MXFP8":
             cmd.extend(["--custom-type", "mxfp8"])
 
         if fmt == "INT8 Row-wise ConvRot Runtime":
@@ -563,6 +566,13 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             guard_errors.append("missing strategy flag (--simple/--optimizer)")
         if "--optimizer" in cmd and "--simple" in cmd:
             guard_errors.append("--optimizer combined with --simple")
+
+        if fmt == "NVFP4" and "--custom-type" in cmd:
+            guard_errors.append(
+                "NVFP4 must use convert_to_quant's dedicated --nvfp4 path; "
+                "--custom-type routes to the unified FP8 path and produces "
+                "FP8-shaped tensors mislabeled as nvfp4"
+            )
 
         if guard_errors:
             log_acc += f"❌ FATAL command guard for {fmt}:\n"
