@@ -374,7 +374,7 @@ function compactFormatLabel(label) {
     .replace("Safetensors: ", "")
     .replace("GGUF ", "")
     .replace("INT8 Row-wise ConvRot (runtime)", "INT8 ConvRot")
-    .replace("INT4 ConvRot (LTX-2.3 experimental)", "INT4 ConvRot")
+    .replace("INT4 ConvRot (LTX/WAN/Krea experimental)", "INT4 ConvRot")
     .replace("INT8 Tensor-wise", "INT8 Tensor")
     .replace("GGUF ", "");
 }
@@ -386,7 +386,7 @@ const FORMAT_TITLES = {
   "Hybrid MXFP8":   "Hybrid MXFP8 — Combines block-norm and per-channel scaling for improved accuracy over pure MXFP8.",
   "INT8 Tensor-wise": "INT8 (Tensor-wise) — Per-tensor scale quantization to INT8. Fastest inference, slightly lower quality than FP8.",
   "INT8 Row-wise ConvRot Runtime": "INT8 ConvRot (Row-wise) — Per-row scaling with Hadamard rotation at runtime. Best INT8 fidelity; requires ConvRot support in the loader (e.g., ComfyUI).",
-  "INT4 ConvRot Runtime": "INT4 ConvRot — Experimental LTX-2.3-only ComfyUI format. Requires a current ComfyUI ConvRot runtime and an Ampere-or-newer NVIDIA GPU. Uses ConvRot group 256 and INT4 group 64.",
+  "INT4 ConvRot Runtime": "INT4 ConvRot — Experimental LTX-2.3, WAN 2.2 MoE High/Low, and Krea 2 ComfyUI format. Requires a current ComfyUI ConvRot runtime and an Ampere-or-newer NVIDIA GPU. Uses ConvRot group 256 and INT4 group 64.",
   "GGUF_F32":       "GGUF F32 — Full FP32 precision stored in GGUF format. Largest file size, maximum compatibility.",
   "GGUF_BF16":      "GGUF BF16 — Bfloat16 quantization (one bit less than FP16). Negligible quality loss vs full FP16; good for modern GPUs.",
   "GGUF_F16":       "GGUF F16 — Float16. Good compatibility across GGUF-based runners like llama.cpp, Ollama, etc.",

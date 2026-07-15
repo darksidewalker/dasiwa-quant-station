@@ -150,7 +150,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			{"label": "Hybrid MXFP8", "value": "Hybrid MXFP8"},
 			{"label": "INT8 Tensor-wise", "value": "INT8 Tensor-wise"},
 			{"label": "INT8 Row-wise ConvRot (runtime)", "value": "INT8 Row-wise ConvRot Runtime"},
-			{"label": "INT4 ConvRot (LTX-2.3 experimental)", "value": "INT4 ConvRot Runtime"},
+			{"label": "INT4 ConvRot (LTX/WAN/Krea experimental)", "value": "INT4 ConvRot Runtime"},
 			{"label": "GGUF F32", "value": "GGUF_F32"},
 			{"label": "GGUF BF16", "value": "GGUF_BF16"},
 			{"label": "GGUF F16", "value": "GGUF_F16"},

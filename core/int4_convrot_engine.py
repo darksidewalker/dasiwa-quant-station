@@ -1,7 +1,8 @@
-"""Conservative streaming INT4 ConvRot conversion for LTX-2.3."""
+"""Conservative streaming INT4 ConvRot conversion for supported ComfyUI architectures."""
 
 import json
 import os
+import re
 import shutil
 import struct
 import tempfile
@@ -10,6 +11,7 @@ from typing import Any, Optional
 import torch
 from safetensors import safe_open
 
+from core.layer_config_builder import BAKED_VAE_PATTERNS, PRESERVE_PATTERNS
 from core.metadata_manager import calculate_civitai_hashes, inject_metadata, merge_custom_metadata
 from core.safetensors_engine import write_quant_recipe
 from utils.arch_detector import verify_architecture_match
@@ -26,14 +28,24 @@ _DTYPE_NAMES = {
 }
 _DTYPE_SIZES = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "I64": 8,
                 "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1}
+_PRESERVE_RX = {
+    arch: [re.compile(pattern) for pattern in PRESERVE_PATTERNS[arch] + BAKED_VAE_PATTERNS]
+    for arch in ("WAN 2.2", "Krea 2")
+}
 
 
 def validate_int4_convrot_request(architecture: str, strategy: str) -> Optional[str]:
-    if architecture != "LTX-2.3":
-        return "INT4 ConvRot Phase 1 supports only LTX-2.3."
+    if architecture not in {"LTX-2.3", "WAN 2.2", "Krea 2"}:
+        return "INT4 ConvRot supports only LTX-2.3, WAN 2.2, and Krea 2."
     if strategy != "Simple":
         return "INT4 ConvRot requires the deterministic Simple strategy."
     return None
+
+
+def is_preserved_key(architecture: str, key: str) -> bool:
+    if architecture == "LTX-2.3":
+        return is_ltx23_preserved_key(key)
+    return any(pattern.search(key) for pattern in _PRESERVE_RX[architecture])
 
 
 def build_quant_layer_metadata() -> dict[str, int | str]:
@@ -127,7 +139,7 @@ def run_int4_convrot_conversion(output_dir: str, source_path: str, model_name: s
             for index, key in enumerate(keys, start=1):
                 total += 1
                 tensor = source.get_tensor(key)
-                eligible = not is_ltx23_preserved_key(key) and validate_quantizable_tensor(key, tensor) is None
+                eligible = not is_preserved_key(architecture, key) and validate_quantizable_tensor(key, tensor) is None
                 if eligible:
                     qdata, scale = quantize_weight(tensor)
                     spec, offset = _tensor_spec(qdata, offset)
@@ -162,7 +174,7 @@ def run_int4_convrot_conversion(output_dir: str, source_path: str, model_name: s
         metadata["modelspec.hash_sha256"] = f"0x{hashes['SHA256'].lower()}"
         injected, metadata_msg = inject_metadata(output_path, metadata)
         recipe = write_quant_recipe(output_path, source_path, model_name, architecture, "INT4 ConvRot",
-                                    strategy, "n/a", False, False, is_full_checkpoint, "LTX-2.3 preserve policy",
+                                    strategy, "n/a", False, False, is_full_checkpoint, f"{architecture} preserve policy",
                                     ["comfy-kitchen", "TensorCoreConvRotW4A4Layout"], injected, metadata_msg, hashes)
         yield (f"{arch_msg}\nINT4 ConvRot: {quantized} quantized / {preserved} preserved / {total} total tensors.\n"
                f"Output: {output_path}\nRecipe: {recipe}\n"), "INT4 ConvRot complete"

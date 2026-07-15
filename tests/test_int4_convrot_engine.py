@@ -13,6 +13,7 @@ from core.int4_convrot_engine import (
     CONVROT_GROUP_SIZE,
     build_quant_layer_metadata,
     validate_int4_convrot_request,
+    is_preserved_key,
 )
 
 
@@ -23,9 +24,15 @@ class Int4ConvRotEngineTests(unittest.TestCase):
             None,
         )
 
-    def test_only_ltx23_simple_request_is_accepted_in_phase_one(self):
-        self.assertIn("LTX-2.3", validate_int4_convrot_request("WAN 2.2", "Simple"))
+    def test_only_simple_strategy_is_accepted(self):
         self.assertIn("Simple", validate_int4_convrot_request("LTX-2.3", "Optimizer-driven"))
+
+    def test_wan22_and_krea2_simple_requests_and_preserve_policies_are_accepted(self):
+        self.assertIsNone(validate_int4_convrot_request("WAN 2.2", "Simple"))
+        self.assertIsNone(validate_int4_convrot_request("Krea 2", "Simple"))
+        self.assertTrue(is_preserved_key("WAN 2.2", "time_embedding.0.weight"))
+        self.assertTrue(is_preserved_key("Krea 2", "first.weight"))
+        self.assertFalse(is_preserved_key("Krea 2", "blocks.0.attn.wq.weight"))
 
     def test_quant_metadata_describes_the_comfyui_convrot_layout(self):
         self.assertEqual(
