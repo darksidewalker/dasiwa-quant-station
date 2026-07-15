@@ -74,6 +74,7 @@ def normalize_quantization_bits(bits):
         "Hybrid MXFP8": "Hybrid MXFP8",
         "INT8 Tensor-wise": "INT8 Tensor-wise",
         "INT8 Row-wise ConvRot Runtime": "INT8 Row-wise ConvRot (runtime)",
+        "INT4 ConvRot Runtime": "INT4 ConvRot",
         # Stale sessions may still send the old value. It intentionally maps
         # to the non-ConvRot command path in safetensors_engine, so metadata
         # must describe the real output instead of the stale UI label.

@@ -27,6 +27,7 @@ from core.metadata_manager import (
     update_metadata_preview,
 )
 from core.lora_merge_engine import run_lora_merge
+from core.int4_convrot_engine import run_int4_convrot_conversion
 from core.safetensors_engine import run_safe_conversion
 from utils.arch_detector import inspect_checkpoint
 from utils.file_ops import ensure_dirs
@@ -207,6 +208,7 @@ def cmd_quantize(args):
             "INT8 Row-wise ConvRot",
         }
     ]
+    int4_convrot = "INT4 ConvRot Runtime" in formats
     gguf_fmts = [f for f in formats if f.startswith("GGUF_")]
     last_log = ""
 
@@ -231,6 +233,13 @@ def cmd_quantize(args):
             log_acc,
             low_vram=low_vram,
             is_full_checkpoint=is_full,
+            custom_metadata=custom_metadata,
+        ))
+        log_acc = last_log or log_acc
+
+    if int4_convrot:
+        stream(run_int4_convrot_conversion(
+            output_dir, source_path, model_name, model_type, strategy, is_full,
             custom_metadata=custom_metadata,
         ))
         log_acc = last_log or log_acc

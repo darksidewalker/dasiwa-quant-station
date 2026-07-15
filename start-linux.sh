@@ -100,8 +100,17 @@ uv pip install --refresh -r requirements.txt
 echo "💎 Installing FP Quantization Tools..."
 uv pip install --refresh git+https://github.com/silveroxides/convert_to_quant.git@main#egg=convert_to_quant --no-deps --force-reinstall
 
-echo "🍳 Installing Comfy Kitchen [CUBLAS]..."
-uv pip install --refresh "comfy-kitchen[cublas]"
+echo "🍳 Installing Comfy Kitchen [CUBLAS + INT4 ConvRot]..."
+# Pin a revision that exports TensorCoreConvRotW4A4Layout. The PyPI 0.1.0
+# package lacks this layout, while its package metadata can still resolve it
+# for unconstrained installs.
+uv pip install --python "$VENV_PATH/bin/python" --refresh --upgrade \
+    "comfy-kitchen[cublas] @ git+https://github.com/Comfy-Org/comfy-kitchen.git@911d47e6c355f31a1f66fe74ea64a1760fad581a"
+
+"$VENV_PATH/bin/python" - <<'PY'
+from comfy_kitchen.tensor import TensorCoreConvRotW4A4Layout
+print("✅ Comfy Kitchen INT4 ConvRot layout available:", TensorCoreConvRotW4A4Layout.__name__)
+PY
 
 # --- 4. LAUNCH ---
 export VIRTUAL_ENV="$VENV_PATH"
