@@ -122,7 +122,7 @@ function loadSettings() {
         state.loras = s.loras.map((l) => ({
           path: l.path || "",
           strength: l.strength ?? 0.65,
-          strategy: l.strategy || "Balanced",
+          strategy: l.strategy || defaultLoraStrategy(s.arch || "WAN 2.2"),
           enabled: l.enabled ?? true,
         }));
       }
@@ -794,13 +794,17 @@ function normalizeDroppedPath(value) {
   return path.startsWith("/") ? path : "";
 }
 
+function defaultLoraStrategy(architecture = state.architecture) {
+  return architecture === "LTX-2.3" ? "All" : "Balanced";
+}
+
 function selectLora(path) {
   const dir = path.substring(0, path.lastIndexOf("/"));
   if (dir) state.lastLoraDir = dir;
   if (state.pendingLoraSlot >= 0 && state.loras[state.pendingLoraSlot]) {
     state.loras[state.pendingLoraSlot].path = path;
   } else {
-    state.loras.push({path, strength: 0.65, strategy: "Balanced", enabled: true});
+    state.loras.push({path, strength: 0.65, strategy: defaultLoraStrategy(), enabled: true});
   }
   state.pendingLoraSlot = -1;
   renderLoras();
@@ -813,7 +817,7 @@ function addLoraPaths(paths) {
   const added = [];
   paths.forEach((path) => {
     if (!path || existing.has(path)) return;
-    state.loras.push({path, strength: 0.65, strategy: "Balanced", enabled: true});
+    state.loras.push({path, strength: 0.65, strategy: defaultLoraStrategy(), enabled: true});
     const dir = path.substring(0, path.lastIndexOf("/"));
     if (dir) state.lastLoraDir = dir;
     existing.add(path);
@@ -834,8 +838,8 @@ function renderLoras() {
     root.appendChild(empty);
     return;
   }
-  // Filter-based presets: each selects which tensor categories pass through (1.0) and excludes the rest (0.0).
-  const ltxStrategies = ["Balanced", "Motion", "Visuals", "Audio"];
+  // LTX mirrors its ComfyUI loader: all weights, video branch, or audio branch.
+  const ltxStrategies = ["All", "Video", "Audio"];
   const wan22Strategies = ["Balanced", "Motion", "Visuals"];
   const krea2Strategies = ["Balanced", "Style", "Content", "Detail"];
   const strategies = state.architecture === "Krea 2"
@@ -844,6 +848,7 @@ function renderLoras() {
       ? wan22Strategies
       : ltxStrategies;
   state.loras.forEach((lora, idx) => {
+    if (!strategies.includes(lora.strategy)) lora.strategy = defaultLoraStrategy();
     const row = document.createElement("div");
     row.className = "lora-row";
     row.innerHTML = `
@@ -965,7 +970,7 @@ async function startLoraMerge() {
           strength: Number(lora.strength) || 0,
           strategy: lora.strategy,
         })),
-        strategy: "Balanced",
+        strategy: defaultLoraStrategy(),
         architecture: state.architecture,
         global_strength: globalStrength,
         merge_device: $("lora-merge-device").value,

@@ -520,6 +520,16 @@ class LoraMergeEngineTests(unittest.TestCase):
                 torch.full((3, 4), 1.0),
             ))
 
+    def test_ltx23_all_strategy_merges_video_and_audio_weights(self):
+        from utils.ltx23_layer_profiles import strategy_multiplier
+
+        self.assertEqual(strategy_multiplier("All", "attn_qkv"), 1.0)
+        self.assertEqual(strategy_multiplier("All", "audio_attn"), 1.0)
+        self.assertEqual(strategy_multiplier("Video", "audio_attn"), 0.0)
+        self.assertEqual(strategy_multiplier("Audio", "attn_qkv"), 0.0)
+        self.assertEqual(strategy_multiplier("Video", "audio_to_video_attn"), 0.0)
+        self.assertEqual(strategy_multiplier("Audio", "audio_to_video_attn"), 1.0)
+
     # ---- WAN 2.2 tests ----
 
     def test_profiles_classify_wan22_keys(self):

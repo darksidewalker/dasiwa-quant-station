@@ -495,7 +495,11 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 		req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
 	}
 	if req.Strategy == "" {
-		req.Strategy = "Balanced"
+		if req.Architecture == "" || req.Architecture == "LTX-2.3" {
+			req.Strategy = "All"
+		} else {
+			req.Strategy = "Balanced"
+		}
 	}
 	if req.GlobalStrength == 0 {
 		req.GlobalStrength = 1

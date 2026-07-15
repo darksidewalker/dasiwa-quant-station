@@ -44,7 +44,9 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     base_path = os.path.realpath(os.path.expanduser(payload["base_path"]))
     output_path = os.path.realpath(os.path.expanduser(payload.get("output_path") or _default_output_path(payload)))
     loras = payload.get("loras") or []
-    strategy = payload.get("strategy") or "Balanced"
+    architecture = payload.get("architecture") or "LTX-2.3"
+    default_strategy = "All" if architecture == "LTX-2.3" else "Balanced"
+    strategy = payload.get("strategy") or default_strategy
     global_strength = float(payload.get("global_strength", 1.0))
     # Default to ComfyUI parity: live LoRA application does not renormalize
     # deltas by target/base tensor norms. Adaptive scaling is still available
@@ -53,7 +55,6 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     adaptive = bool(payload.get("adaptive", False))
     dry_run = bool(payload.get("dry_run", False))
     strict = bool(payload.get("strict_matching", True))
-    architecture = payload.get("architecture") or "LTX-2.3"
     merge_device = _normalize_merge_device(payload.get("merge_device"))
     cuda_device = payload.get("cuda_device") or "cuda:0"
     vram_headroom_mb = int(payload.get("vram_headroom_mb") or 1024)

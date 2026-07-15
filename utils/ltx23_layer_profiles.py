@@ -53,8 +53,8 @@ def classify_ltx23_key(key: str) -> str:
 # Each preset selects which tensor categories receive LoRA modifications (1.0)
 # and which are excluded from merging (0.0). No boosting — only selection.
 _STRATEGY_MULTIPLIERS = {
-    # Balanced: apply all non-preserved tensors uniformly.
-    "Balanced": {
+    # All: apply all non-preserved tensors uniformly, like ComfyUI's loader.
+    "All": {
         "attn_qkv": 1.0,
         "attn_out": 1.0,
         "ff_in": 1.0,
@@ -76,9 +76,9 @@ _STRATEGY_MULTIPLIERS = {
         "audio_attn_out": 1.0,
         "audio_ff_in": 1.0,
         "audio_ff_out": 1.0,
-        # Cross-modal bridges stay neutral (both directions) — LoRA won't modify them.
-        "audio_to_video_attn": 0.0,
-        "video_to_audio_attn": 0.0,
+        # ComfyUI's LTX loader routes every key containing "audio" here.
+        "audio_to_video_attn": 1.0,
+        "video_to_audio_attn": 1.0,
     },
     # Video-only: all non-audio tensors get merged; audio-specific ones excluded.
     "Video": {
@@ -86,9 +86,9 @@ _STRATEGY_MULTIPLIERS = {
         "attn_out": 1.0,
         "ff_in": 1.0,
         "ff_out": 1.0,
-        # Cross-modal bridges — video side gets full LoRA application.
-        "audio_to_video_attn": 1.0,
-        "video_to_audio_attn": 1.0,
+        # The ComfyUI-compatible audio split excludes cross-modal bridge keys.
+        "audio_to_video_attn": 0.0,
+        "video_to_audio_attn": 0.0,
         "caption_projection": 1.0,
         "patchify_or_output": 1.0,
         "norm": 1.0,
@@ -103,5 +103,9 @@ _STRATEGY_MULTIPLIERS = {
 
 
 def strategy_multiplier(strategy: str, category: str) -> float:
-    table = _STRATEGY_MULTIPLIERS.get(strategy) or _STRATEGY_MULTIPLIERS["Balanced"]
+    # Older merge recipes used the generic Balanced label. Preserve their
+    # all-weights behavior while exposing only LTX's branch-oriented types.
+    if strategy == "Balanced":
+        strategy = "All"
+    table = _STRATEGY_MULTIPLIERS.get(strategy) or _STRATEGY_MULTIPLIERS["All"]
     return table.get(category, table.get("other", 0.0))
