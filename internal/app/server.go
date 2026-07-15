@@ -652,24 +652,38 @@ func (s *Server) runLoraMergeJob(ctx context.Context, job *Job, req LoraMergeReq
 	job.setStatus("lora merge finished")
 }
 
+type updateStep struct {
+	name string
+	cmd  *exec.Cmd
+}
+
+func updateSteps(ctx context.Context, rootDir string) []updateStep {
+	steps := []updateStep{
+		{
+			name: "source update",
+			cmd:  exec.CommandContext(ctx, "git", "pull", "--ff-only"),
+		},
+		{
+			name: "setup",
+			cmd:  exec.CommandContext(ctx, "bash", filepath.Join(rootDir, "start-linux.sh"), "--setup-only"),
+		},
+		{
+			name: "build",
+			cmd:  exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(rootDir, "quantstation.next"), "./cmd/quantstation"),
+		},
+	}
+	for i := range steps {
+		steps[i].cmd.Dir = rootDir
+	}
+	return steps
+}
+
 func (s *Server) runUpdateJob(ctx context.Context, job *Job) {
 	defer close(job.Events)
 	job.setStatus("updating")
 	job.Emit(Event{Type: "status", Status: "updating"})
 
-	steps := []struct {
-		name string
-		cmd  *exec.Cmd
-	}{
-		{
-			name: "setup",
-			cmd:  exec.CommandContext(ctx, "bash", filepath.Join(s.rootDir, "start-linux.sh"), "--setup-only"),
-		},
-		{
-			name: "build",
-			cmd:  exec.CommandContext(ctx, "go", "build", "-o", filepath.Join(s.rootDir, "quantstation.next"), "./cmd/quantstation"),
-		},
-	}
+	steps := updateSteps(ctx, s.rootDir)
 
 	for _, step := range steps {
 		job.Emit(Event{Type: "log", Text: fmt.Sprintf("\n-- %s --\n", step.name)})
