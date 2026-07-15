@@ -78,24 +78,24 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 
 ### Support Matrix
 
-An architecture marked with (*) has locally verified preserve/rescue tables. Others rely on upstream `convert_to_quant` preset skip rules. GGUF always applies sensitivity maps for (*) architectures; Q1_0 is disabled.
+An architecture marked with 🔒 has locally verified preserve/rescue tables. Others rely on upstream `convert_to_quant` preset skip rules. GGUF always applies sensitivity maps for 🔒 architectures; Q1_0 is disabled.
 
 | Architecture | FP8 | NVFP4 | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
 |-------------|:---:|:-----:|:-----:|:------------:|:------------:|:----------------:|:---------------:|:----:|
-| WAN 2.2 (*) | + | + | + | + | + | + | + | + |
-| LTX-2.3 (*) | + | + | + | + | + | + | + | + |
-| Krea 2 (*) | + | + | + | + | + | + | + | + |
-| Flux.2 | + | + | + | + | - | + | + | + |
-| Hunyuan Video | + | + | + | + | - | + | + | + |
-| Qwen Image | + | + | + | + | - | + | + | + |
-| Z-Image | + | + | + | + | - | + | + | + |
-| Z-Image Refiner | + | + | + | + | - | + | + | + |
-| Anima | + | + | + | + | - | + | + | + |
-| Radiance | + | + | + | + | - | + | + | + |
-| Distillation Large | + | + | + | + | - | + | + | + |
-| Distillation Small | + | + | + | + | - | + | + | + |
-| NeRF Large | + | + | + | + | - | + | + | + |
-| NeRF Small | + | + | + | + | - | + | + | + |
+| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| Krea 2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| Flux.2 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Hunyuan Video | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Qwen Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image Refiner | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Anima | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Radiance | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 
 INT4 ConvRot requires Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas]. MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility.
 
