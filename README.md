@@ -11,7 +11,7 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, and Krea 2 style dif
 - **Modern local UI:** Go server with vanilla JS/CSS frontend at `http://127.0.0.1:7878`. Dark theme, responsive layout, no heavy frameworks.
 - **Safetensors quantization:** FP8, NVFP4, MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot (runtime) through `silveroxides/convert_to_quant`.
 - **GGUF conversion:** GGUF F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K through `ggufy` with sensitivity maps for video tensor preservation.
-- **LoRA merge:** Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2. Per-LoRA strategy (Balanced/Motion/Visuals/Audio or Balanced/Style/Content/Detail), per-LoRA strength, global strength scaling, dry-run mode, strict matching, adaptive mode, and shape-mismatch diagnostics.
+- **LoRA merge:** Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2. LTX-2.3 uses All/Video/Audio branch selection; WAN 2.2 and Krea 2 retain their architecture-specific strategies. Includes per-LoRA strength, global strength scaling, dry-run mode, strict matching, adaptive mode, and shape-mismatch diagnostics.
 - **Layer safety:** Verified WAN 2.2, LTX-2.3, and Krea 2 preserve/rescue tables. Baked VAE/text/audio companion preservation for full checkpoints.
 - **Automatic inspection:** Header-only architecture and full-checkpoint detection when selecting a safetensors file.
 - **Metadata tools:** Preview, read, inject, and copy modelspec metadata from the UI. SHA256 hash calculation.
@@ -91,7 +91,7 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 
 1. Switch to **LoRA** mode in the workflow selector.
 2. Select a base checkpoint.
-3. Add one or more LoRAs. Each LoRA gets its own strategy (Balanced/Motion/Visuals/Audio for LTX-2.3 and WAN 2.2, or Balanced/Style/Content/Detail for Krea 2) and strength multiplier.
+3. Add one or more LoRAs. Each LoRA gets its own type: All, Video, or Audio for LTX-2.3; Balanced, Motion, or Visuals for WAN 2.2; or Balanced, Style, Content, or Detail for Krea 2. Set its strength multiplier independently.
 4. Set global strength scaling, toggle adaptive mode or strict matching.
 5. Use **Dry run** to preview the merge recipe without writing output.
 6. Shape-mismatch diagnostics automatically detect LoRAs trained on models with different hidden dimensions and warn before merge.
@@ -99,12 +99,13 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 
 ### LoRA Merge Strategies
 
-Each strategy applies architecture-specific multipliers to tensor categories:
+Each architecture applies its own merge selection or strategy to tensor categories:
 
-**LTX-2.3 strategies** (Balanced, Motion, Visuals, Audio):
+**LTX-2.3 types** (All, Video, Audio):
 - Classifies tensors into: attn_qkv, attn_out, ff_in, ff_out, audio_attn, audio_attn_out, audio_to_video_attn, video_to_audio_attn, audio_ff_in, audio_ff_out, caption_projection, patchify_or_output, norm, other.
 - Preserves structural layers (adaln, gate logits, baked VAE/text/audio modules).
-- Audio strategy zeroes non-audio tensors; Visuals boosts visual FFN; Motion boosts cross-attention and audio-video connectors.
+- All merges all non-preserved weights, matching a normal ComfyUI LoRA load.
+- Video merges only weights without `audio` in their key. Audio merges every weight with `audio` in its key, including audio/video cross-modal bridge weights.
 
 **WAN 2.2 strategies** (Balanced, Motion, Visuals):
 - Classifies tensors into: self_attn_qkv, self_attn_out, cross_attn_qkv, cross_attn_out, ffn_in, ffn_out, modulation, caption_projection, patchify_or_output, norm, other.
