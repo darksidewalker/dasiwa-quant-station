@@ -84,6 +84,15 @@ class Int4ConvRotEngineTests(unittest.TestCase):
                 self.assertEqual(handle.get_tensor("model.diffusion_model.transformer_blocks.2.attn1.to_q.weight").shape, (64, 128))
                 self.assertEqual(handle.get_tensor("model.diffusion_model.adaln_single.linear.weight").shape, (4, 4))
 
+            from core.metadata_manager import inject_metadata
+            ok, message = inject_metadata(str(output), {"modelspec.title": "Manual title"})
+            self.assertTrue(ok, message)
+            with safe_open(output, framework="pt", device="cpu") as handle:
+                metadata = handle.metadata()
+                layers = __import__("json").loads(metadata["_quantization_metadata"])["layers"]
+                self.assertIn("model.diffusion_model.transformer_blocks.2.attn1.to_q", layers)
+                self.assertEqual(metadata["modelspec.title"], "Manual title")
+
 
 if __name__ == "__main__":
     unittest.main()

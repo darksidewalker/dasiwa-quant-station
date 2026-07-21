@@ -2,8 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import json
+import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
+
 from core.metadata_manager import (
     calculate_civitai_hashes,
+    inject_metadata,
     merge_custom_metadata,
     normalize_quantization_bits,
     update_metadata_preview,
@@ -74,6 +80,31 @@ class QuantMetadataTests(unittest.TestCase):
     def test_metadata_preview_uses_target_quantization_placeholder(self):
         preview = update_metadata_preview("preview-model", "WAN 2.2")
         self.assertIn('"quantization.bits": "{target_quantization}"', preview)
+
+    def test_manual_injection_preserves_existing_quantization_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "int4.safetensors"
+            quantization_metadata = json.dumps({
+                "format_version": "1.0",
+                "layers": {"transformer.weight": {"format": "convrot_w4a4"}},
+            })
+            save_file(
+                {"transformer.weight": torch.ones(2, 2)},
+                str(path),
+                metadata={
+                    "_quantization_metadata": quantization_metadata,
+                    "existing.custom": "keep",
+                },
+            )
+
+            ok, message = inject_metadata(str(path), {"modelspec.title": "Updated title"})
+
+            self.assertTrue(ok, message)
+            with safe_open(path, framework="pt", device="cpu") as handle:
+                metadata = handle.metadata()
+            self.assertEqual(metadata["_quantization_metadata"], quantization_metadata)
+            self.assertEqual(metadata["existing.custom"], "keep")
+            self.assertEqual(metadata["modelspec.title"], "Updated title")
 
 
 if __name__ == "__main__":

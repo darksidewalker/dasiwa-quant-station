@@ -17,6 +17,9 @@ except ImportError:
 # Safetensors spec: header JSON is capped at 100MB. We stay well under that.
 _SAFETENSORS_HEADER_MAX = 100 * 1024 * 1024
 _SPACER_KEY = "__spacer"
+# Loader-critical runtime metadata is authored by the quantizer and must not
+# be replaced by arbitrary JSON pasted into the manual metadata editor.
+_PROTECTED_EXISTING_METADATA_KEYS = {"_quantization_metadata"}
 
 def calculate_sha256(file_path):
     """Calculates a clean 0x-prefixed SHA256 hash of the target file."""
@@ -335,7 +338,20 @@ def inject_metadata(file_path, meta_dict):
     Slow path: load all tensors and re-save (used when the new header would
     grow beyond the original allocation, or if the in-place rewrite fails).
     """
-    ok, msg = _try_inplace_metadata_rewrite(file_path, meta_dict)
+    try:
+        header_dict, _, _ = _read_safetensors_header(file_path)
+        existing_meta = header_dict.get("__metadata__", {})
+        merged_meta = dict(existing_meta)
+        merged_meta.update(meta_dict)
+        for key in _PROTECTED_EXISTING_METADATA_KEYS:
+            if key in existing_meta:
+                merged_meta[key] = existing_meta[key]
+    except Exception:
+        # _try_inplace_metadata_rewrite below will return the useful header
+        # read error; retain the requested metadata for its fallback path.
+        merged_meta = meta_dict
+
+    ok, msg = _try_inplace_metadata_rewrite(file_path, merged_meta)
     if ok:
         return True, f"Metadata Injected (in-place: {msg})"
 
@@ -343,7 +359,7 @@ def inject_metadata(file_path, meta_dict):
     try:
         # Safetensors requires all metadata values to be strings.
         meta_strings = {k: (v if isinstance(v, str) else json.dumps(v))
-                        for k, v in meta_dict.items()}
+                        for k, v in merged_meta.items()}
         tensors = load_file(file_path)
         save_file(tensors, file_path, metadata=meta_strings)
         return True, f"Metadata Injected (full rewrite; in-place skipped: {msg})"
