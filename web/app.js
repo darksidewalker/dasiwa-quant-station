@@ -359,6 +359,7 @@ function renderFormats(formats) {
         state.formats.add(fmt.value);
         btn.classList.add("active");
       }
+      enforceInt4ConvRotStrategy();
       saveSettings();
     });
       list.appendChild(btn);
@@ -400,6 +401,15 @@ const FORMAT_TITLES = {
 
 function formatTitle(value) {
   return FORMAT_TITLES[value] || null;
+}
+
+function enforceInt4ConvRotStrategy() {
+  if (!state.formats.has("INT4 ConvRot Runtime") || state.strategy === "Simple") return;
+  state.strategy = "Simple";
+  document.querySelectorAll("#strategy button").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.value === "Simple");
+  });
+  log("INT4 ConvRot requires Simple strategy; switched from Optimizer.\n");
 }
 
 function updateArchDependentUI() {
@@ -996,6 +1006,7 @@ async function startJob() {
   if (!state.sourcePath) return log("Select a source checkpoint first.\n");
   if (!$("model-name").value) return log("Enter a display name.\n");
   if (state.formats.size === 0) return log("Choose at least one target format.\n");
+  enforceInt4ConvRotStrategy();
 
   $("start").disabled = true;
   $("stop").disabled = false;

@@ -452,6 +452,12 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "source, display name, and at least one format are required")
 		return
 	}
+	for _, format := range req.Formats {
+		if format == "INT4 ConvRot Runtime" && req.Strategy != "Simple" {
+			writeError(w, http.StatusBadRequest, "INT4 ConvRot requires the Simple strategy")
+			return
+		}
+	}
 	req.SourcePath = cleanPath(req.SourcePath, s.modelsDir)
 	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
 	if req.OutputDir == "" {
