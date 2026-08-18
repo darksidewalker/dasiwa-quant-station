@@ -295,6 +295,15 @@ def cmd_lora_merge(args):
         _emit(event)
 
 
+def cmd_model_merge(args):
+    ensure_dirs()
+    payload = _load_payload(args)
+    _emit({"type": "log", "text": _watermark_context(payload) + "\n"})
+    from core.model_merge_engine import run_model_merge
+    for event in run_model_merge(payload):
+        _emit(event)
+
+
 def cmd_watermark(args):
     path = os.path.realpath(os.path.expanduser(args.path))
     _emit(wm_verify(path))
@@ -368,6 +377,10 @@ def main():
     p = sub.add_parser("lora-merge")
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_merge)
+
+    p = sub.add_parser("model-merge", help="Model-level merge (not LoRA): e.g. MiniMax H3 fl2va/ref2va hybrid.")
+    p.add_argument("--json")
+    p.set_defaults(func=cmd_model_merge)
 
     p = sub.add_parser("watermark", help="Decode the EC watermark in the modelspec.watermark field of a quant output.")
     p.add_argument("path")

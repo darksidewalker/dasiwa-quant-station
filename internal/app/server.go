@@ -77,6 +77,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/metadata/inject", s.handleMetadataInject)
 	mux.HandleFunc("POST /api/quantize", s.handleQuantize)
 	mux.HandleFunc("POST /api/lora/merge", s.handleLoraMerge)
+	mux.HandleFunc("POST /api/model-merge", s.handleModelMerge)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
@@ -442,6 +443,19 @@ type LoraMergeRequest struct {
 	Watermark      bool       `json:"watermark"`
 }
 
+type ModelMergeRequest struct {
+	BasePath     string `json:"base_path"`
+	OverlayPath  string `json:"overlay_path"`
+	ModelsDir    string `json:"models_dir"`
+	OutputDir    string `json:"output_dir"`
+	OutputPath   string `json:"output_path"`
+	OutputName   string `json:"output_name"`
+	Architecture string `json:"architecture"`
+	Recipe       string `json:"recipe"`
+	DryRun       bool   `json:"dry_run"`
+	Watermark    bool   `json:"watermark"`
+}
+
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	var req QuantizeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -478,6 +492,45 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	}
 	s.jobs.Add(job)
 	go s.runQuantizeJob(ctx, job, req)
+	writeJSON(w, map[string]string{"job_id": id})
+}
+
+func (s *Server) handleModelMerge(w http.ResponseWriter, r *http.Request) {
+	var req ModelMergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ModelsDir == "" {
+		req.ModelsDir = s.modelsDir
+	}
+	req.BasePath = cleanPath(req.BasePath, s.modelsDir)
+	req.OverlayPath = cleanPath(req.OverlayPath, s.modelsDir)
+	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
+	if req.OutputDir == "" {
+		req.OutputDir = filepath.Dir(req.BasePath)
+	}
+	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.BasePath))
+	if req.OutputPath != "" {
+		req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
+	}
+	if req.Architecture == "" {
+		req.Architecture = "MiniMax H3"
+	}
+	if req.Recipe == "" {
+		req.Recipe = "h3_hybrid"
+	}
+	id := newID()
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &Job{
+		ID:        id,
+		CreatedAt: time.Now(),
+		Events:    make(chan Event, 512),
+		cancel:    cancel,
+		Status:    "starting model merge",
+	}
+	s.jobs.Add(job)
+	go s.runModelMergeJob(ctx, job, req)
 	writeJSON(w, map[string]string{"job_id": id})
 }
 
@@ -639,6 +692,26 @@ func (s *Server) runQuantizeJob(ctx context.Context, job *Job, req QuantizeReque
 	}
 	job.setStatus("finished")
 	job.Emit(Event{Type: "done", Status: "finished"})
+}
+
+func (s *Server) runModelMergeJob(ctx context.Context, job *Job, req ModelMergeRequest) {
+	defer close(job.Events)
+	payload, _ := json.Marshal(req)
+	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "model-merge", "--json", string(payload))
+	cmd.Dir = s.rootDir
+	cmd.Env = s.commandEnv()
+	if err := streamCommand(ctx, cmd, job); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			job.setStatus("model merge stopped")
+			job.Emit(Event{Type: "done", Status: "model merge stopped"})
+			return
+		}
+		job.setStatus("model merge failed")
+		job.Emit(Event{Type: "error", Text: err.Error()})
+		job.Emit(Event{Type: "done", Status: "model merge failed"})
+		return
+	}
+	job.setStatus("model merge finished")
 }
 
 func (s *Server) runLoraMergeJob(ctx context.Context, job *Job, req LoraMergeRequest) {

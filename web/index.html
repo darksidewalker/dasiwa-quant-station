@@ -73,6 +73,7 @@
         <div class="mode-switch" id="workflow-mode">
           <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
           <button data-mode="lora" type="button" title="Merge one or more LoRAs into a base checkpoint">LoRA Merge</button>
+          <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
         </div>
         <div id="hardware" class="hardware">
           <div class="meter" data-meter="cpu">
@@ -156,6 +157,44 @@
           <div class="lora-actions">
             <button id="add-lora" class="ghost drop-target" type="button" title="Add a LoRA to the merge list, or drop one or more LoRA files here">+ Add LoRA</button>
             <button id="load-recipe-btn" class="secondary ghost" type="button" title="Load a previously saved .txt recipe file into this form">⚙ Load Recipe</button>
+          </div>
+        </section>
+
+        <section class="lora-card hidden" data-workflow-panel="model" id="model-merge-card">
+          <div class="section-title">
+            <div>
+              <h3>Model Merge</h3>
+              <p>Model-level tensor merge (not LoRA). Select a recipe; order of the two checkpoints does not matter.</p>
+            </div>
+          </div>
+          <div class="lora-controls">
+            <label class="field compact">
+              <span title="Merge recipe — determines which tensor roles come from which checkpoint">Recipe</span>
+              <select id="mm-recipe">
+                <option value="h3_hybrid">Hybrid MiniMax H3</option>
+              </select>
+            </label>
+            <label class="field">
+              <span title="Base checkpoint — typically the fl2va variant">Base checkpoint (fl2va)</span>
+              <input id="mm-base" type="text" placeholder="Pick from the sidebar or Browse…" readonly title="Base checkpoint (fl2va)">
+            </label>
+            <label class="field">
+              <span title="Overlay checkpoint — typically the ref2va variant">Overlay checkpoint (ref2va)</span>
+              <input id="mm-overlay" type="text" placeholder="Pick an overlay file…" readonly title="Overlay checkpoint (ref2va)">
+            </label>
+            <label class="field">
+              <span title="Filename for the merged output checkpoint">Output Name</span>
+              <input id="mm-output" type="text" placeholder="minimax_h3_hybrid_merged" title="Filename for the merged output checkpoint">
+            </label>
+            <label class="checkline">
+              <input id="mm-dry-run" type="checkbox" checked>
+              <span title="Validate key sets and plan the merge without writing a file">Dry run first</span>
+            </label>
+          </div>
+          <p id="mm-hint" class="hint hidden"></p>
+          <div class="lora-actions">
+            <button id="mm-pick-base" class="ghost drop-target" type="button" title="Pick the base (fl2va) checkpoint">Pick Base</button>
+            <button id="mm-pick-overlay" class="ghost drop-target" type="button" title="Pick the overlay (ref2va) checkpoint">Pick Overlay</button>
           </div>
         </section>
 
