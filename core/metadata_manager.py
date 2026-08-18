@@ -212,7 +212,8 @@ def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
     if extra_meta:
         base.update(extra_meta)
 
-    # Keyed, only-you-can-decode watermark (no-op if no key is configured).
+    # EC watermark (X25519 + AES-256-GCM) written into the modelspec.watermark
+    # field (no-op if no passphrase is configured).
     wm = watermark_for(architecture, model_name, file_path, bits=bits)
     if wm:
         base.update(wm)
@@ -485,7 +486,8 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
         for k, v in new_meta.items()
     }
 
-    # Keyed, only-you-can-decode watermark (no-op if no key is configured).
+    # EC watermark (X25519 + AES-256-GCM) written into the modelspec.watermark
+    # field (no-op if no passphrase is configured).
     wm = watermark_for(architecture, model_name, file_path, bits=bits)
     if wm:
         for k, v in wm.items():

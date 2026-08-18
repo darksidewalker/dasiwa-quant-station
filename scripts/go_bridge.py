@@ -272,11 +272,20 @@ def cmd_watermark(args):
 
 
 def cmd_watermark_key(args):
-    path = wm_save_key()
+    passphrase = args.passphrase
+    if not passphrase:
+        import getpass
+        passphrase = getpass.getpass("Watermark passphrase (will be saved to ~/.dasiwa/watermark.key): ")
+    if not passphrase:
+        _emit({"ok": False, "error": "Passphrase must not be empty."})
+        return
+    path = wm_save_key(passphrase)
     _emit({
         "ok": True,
         "path": path,
-        "note": "Watermark key generated and saved. Quant outputs will now carry a dasiwa.watermark token.",
+        "note": ("Watermark passphrase saved to " + path +
+                 " (0600, outside the repository). Quant outputs will now "
+                 "carry an EC-watermarked modelspec.watermark field."),
     })
 
 
@@ -327,14 +336,16 @@ def main():
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_merge)
 
-    p = sub.add_parser("watermark", help="Verify the dasiwa.watermark token in a quant output.")
+    p = sub.add_parser("watermark", help="Decode the EC watermark in the modelspec.watermark field of a quant output.")
     p.add_argument("path")
     p.set_defaults(func=cmd_watermark)
 
     p = sub.add_parser(
         "watermark-key",
-        help="Generate and save the DaSiWa watermark key (~/.dasiwa/watermark.key).",
+        help="Save the DaSiWa watermark passphrase (~/.dasiwa/watermark.key, 0600).",
     )
+    p.add_argument("--passphrase", default="",
+                   help="Passphrase to save (omit to be prompted securely).")
     p.set_defaults(func=cmd_watermark_key)
 
     args = parser.parse_args()
