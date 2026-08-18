@@ -156,6 +156,17 @@ input, select, textarea {
 .hint.hidden { display: none; }
 .hint.warn { color: #f0b24e; }
 
+/* "Watermark outputs" label: gently pulses red when the box is checked but
+   no watermark key is configured (enabled-but-inert state). */
+@keyframes wm-pulse {
+  0%, 100% { color: #ff6b6b; text-shadow: 0 0 4px rgba(255, 107, 107, 0.35); }
+  50%      { color: #ff9d9d; text-shadow: 0 0 8px rgba(255, 107, 107, 0.65); }
+}
+.checkline.danger span {
+  color: #ff6b6b;
+  animation: wm-pulse 2.2s ease-in-out infinite;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;

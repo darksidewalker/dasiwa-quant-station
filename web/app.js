@@ -1236,6 +1236,10 @@ async function refreshWatermarkStatus() {
     return;
   }
   const enabled = box.checked;
+  // enabled-but-inert: box checked but no key -> pulse the label red.
+  const danger = enabled && !status.available;
+  const line = box.closest(".checkline");
+  if (line) line.classList.toggle("danger", danger);
   let text, warn = false;
   if (!enabled) {
     text = "Watermarking off for this run — outputs will NOT carry a modelspec.watermark token.";
