@@ -117,8 +117,8 @@ INT4 ConvRot requires Simple strategy, BF16/FP16 source, and comfy-kitchen[cubla
 
 ## LoRA Merge Workflow
 
-1. Switch to **LoRA** mode in the workflow selector
-2. Select a base checkpoint
+1. Switch to **LoRA Merge** mode in the topbar mode switch (Quantize | LoRA Merge | Model Merge)
+2. Select a base checkpoint in the Source panel
 3. Add one or more LoRAs (multi-select, drag-and-drop supported). Each LoRA gets its own strategy type and independent strength multiplier
 4. Set global strength scaling, toggle adaptive mode or strict matching
 5. For Krea 2: toggle **Unchain** to negate `txtfusion.projector.weight` positions 8-10
@@ -167,7 +167,7 @@ A model-level merge — not LoRA math. Currently one recipe:
 
 ### Hybrid MiniMax H3 (`h3_hybrid`)
 
-Switch to **Model Merge** mode, pick two MiniMax H3 checkpoints:
+Switch to **Model Merge** mode. The base (fl2va) checkpoint is the one picked in the Source panel; the sidebar Model Merge section holds the recipe selector and the overlay (ref2va) picker. Output name = the **Display & Output Name** field in the Source panel.
 
 - **Base** = fl2va checkpoint (all tensors)
 - **Overlay** = ref2va checkpoint (`blocks.{25..49}.adaln_proj.linear.{bias,weight,weight_scale}`)
