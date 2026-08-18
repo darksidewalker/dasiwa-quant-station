@@ -161,6 +161,21 @@ Every quantization and LoRA merge writes a human-readable `.txt` recipe alongsid
 
 ---
 
+## Model Merge (model-level)
+
+A model-level merge — not LoRA math. Currently one recipe:
+
+### Hybrid MiniMax H3 (`h3_hybrid`)
+
+Switch to **Model Merge** mode, pick two MiniMax H3 checkpoints:
+
+- **Base** = fl2va checkpoint (all tensors)
+- **Overlay** = ref2va checkpoint (`blocks.{25..49}.adaln_proj.linear.{bias,weight,weight_scale}`)
+
+Selection order doesn't matter — the engine auto-detects roles from filenames (fl2va/ref2va markers). Works for both pruned (932 keys) and full (1035 keys) variants. Output carries `minimax_h3_hybrid=baked` + `base_model`/`overlay_model` provenance.
+
+---
+
 ## Architecture And Preservation
 
 The architecture selection controls the `convert_to_quant` preset and, for verified models, DaSiWa's local preservation table.
@@ -255,6 +270,7 @@ core/                          Quantization, metadata, and LoRA merge engines
   int4_convrot_engine.py       INT4 ConvRot streaming conversion (w4a4)
   safetensors_engine.py        Safetensors quantization via convert_to_quant
   lora_merge_engine.py         Architecture-aware LoRA merge pipeline
+  model_merge_engine.py        Model-level merge (H3 hybrid fl2va/ref2va)
   layer_config_builder.py      Verified preserve/rescue regex tables
   metadata_manager.py          Modelspec metadata preview/read/injection
   watermark.py                 EC X25519 provenance watermark (modelspec.watermark)
@@ -294,6 +310,7 @@ lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
 | POST | `/api/metadata/inject` | Inject metadata into safetensors |
 | POST | `/api/quantize` | Start quantization job |
 | POST | `/api/lora/merge` | Start LoRA merge job |
+| POST | `/api/model-merge` | Start model-level merge job (e.g. H3 hybrid) |
 | POST | `/api/update` | Pull source, update dependencies, and restart |
 | POST | `/api/memory/clean` | Release RAM/VRAM caches |
 | POST | `/api/shutdown` | Graceful server shutdown |
