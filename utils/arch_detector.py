@@ -51,6 +51,20 @@ ARCH_MARKERS = {
         re.compile(r"^txtfusion\.layerwise_blocks\.\d+\.attn\.wq\.weight$"),
         re.compile(r"^last\.modulation\.lin$"),
     ],
+    "MiniMax H3": [
+        # 50-block omni-modal joint video+audio DiT (Hailuo 3.0). Keys do NOT
+        # start with "transformer" (vllm-omni). Block-level markers are present
+        # in BOTH pruned (932 keys) and full (1035 keys) variants; the two
+        # variant-specific markers (adaln_t_table = pruned, time_embedder =
+        # full) only add signal. Detection is key-based and variant-agnostic,
+        # which is what lets the no-arch-hint hybrid (XUELUO_v10) be identified.
+        re.compile(r"^blocks\.\d+\.attn\.q_norm\.weight$"),
+        re.compile(r"^blocks\.\d+\.adaln_proj\.linear\.weight$"),
+        re.compile(r"^blocks\.\d+\.mlp\.fc1\.weight$"),
+        re.compile(r"^token_refiner\.blocks\.\d+\.attn\.qkv_proj\.weight$"),
+        re.compile(r"^adaln_t_table$"),            # pruned variant
+        re.compile(r"^time_embedder\.proj_in\.weight$"),  # full (non-pruned) variant
+    ],
 }
 
 FULL_CHECKPOINT_MARKERS = {
