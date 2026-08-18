@@ -52,7 +52,6 @@ function saveSettings() {
     loraCudaDevice: $("lora-cuda-device").value,
     loraVramHeadroom: $("lora-vram-headroom").value,
     loraAdaptive: $("lora-adaptive").checked,
-    loraDryRun: $("lora-dry-run").checked,
     loraStrict: $("lora-strict").checked,
     krea2Unchain: $("krea2-unchain").checked,
     watermark: $("watermark").checked,
@@ -121,14 +120,15 @@ function loadSettings() {
       if (s.loraCudaDevice) $("lora-cuda-device").value = s.loraCudaDevice;
       if (s.loraVramHeadroom != null) $("lora-vram-headroom").value = s.loraVramHeadroom;
       $("lora-adaptive").checked = s.loraAdaptive ?? false;
-      $("lora-dry-run").checked = s.loraDryRun ?? true;
       $("lora-strict").checked = s.loraStrict ?? true;
       $("krea2-unchain").checked = !!s.krea2Unchain;
       $("watermark").checked = s.watermark ?? true;
+      // Migrate old loraDryRun → mmDryRun (dry-run now lives in the Strategy panel,
+      // shared between LoRA and Model Merge modes).
       state.mmOverlayPath = s.mmOverlayPath || "";
       $("mm-overlay-label").textContent = state.mmOverlayPath ? shortPath(state.mmOverlayPath) : "Pick…";
       if (s.mmRecipe) $("mm-recipe").value = s.mmRecipe;
-      $("mm-dry-run").checked = s.mmDryRun ?? true;
+      $("mm-dry-run").checked = s.mmDryRun ?? (s.loraDryRun ?? true);
       if (Array.isArray(s.loras)) {
         state.loras = s.loras.map((l) => ({
           path: l.path || "",
@@ -632,7 +632,6 @@ function wireEvents() {
   $("lora-cuda-device").addEventListener("input", saveSettings);
   $("lora-vram-headroom").addEventListener("input", saveSettings);
   $("lora-adaptive").addEventListener("change", saveSettings);
-  $("lora-dry-run").addEventListener("change", saveSettings);
   $("lora-strict").addEventListener("change", saveSettings);
   $("krea2-unchain").addEventListener("change", saveSettings);
 
@@ -679,8 +678,9 @@ function setWorkflowMode(mode) {
   });
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
-  // Show the dry-run checkbox (under Strategy) only in model merge mode.
-  $("mm-dry-run-wrap").style.display = mode === "model" ? "" : "none";
+  // Show the dry-run checkbox (under Strategy) for LoRA merge + Model Merge modes only
+  // (the two merge workflows that support a plan-only, no-write run).
+  $("mm-dry-run-wrap").style.display = mode === "model" || mode === "lora" ? "" : "none";
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
   startBtn.classList.remove("hidden");
@@ -1076,7 +1076,7 @@ async function startLoraMerge() {
   const selected = state.loras.filter((lora) => lora.enabled && lora.path);
   if (!basePath) return log("Select a base checkpoint in the sidebar first.\n");
   if (selected.length === 0) return log("Add and enable at least one LoRA.\n");
-  const dryRun = $("lora-dry-run").checked;
+  const dryRun = $("mm-dry-run").checked;
   const globalStrength = Number($("lora-global-strength").value) || 1;
   const unsafe = selected.find((lora) => Math.abs((Number(lora.strength) || 0) * globalStrength) > MAX_EFFECTIVE_LORA_STRENGTH);
   if (unsafe) {
@@ -1529,7 +1529,7 @@ async function parseRecipeAndApply(recipeText, fileName) {
     var globalStrVal = Number(globalStrengthStr);
     if (!isNaN(globalStrVal)) $("lora-global-strength").value = globalStrVal;
     $("lora-adaptive").checked = adaptive;
-    $("lora-dry-run").checked = dryRun;
+    $("mm-dry-run").checked = dryRun;
     $("lora-strict").checked = strictMatch;
 
     // Krea2 unchain checkbox visibility + state.
