@@ -46,7 +46,6 @@ function saveSettings() {
     modelName: $("model-name").value,
     fullCheckpoint: $("full-checkpoint").checked,
     lowVram: $("low-vram").checked,
-    loraOutput: $("lora-output").value,
     loraGlobalStrength: $("lora-global-strength").value,
     loraMergeDevice: $("lora-merge-device").value,
     loraCudaDevice: $("lora-cuda-device").value,
@@ -114,7 +113,6 @@ function loadSettings() {
       if (s.modelName) $("model-name").value = s.modelName;
       $("full-checkpoint").checked = !!s.fullCheckpoint;
       $("low-vram").checked = !!s.lowVram;
-      if (s.loraOutput != null) $("lora-output").value = s.loraOutput;
       if (s.loraGlobalStrength != null) $("lora-global-strength").value = s.loraGlobalStrength;
       if (s.loraMergeDevice) $("lora-merge-device").value = s.loraMergeDevice;
       if (s.loraCudaDevice) $("lora-cuda-device").value = s.loraCudaDevice;
@@ -245,7 +243,8 @@ function flushLog() {
 }
 
 function setStatus(text) {
-  $("status").textContent = text;
+  const el = $("status");
+  if (el) el.textContent = text;
   startPolling(); // keep polling once a job is running.
 }
 
@@ -626,7 +625,6 @@ function wireEvents() {
   });
 
   // LoRA control change listeners
-  $("lora-output").addEventListener("input", saveSettings);
   $("lora-global-strength").addEventListener("input", saveSettings);
   $("lora-merge-device").addEventListener("change", saveSettings);
   $("lora-cuda-device").addEventListener("input", saveSettings);
@@ -1082,7 +1080,7 @@ async function startLoraMerge() {
   if (unsafe) {
     return log(`${shortPath(unsafe.path)} effective strength is too high. Keep per-LoRA × global strength within ±${MAX_EFFECTIVE_LORA_STRENGTH}.\n`);
   }
-  if (!dryRun && !$("lora-output").value) return log("Enter an output name before writing a merged checkpoint.\n");
+  if (!dryRun && !$("model-name").value) return log("Enter a Display Name before writing a merged checkpoint.\n");
 
   $("start").disabled = true;
   $("stop").disabled = false;
@@ -1096,7 +1094,7 @@ async function startLoraMerge() {
       body: JSON.stringify({
         base_path: basePath,
         models_dir: state.modelsDir,
-        output_name: $("lora-output").value,
+        output_name: $("model-name").value,
         loras: selected.map((lora) => ({
           path: lora.path,
           strength: Number(lora.strength) || 0,
@@ -1519,7 +1517,7 @@ async function parseRecipeAndApply(recipeText, fileName) {
     }
 
     if (outputName) {
-      $("lora-output").value = outputName.replace(/\.(safetensors|gguf|ckpt|pt|bin)$/i, "");
+      $("model-name").value = outputName.replace(/\.(safetensors|gguf|ckpt|pt|bin)$/i, "");
     }
 
     for (var r = 0; r < state.loras.length; r++) {

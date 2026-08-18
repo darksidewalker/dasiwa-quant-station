@@ -124,7 +124,7 @@ INT4 ConvRot requires Simple strategy, BF16/FP16 source, and comfy-kitchen[cubla
 5. For Krea 2: toggle **Unchain** to negate `txtfusion.projector.weight` positions 8-10
 6. Use **Dry run** to preview the merge recipe without writing output
 7. Shape-mismatch diagnostics automatically detect LoRAs trained on different hidden dimensions and warn before merge
-8. Enter an output name and start the merge
+8. The **Display & Output Name** field in the Source panel sets the merged output filename (shared across all merge modes). Start the merge from the sidebar **Start Merge** button
 
 ### LoRA Merge Strategies
 

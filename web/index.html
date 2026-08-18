@@ -28,8 +28,8 @@
           <select id="architecture"></select>
         </label>
         <label class="field">
-          <span title="Display name embedded in output metadata">Display Name</span>
-          <input id="model-name" type="text" placeholder="Your Model Name" title="Display name embedded in output metadata">
+          <span title="Display &amp; output name — sets the modelspec display name and the merged output filename">Display &amp; Output Name</span>
+          <input id="model-name" type="text" placeholder="Your Model Name" title="Display &amp; output name — sets the modelspec display name and the merged output filename">
         </label>
         <label class="checkline">
           <input id="full-checkpoint" type="checkbox">
@@ -85,11 +85,8 @@
 
     <main class="main">
       <div class="topbar">
-        <div>
-          <h2>Video Model Merger</h2>
-          <p id="status">Idle</p>
-        </div>
         <div class="mode-switch" id="workflow-mode">
+          <span class="mode-label">Mode:</span>
           <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
           <button data-mode="lora" type="button" title="Merge one or more LoRAs into a base checkpoint">LoRA Merge</button>
           <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
@@ -131,10 +128,6 @@
             </div>
           </div>
           <div class="lora-controls">
-            <label class="field">
-              <span title="Filename for the merged output checkpoint">Output Name</span>
-              <input id="lora-output" type="text" placeholder="Your Merged Model Name" title="Filename for the merged output checkpoint">
-            </label>
             <label class="field compact">
               <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
               <input id="lora-global-strength" type="number" min="-3" max="3" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (-3..3; 0=none, 1=full, negative subtracts)">

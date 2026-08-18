@@ -220,26 +220,31 @@ input, select, textarea {
   min-width: 0;
 }
 .mode-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  min-width: 250px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #111418;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mode-label {
+  padding: 0 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 .mode-switch button {
-  border: 0;
-  border-radius: 6px;
-  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
   color: var(--muted);
   background: transparent;
+  white-space: nowrap;
 }
 .mode-switch button.active {
-  color: #07100b;
-  background: var(--green);
+  color: var(--green);
+  border-color: rgba(80, 200, 120, 0.65);
+  background: transparent;
   font-weight: 800;
+  box-shadow: 0 0 16px 2px rgba(80, 200, 120, 0.45);
 }
 .hidden { display: none !important; }
 
@@ -327,7 +332,7 @@ input, select, textarea {
 }
 .lora-controls {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 130px repeat(3, auto);
+  grid-template-columns: 130px repeat(3, auto);
   gap: 10px;
   align-items: end;
 }
