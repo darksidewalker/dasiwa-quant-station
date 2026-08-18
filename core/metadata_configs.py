@@ -58,6 +58,20 @@ MODEL_METADATA_CONFIGS = {
         "modelspec.resolution_native": "1024x1024",
         "modelspec.resolution_aspect": "1:1",
     },
+    "MiniMax H3": {
+        "modelspec.title": "{model_name}",
+        "modelspec.author": "Darksidewalker",
+        "modelspec.description": "MiniMax H3 (Hailuo 3.0) omni-modal joint video+audio diffusion transformer quantized via DaSiWa Station.",
+        "modelspec.architecture": "minimax_h3",
+        "modelspec.implementation": "https://github.com/MiniMax-AI/MiniMax-H3",
+        "modelspec.license": "MiniMax H3 Community License Agreement",
+        "modelspec.tags": "text-to-video, image-to-video, omni-modal, video, audio, minimax, hailuo, diffusion, DaSiWa",
+        # Native 2K (1440p short edge) at 24 FPS, 16:9 primary.
+        "modelspec.resolution": "2560x1440",
+        "modelspec.resolution_hints": "720p, 1080p, 2K",
+        "modelspec.resolution_native": "2560x1440",
+        "modelspec.resolution_aspect": "16:9",
+    },
     "Flux.2": {
         "modelspec.title": "{model_name}",
         "modelspec.author": "Darksidewalker",

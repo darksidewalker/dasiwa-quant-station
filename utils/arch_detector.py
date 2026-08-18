@@ -57,7 +57,8 @@ ARCH_MARKERS = {
         # in BOTH pruned (932 keys) and full (1035 keys) variants; the two
         # variant-specific markers (adaln_t_table = pruned, time_embedder =
         # full) only add signal. Detection is key-based and variant-agnostic,
-        # which is what lets the no-arch-hint hybrid (XUELUO_v10) be identified.
+        # which is what lets a cross-partition merged file that carries no
+        # arch hint in its filename still be identified.
         re.compile(r"^blocks\.\d+\.attn\.q_norm\.weight$"),
         re.compile(r"^blocks\.\d+\.adaln_proj\.linear\.weight$"),
         re.compile(r"^blocks\.\d+\.mlp\.fc1\.weight$"),
