@@ -471,7 +471,13 @@ def _cuda_available(device: str) -> bool:
 
 
 def _vram_free_total(device: str) -> Tuple[int, int]:
-    return torch.cuda.mem_get_info(device)
+    """Return (free, total) VRAM bytes on `device`. Returns (0, 0) if the query
+    fails (e.g. driver OOM on a busy GPU, no CUDA, or transient cuMemGetInfo error) —
+    callers then treat CUDA as unavailable and fall back to CPU."""
+    try:
+        return torch.cuda.mem_get_info(device)
+    except Exception:
+        return 0, 0
 
 
 def _estimate_lora_merge_peak_bytes(base_shape: Tuple[int, ...], down_shape: Tuple[int, ...], up_shape: Tuple[int, ...]) -> int:

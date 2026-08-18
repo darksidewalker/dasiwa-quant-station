@@ -62,18 +62,11 @@
             <option value="h3_hybrid">Hybrid MiniMax H3</option>
           </select>
         </label>
-        <button id="mm-pick-base" class="picker-button drop-target" type="button" title="Pick the base (fl2va) checkpoint">
-          <span>Base checkpoint (fl2va)</span>
-          <strong id="mm-base-label">Pick…</strong>
-        </button>
-        <button id="mm-pick-overlay" class="picker-button drop-target" type="button" title="Pick the overlay (ref2va) checkpoint">
+        <button id="mm-pick-overlay" class="picker-button drop-target" type="button" title="Pick the overlay (ref2va) checkpoint — mid-block adaln_proj layers (25–49) are overlaid onto the base">
           <span>Overlay checkpoint (ref2va)</span>
           <strong id="mm-overlay-label">Pick…</strong>
         </button>
-        <label class="field">
-          <span title="Filename for the merged output checkpoint">Output Name</span>
-          <input id="mm-output" type="text" placeholder="minimax_h3_hybrid_merged">
-        </label>
+        <p class="hint" id="mm-hint"></p>
       </section>
 
       <section class="panel">
@@ -186,11 +179,10 @@
           <div class="section-title">
             <div>
               <h3>Model Merge</h3>
-              <p>Model-level tensor merge (not LoRA). Checkpoint picks, recipe and output name live in the sidebar; selection order doesn't matter.</p>
+              <p>Model-level tensor merge (not LoRA). Base checkpoint reuses the Source panel; overlay, recipe and dry-run are in the sidebar.</p>
             </div>
           </div>
           <div class="mm-inline-row">
-            <p id="mm-hint" class="hint"></p>
             <label class="checkline mm-dry-run">
               <input id="mm-dry-run" type="checkbox" checked>
               <span title="Validate key sets and plan the merge without writing a file">Dry run</span>

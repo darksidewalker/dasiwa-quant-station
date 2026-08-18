@@ -21,7 +21,6 @@ const state = {
   lastLoraDir: "",
   lastFileDir: "",
   appVersion: "",
-  mmBasePath: "",
   mmOverlayPath: "",
   mmRecipe: "h3_hybrid",
 };
@@ -57,10 +56,8 @@ function saveSettings() {
     loraStrict: $("lora-strict").checked,
     krea2Unchain: $("krea2-unchain").checked,
     watermark: $("watermark").checked,
-    mmBasePath: state.mmBasePath,
     mmOverlayPath: state.mmOverlayPath,
     mmRecipe: $("mm-recipe").value,
-    mmOutput: $("mm-output").value,
     mmDryRun: $("mm-dry-run").checked,
     lastFileDir: state.lastFileDir,
     lastLoraDir: state.lastLoraDir,
@@ -128,12 +125,9 @@ function loadSettings() {
       $("lora-strict").checked = s.loraStrict ?? true;
       $("krea2-unchain").checked = !!s.krea2Unchain;
       $("watermark").checked = s.watermark ?? true;
-      state.mmBasePath = s.mmBasePath || "";
       state.mmOverlayPath = s.mmOverlayPath || "";
-      $("mm-base-label").textContent = state.mmBasePath ? shortPath(state.mmBasePath) : "Pick…";
       $("mm-overlay-label").textContent = state.mmOverlayPath ? shortPath(state.mmOverlayPath) : "Pick…";
       if (s.mmRecipe) $("mm-recipe").value = s.mmRecipe;
-      if (s.mmOutput != null) $("mm-output").value = s.mmOutput;
       $("mm-dry-run").checked = s.mmDryRun ?? true;
       if (Array.isArray(s.loras)) {
         state.loras = s.loras.map((l) => ({
@@ -436,17 +430,10 @@ function updateArchDependentUI() {
   if (unchainLabel) {
     unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
   }
+  if (state.workflowMode === "model") refreshModelMergeHint();
 }
 
 // --- Model Merge (model-level, not LoRA) ------------------------------------
-
-function selectModelMergeBase(path) {
-  state.mmBasePath = path;
-  $("mm-base-label").textContent = shortPath(path);
-  $("browser").close();
-  saveSettings();
-  refreshModelMergeHint();
-}
 
 function selectModelMergeOverlay(path) {
   state.mmOverlayPath = path;
@@ -459,22 +446,24 @@ function selectModelMergeOverlay(path) {
 function refreshModelMergeHint() {
   const hint = $("mm-hint");
   if (!hint) return;
-  const base = state.mmBasePath;
+  const base = state.sourcePath;
   const overlay = state.mmOverlayPath;
   let text, warn = false;
   if (state.architecture !== "MiniMax H3") {
     warn = true;
-    text = "Hybrid MiniMax H3 requires two MiniMax H3 checkpoints (an fl2va and a ref2va variant). " +
-      "Select MiniMax H3 as the architecture (or pick an H3 checkpoint in the sidebar).";
+    text = "Hybrid MiniMax H3 requires two MiniMax H3 checkpoints. " +
+      "Select MiniMax H3 as the architecture (or pick an H3 checkpoint in the Source panel).";
   } else if (!base || !overlay) {
     warn = true;
-    text = "Pick both a base (fl2va) and an overlay (ref2va) checkpoint to start.";
+    text = !base
+      ? "Pick a base (fl2va) checkpoint in the Source panel to start."
+      : "Pick the overlay (ref2va) checkpoint to start.";
   } else if (base === overlay) {
     warn = true;
-    text = "Base and overlay must be two different checkpoints.";
+    text = "Base (Source panel) and overlay must be two different checkpoints.";
   } else {
-    text = "fl2va = base, ref2va = overlay. Selection order doesn't matter — the engine detects roles from filenames. " +
-      "Only blocks.{25..49} adaln_proj tensors are taken from the overlay.";
+    text = "Base = Source-panel checkpoint, overlay = ref2va. Role auto-detection by filename; " +
+      "only blocks.{25..49} adaln_proj tensors come from the overlay.";
   }
   hint.textContent = text;
   hint.classList.toggle("warn", warn);
@@ -485,21 +474,21 @@ function updateModelMergeVisibility() {
 }
 
 async function startModelMerge() {
-  const base = state.mmBasePath;
+  const base = state.sourcePath;
   const overlay = state.mmOverlayPath;
-  if (!base) return log("Pick a base (fl2va) checkpoint first.\n");
-  if (!overlay) return log("Pick an overlay (ref2va) checkpoint first.\n");
+  if (!base) return log("Pick a base (fl2va) checkpoint in the Source panel first.\n");
+  if (!overlay) return log("Pick an overlay (ref2va) checkpoint in the Model Merge sidebar first.\n");
   const dryRun = $("mm-dry-run").checked;
   if (state.architecture !== "MiniMax H3") {
     return log("Hybrid MiniMax H3 needs MiniMax H3 as the architecture. Pick an H3 checkpoint or set the architecture to MiniMax H3.\n");
   }
-  const outputName = $("mm-output").value.trim();
-  if (!dryRun && !outputName) return log("Enter an output name before writing a merged checkpoint.\n");
+  const outputName = $("model-name").value.trim();
+  if (!dryRun && !outputName) return log("Enter a Display Name before writing a merged checkpoint.\n");
 
   $("start").disabled = true;
   $("stop").disabled = false;
   setStatus(dryRun ? "Starting model merge dry run" : "Starting model merge");
-  log(`\nStarting ${dryRun ? "model merge dry run" : "model merge"} (recipe ${$("mm-recipe").value})...\n`);
+  log(`\nStarting ${dryRun ? "model merge dry run" : "model merge"} (recipe ${$("mm-recipe").value}, output "${outputName || "(dry run)"}")...\n`);
 
   try {
     const data = await api("/api/model-merge", {
@@ -647,13 +636,10 @@ function wireEvents() {
   $("lora-strict").addEventListener("change", saveSettings);
   $("krea2-unchain").addEventListener("change", saveSettings);
 
-  // Model Merge (model-level)
-  $("mm-pick-base").addEventListener("click", () => openBrowser("mm-base"));
+  // Model Merge (model-level) — base reuses the Source panel; only overlay is picked here
   $("mm-pick-overlay").addEventListener("click", () => openBrowser("mm-overlay"));
-  wireDropTarget($("mm-pick-base"), "mm-base");
   wireDropTarget($("mm-pick-overlay"), "mm-overlay");
   $("mm-recipe").addEventListener("change", saveSettings);
-  $("mm-output").addEventListener("input", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
 
   $("start").addEventListener("click", () => {
@@ -710,7 +696,7 @@ function setWorkflowMode(mode) {
 
 async function openBrowser(mode) {
   state.browserMode = mode;
-  const titleMap = { lora: "Choose LoRA", "mm-base": "Pick base checkpoint (fl2va)", "mm-overlay": "Pick overlay checkpoint (ref2va)" };
+  const titleMap = { lora: "Choose LoRA", "mm-overlay": "Pick overlay checkpoint (ref2va)" };
   $("browser-title").textContent = titleMap[mode] || "Choose Checkpoint";
   const addSel = $("browser-add-selected");
   const addAllBtn = $("browser-add-all");
@@ -830,8 +816,6 @@ function renderBrowserList() {
         browse(item.path);
       } else if (state.browserMode === "file") {
         selectSource(item.path);
-      } else if (state.browserMode === "mm-base" && !item.is_dir) {
-        selectModelMergeBase(item.path);
       } else if (state.browserMode === "mm-overlay" && !item.is_dir) {
         selectModelMergeOverlay(item.path);
       } else if (state.browserMode === "lora" && !item.is_dir) {
@@ -882,9 +866,6 @@ function wireDropTarget(el, kind) {
     if (kind === "source") {
       if (paths.length > 1) log(`Dropped ${paths.length} files; using the first as the checkpoint.\n`);
       selectSource(paths[0]);
-    } else if (kind === "mm-base") {
-      if (paths.length > 1) log(`Dropped ${paths.length} files; using the first as the base checkpoint.\n`);
-      selectModelMergeBase(paths[0]);
     } else if (kind === "mm-overlay") {
       if (paths.length > 1) log(`Dropped ${paths.length} files; using the first as the overlay checkpoint.\n`);
       selectModelMergeOverlay(paths[0]);
@@ -1073,6 +1054,7 @@ async function selectSource(path) {
     }
   }
   saveSettings();
+  if (state.workflowMode === "model") refreshModelMergeHint();
 }
 
 async function refreshMetadata() {
