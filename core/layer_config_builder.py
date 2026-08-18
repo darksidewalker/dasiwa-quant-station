@@ -145,6 +145,34 @@ PRESERVE_PATTERNS = {
         r"^.*(^|\.)qknorm\.[qk]norm\.scale$", # attention Q/K norm scales
         r"^.*(^|\.)(pre|post)norm\.scale$",   # transformer norm scales
     ],
+    "MiniMax H3": [
+        # Verified against the H3 reference quants (pruned 932 keys, full 1035
+        # keys, hybrid key-identical to full Ref2VA). The reference quantizer
+        # keeps the structural / modulation / norm layers at source precision
+        # (BF16/F32/F16) and packs ONLY the four heavy linears
+        # (attn.qkv_proj, attn.out_proj, mlp.fc1, mlp.fc2) to the low-bit
+        # format. We preserve everything else.
+        #
+        # Patterns are fullmatch-safe and prefix-tolerant: they match both
+        # naked keys (blocks.0.attn.q_norm.weight) and keys carrying a
+        # wrapper prefix (model.diffusion_model.blocks.0.attn.q_norm.weight),
+        # matching the same behaviour the Krea 2 / LTX-2.3 entries rely on.
+
+        # --- per-block (blocks.N.*) structural layers ---
+        r"^.*(^|\.)adaln_proj\.linear($|\..*)",  # timestep modulation (96768 x 8)
+        r"^.*(^|\.)attn\.[qk]_norm($|\..*)",     # attention Q/K RMS scales (128,)
+        r"^.*(^|\.)norm[12]($|\..*)",           # per-block layer norms (5376,)
+
+        # --- top-level structural layers ---
+        r"^(.*\.)?adaln_t_table($|\..*)",        # global timestep adaln (pruned variant)
+        r"^(.*\.)?time_embedder($|\..*)",        # timestep embedder (full variant)
+        r"^(.*\.)?final_layer($|\..*)",         # final video_out/audio_out/adaln/norm
+        r"^(.*\.)?token_refiner($|\..*)",       # conditioning refinement blocks (BF16)
+        r"^(.*\.)?video_patch_proj($|\..*)",    # video patchify embedding
+        r"^(.*\.)?audio_patch_proj($|\..*)",    # audio patchify embedding
+        r"^(.*\.)?condition_proj($|\..*)",      # conditioning projection
+        r"^(.*\.)?rope($|\..*)",                # rope.inv_freq (16,)
+    ],
 }
 
 
@@ -170,6 +198,10 @@ RESCUE_PATTERNS = {
         r"(^|.*\.)ffn\.2(\.(weight|bias))?$",
     ],
     "Krea 2": [],
+    # H3 reference quants show a clean split: structural layers stay at source
+    # precision, heavy linears go to the low-bit base format. No FP8 rescue
+    # middle tier needed — for NVFP4, heavy linears go straight to NVFP4.
+    "MiniMax H3": [],
 }
 
 

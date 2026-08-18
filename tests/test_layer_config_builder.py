@@ -216,6 +216,49 @@ class LayerConfigBuilderTests(unittest.TestCase):
         ):
             self.assertEqual(action_for(key), {"format": "nvfp4"}, key)
 
+    def test_minimax_h3_preserve_patterns_match_full_raw_and_prefixed_keys(self):
+        config, _ = build_layer_config_dict("MiniMax H3", "FP8")
+
+        # Structural / modulation / norm layers -> skip (source precision).
+        keys = (
+            "blocks.0.adaln_proj.linear.weight",
+            "blocks.49.adaln_proj.linear.bias",
+            "blocks.0.attn.q_norm.weight",
+            "blocks.0.attn.k_norm.weight",
+            "blocks.0.norm1.weight",
+            "blocks.0.norm2.weight",
+            "adaln_t_table",
+            "time_embedder.proj_in.weight",
+            "time_embedder.proj_out.weight",
+            "final_layer.video_out.weight",
+            "final_layer.audio_out.weight",
+            "final_layer.norm.weight",
+            "token_refiner.blocks.0.attn.qkv_proj.weight",
+            "token_refiner.final_norm.weight",
+            "video_patch_proj.weight",
+            "audio_patch_proj.weight",
+            "condition_proj.weight",
+            "rope.inv_freq",
+        )
+        for key in keys:
+            self.assertEqual(self._action_for(config, key), {"skip": True}, key)
+            self.assertEqual(self._action_for(config, f"model.diffusion_model.{key}"),
+                             {"skip": True}, f"prefixed {key}")
+
+        # The four heavy linears must NOT be skipped (base format applies).
+        heavy = (
+            "blocks.0.attn.qkv_proj.weight",
+            "blocks.0.attn.out_proj.weight",
+            "blocks.0.mlp.fc1.weight",
+            "blocks.0.mlp.fc2.weight",
+        )
+        for key in heavy:
+            self.assertNotEqual(self._action_for(config, key), {"skip": True}, key)
+
+    def test_minimax_h3_rescue_is_empty(self):
+        config, summary = build_layer_config_dict("MiniMax H3", "NVFP4")
+        self.assertEqual(summary["rescue_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
