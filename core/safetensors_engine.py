@@ -135,6 +135,13 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # active as the stricter source of truth for prefix/fullmatch-safe
         # structural preserves; the upstream flag is an additional safety net.
         "Krea 2":            {"flag": "--krea2",             "optimizer": _OPTIMIZER_DEFAULT},
+        # MiniMax H3 (Hailuo 3.0) omni-modal joint video+audio DiT. No upstream
+        # convert_to_quant preset exists (v1.3.3 has no --minimax/--h3 filter),
+        # so flag=None and the layer config (core/layer_config_builder "MiniMax
+        # H3") carries all quality. Covers both FL2VA and Ref2VA (identical
+        # structure). Verified-pattern arch: markers in arch_detector, entry in
+        # layer_config_builder and metadata_configs.
+        "MiniMax H3":        {"flag": None,                 "optimizer": _OPTIMIZER_DEFAULT},
         # Other convert_to_quant presets. No verified layer-name patterns
         # in this project yet, so layer-config is skipped and we rely on
         # the convert_to_quant preset's own skip rules.

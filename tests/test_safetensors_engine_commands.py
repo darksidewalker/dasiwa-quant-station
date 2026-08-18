@@ -119,6 +119,30 @@ class SafetensorsEngineCommandTests(unittest.TestCase):
                 self.assertIn("--optimizer", cmd)
                 self.assertNotIn("--simple", cmd)
 
+    def test_layer_config_only_arch_h3_passes_guard_with_zero_arch_flags(self):
+        # "MiniMax H3" has flag=None: it is a layer-config-only arch. The
+        # command carries a --layer-config (DaSiWa's H3 preserve/rescue
+        # patterns carry all quality) and NO upstream architecture flag.
+        # The safety guard must not reject it with "missing architecture flag".
+        all_arch_flags = [
+            "--wan", "--ltxv2", "--krea2", "--flux2", "--hunyuan", "--qwen",
+            "--zimage", "--zimage_refiner", "--anima", "--radiance",
+            "--distillation_large", "--distillation_small", "--nerf_large",
+            "--nerf_small", "--t5xxl", "--qwen35", "--mistral", "--visual",
+            "--generic_text",
+        ]
+        commands = self._capture_commands("MiniMax H3")
+        self.assertEqual(len(commands), 1, "guard must not abort the H3 conversion")
+        cmd = commands[0]
+        # A layer config was attached (quality carrier), despite flag=None.
+        self.assertIn("--layer-config", cmd)
+        # Zero upstream architecture flags in the assembled command.
+        present_arch = [f for f in all_arch_flags if f in cmd]
+        self.assertEqual(present_arch, [])
+        # NVFP4 dedicated path (not the unified FP8-mislabeled path).
+        self.assertIn("--nvfp4", cmd)
+        self.assertNotIn("--custom-type", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
