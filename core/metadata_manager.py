@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import zlib
 from core.metadata_configs import MODEL_METADATA_CONFIGS, COMMON_METADATA
+from core.watermark import watermark_for
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 
@@ -210,6 +211,11 @@ def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
 
     if extra_meta:
         base.update(extra_meta)
+
+    # Keyed, only-you-can-decode watermark (no-op if no key is configured).
+    wm = watermark_for(architecture, model_name, file_path, bits=bits)
+    if wm:
+        base.update(wm)
 
     # Ensure spacer exists for future header edits
     if "__spacer" not in base:
@@ -478,6 +484,12 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
         k: (v if isinstance(v, str) else json.dumps(v))
         for k, v in new_meta.items()
     }
+
+    # Keyed, only-you-can-decode watermark (no-op if no key is configured).
+    wm = watermark_for(architecture, model_name, file_path, bits=bits)
+    if wm:
+        for k, v in wm.items():
+            new_meta_strings[k] = v if isinstance(v, str) else json.dumps(v)
 
     # Write to a sibling temp file, then atomically replace.
     dst_dir = os.path.dirname(file_path) or "."

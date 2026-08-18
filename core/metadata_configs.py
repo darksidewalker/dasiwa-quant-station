@@ -12,7 +12,6 @@ MODEL_METADATA_CONFIGS = {
         # architecture. modelspec.architecture is left as a marker so
         # downstream tools can tell the field was deliberately unset.
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Model quantized via DaSiWa Station with no architecture preset.",
         "modelspec.architecture": "unspecified",
         "modelspec.implementation": "",
@@ -21,7 +20,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "WAN 2.2": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Multi-Expert Image-to-Video diffusion model quantized via DaSiWa Station.",
         "modelspec.architecture": "wan_2.2_14b_i2v",
         "modelspec.implementation": "https://github.com/Wan-Video/Wan2.2",
@@ -34,7 +32,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "LTX-2.3": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "High-fidelity Image-to-Video diffusion model quantized via DaSiWa Station.",
         "modelspec.architecture": "ltx2.3_22b_ti2v",
         "modelspec.implementation": "https://github.com/Lightricks/LTX-2",
@@ -47,7 +44,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Krea 2": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Krea 2 text-to-image diffusion transformer quantized via DaSiWa Station.",
         "modelspec.architecture": "krea-2",
         "modelspec.implementation": "https://huggingface.co/krea/Krea-2-Raw",
@@ -60,7 +56,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "MiniMax H3": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "MiniMax H3 (Hailuo 3.0) omni-modal joint video+audio diffusion transformer quantized via DaSiWa Station.",
         "modelspec.architecture": "minimax_h3",
         "modelspec.implementation": "https://github.com/MiniMax-AI/MiniMax-H3",
@@ -74,7 +69,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Flux.2": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Flux.2 diffusion model quantized via DaSiWa Station.",
         "modelspec.architecture": "flux2",
         "modelspec.implementation": "https://github.com/black-forest-labs/flux2",
@@ -87,7 +81,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Hunyuan Video": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Hunyuan Video diffusion model quantized via DaSiWa Station.",
         "modelspec.architecture": "hunyuan_video",
         "modelspec.implementation": "https://github.com/Tencent/HunyuanVideo",
@@ -100,7 +93,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Qwen Image": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Qwen Image diffusion model quantized via DaSiWa Station.",
         "modelspec.architecture": "qwen_image",
         "modelspec.implementation": "https://github.com/QwenLM/Qwen-Image",
@@ -113,7 +105,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Z-Image": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Z-Image diffusion model quantized via DaSiWa Station.",
         "modelspec.architecture": "z_image",
         "modelspec.implementation": "",
@@ -126,7 +117,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Z-Image Refiner": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Z-Image refiner model quantized via DaSiWa Station.",
         "modelspec.architecture": "z_image_refiner",
         "modelspec.implementation": "",
@@ -139,7 +129,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Anima": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Anima model quantized via DaSiWa Station.",
         "modelspec.architecture": "anima",
         "modelspec.implementation": "",
@@ -150,7 +139,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Radiance": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Radiance model quantized via DaSiWa Station.",
         "modelspec.architecture": "radiance",
         "modelspec.implementation": "",
@@ -163,7 +151,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Distillation Large": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Distilled (large) model quantized via DaSiWa Station.",
         "modelspec.architecture": "distillation_large",
         "modelspec.implementation": "",
@@ -176,7 +163,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Distillation Small": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Distilled (small) model quantized via DaSiWa Station.",
         "modelspec.architecture": "distillation_small",
         "modelspec.implementation": "",
@@ -189,7 +175,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "NeRF Large": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "NeRF (large) model quantized via DaSiWa Station.",
         "modelspec.architecture": "nerf_large",
         "modelspec.implementation": "",
@@ -202,7 +187,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "NeRF Small": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "NeRF (small) model quantized via DaSiWa Station.",
         "modelspec.architecture": "nerf_small",
         "modelspec.implementation": "",
@@ -215,7 +199,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "T5-XXL": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "T5-XXL text encoder quantized via DaSiWa Station.",
         "modelspec.architecture": "t5xxl",
         "modelspec.implementation": "",
@@ -224,7 +207,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Qwen 3.5": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Qwen 3.5 text encoder quantized via DaSiWa Station.",
         "modelspec.architecture": "qwen35",
         "modelspec.implementation": "",
@@ -233,7 +215,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Mistral": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Mistral text encoder quantized via DaSiWa Station.",
         "modelspec.architecture": "mistral",
         "modelspec.implementation": "",
@@ -242,7 +223,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Visual": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Visual encoder quantized via DaSiWa Station.",
         "modelspec.architecture": "visual",
         "modelspec.implementation": "",
@@ -251,7 +231,6 @@ MODEL_METADATA_CONFIGS = {
     },
     "Generic Text": {
         "modelspec.title": "{model_name}",
-        "modelspec.author": "Darksidewalker",
         "modelspec.description": "Generic text encoder quantized via DaSiWa Station.",
         "modelspec.architecture": "generic_text",
         "modelspec.implementation": "",

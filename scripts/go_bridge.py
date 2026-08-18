@@ -29,6 +29,7 @@ from core.metadata_manager import (
 from core.lora_merge_engine import run_lora_merge
 from core.int4_convrot_engine import run_int4_convrot_conversion
 from core.safetensors_engine import run_safe_conversion
+from core.watermark import verify_watermark as wm_verify, save_key as wm_save_key
 from utils.arch_detector import inspect_checkpoint
 from utils.file_ops import ensure_dirs
 from utils.pattern_audit import audit_patterns
@@ -265,6 +266,20 @@ def cmd_lora_merge(args):
         _emit(event)
 
 
+def cmd_watermark(args):
+    path = os.path.realpath(os.path.expanduser(args.path))
+    _emit(wm_verify(path))
+
+
+def cmd_watermark_key(args):
+    path = wm_save_key()
+    _emit({
+        "ok": True,
+        "path": path,
+        "note": "Watermark key generated and saved. Quant outputs will now carry a dasiwa.watermark token.",
+    })
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -311,6 +326,16 @@ def main():
     p = sub.add_parser("lora-merge")
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_merge)
+
+    p = sub.add_parser("watermark", help="Verify the dasiwa.watermark token in a quant output.")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_watermark)
+
+    p = sub.add_parser(
+        "watermark-key",
+        help="Generate and save the DaSiWa watermark key (~/.dasiwa/watermark.key).",
+    )
+    p.set_defaults(func=cmd_watermark_key)
 
     args = parser.parse_args()
     args.func(args)
