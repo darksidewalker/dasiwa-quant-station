@@ -34,6 +34,25 @@ class Int4ConvRotEngineTests(unittest.TestCase):
         self.assertTrue(is_preserved_key("Krea 2", "first.weight"))
         self.assertFalse(is_preserved_key("Krea 2", "blocks.0.attn.wq.weight"))
 
+    def test_minimax_h3_simple_request_accepted_and_preserve_policy(self):
+        # H3 is a layer-config-only arch (flag=None) that INT4 ConvRot now
+        # accepts. Structural/modulation layers are preserved; the four heavy
+        # linears are quantized (not preserved).
+        self.assertIsNone(validate_int4_convrot_request("MiniMax H3", "Simple"))
+        # Per-block structural / modulation / norm layers stay source precision.
+        self.assertTrue(is_preserved_key("MiniMax H3", "blocks.0.adaln_proj.linear.weight"))
+        self.assertTrue(is_preserved_key("MiniMax H3", "blocks.0.attn.q_norm.weight"))
+        self.assertTrue(is_preserved_key("MiniMax H3", "blocks.0.norm1.weight"))
+        # Top-level structural layers preserved.
+        self.assertTrue(is_preserved_key("MiniMax H3", "adaln_t_table"))
+        self.assertTrue(is_preserved_key("MiniMax H3", "time_embedder.proj_in.weight"))
+        self.assertTrue(is_preserved_key("MiniMax H3", "token_refiner.final_norm.weight"))
+        # The four heavy linears are NOT preserved (quantized by ConvRot).
+        self.assertFalse(is_preserved_key("MiniMax H3", "blocks.0.attn.qkv_proj.weight"))
+        self.assertFalse(is_preserved_key("MiniMax H3", "blocks.0.attn.out_proj.weight"))
+        self.assertFalse(is_preserved_key("MiniMax H3", "blocks.0.mlp.fc1.weight"))
+        self.assertFalse(is_preserved_key("MiniMax H3", "blocks.0.mlp.fc2.weight"))
+
     def test_quant_metadata_describes_the_comfyui_convrot_layout(self):
         self.assertEqual(
             build_quant_layer_metadata(),

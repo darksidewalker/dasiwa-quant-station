@@ -30,13 +30,13 @@ _DTYPE_SIZES = {"F64": 8, "F32": 4, "F16": 2, "BF16": 2, "I64": 8,
                 "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1}
 _PRESERVE_RX = {
     arch: [re.compile(pattern) for pattern in PRESERVE_PATTERNS[arch] + BAKED_VAE_PATTERNS]
-    for arch in ("WAN 2.2", "Krea 2")
+    for arch in ("WAN 2.2", "Krea 2", "MiniMax H3")
 }
 
 
 def validate_int4_convrot_request(architecture: str, strategy: str) -> Optional[str]:
-    if architecture not in {"LTX-2.3", "WAN 2.2", "Krea 2"}:
-        return "INT4 ConvRot supports only LTX-2.3, WAN 2.2, and Krea 2."
+    if architecture not in {"LTX-2.3", "WAN 2.2", "Krea 2", "MiniMax H3"}:
+        return "INT4 ConvRot supports only LTX-2.3, WAN 2.2, Krea 2, and MiniMax H3."
     if strategy != "Simple":
         return "INT4 ConvRot requires the deterministic Simple strategy."
     return None
