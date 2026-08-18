@@ -29,7 +29,7 @@ from core.metadata_manager import (
 from core.lora_merge_engine import run_lora_merge
 from core.int4_convrot_engine import run_int4_convrot_conversion
 from core.safetensors_engine import run_safe_conversion
-from core.watermark import verify_watermark as wm_verify, save_key as wm_save_key
+from core.watermark import verify_watermark as wm_verify, save_key as wm_save_key, watermark_status as wm_status
 from utils.arch_detector import inspect_checkpoint
 from utils.file_ops import ensure_dirs
 from utils.pattern_audit import audit_patterns
@@ -44,6 +44,32 @@ def _load_payload(args):
     if args.json:
         return json.loads(args.json)
     return json.load(sys.stdin)
+
+
+def _watermark_context(payload):
+    """
+    Apply the per-run watermark switch from the payload and return a one-line
+    hint describing the effective watermark state.
+
+    - ``watermark`` (bool, default True) gates whether a modelspec.watermark
+      token is written for this job.
+    - The hint tells the user when watermarking is enabled but no key is
+      configured, so outputs silently lack provenance.
+    """
+    enabled = bool(payload.get("watermark", True))
+    if enabled:
+        os.environ.pop("DASIWA_WATERMARK_DISABLED", None)
+    else:
+        os.environ["DASIWA_WATERMARK_DISABLED"] = "1"
+
+    status = wm_status()
+    if not enabled:
+        return "Watermarking disabled for this run — no modelspec.watermark will be written."
+    if status["available"]:
+        return f"Watermarking ON: modelspec.watermark will be added (secret from {status['source']})."
+    return ("Watermarking ON but no key configured — outputs will NOT carry "
+            "modelspec.watermark. Set DASIWA_WATERMARK_PASSPHRASE or run "
+            "`go_bridge.py watermark-key` to enable provenance.")
 
 
 def cmd_inspect(args):
@@ -189,12 +215,14 @@ def cmd_quantize(args):
     low_vram = bool(payload.get("low_vram"))
     is_full = bool(payload.get("full_checkpoint"))
     custom_metadata = payload.get("custom_metadata")  # user-edited metadata from UI
+    wm_hint = _watermark_context(payload)
 
     log_acc = (
         f"Initializing Pipeline for: {model_name}\n"
         f"Target Architecture: {model_type}\n"
         f"Full Checkpoint: {'Yes' if is_full else 'No'}\n"
         f"Output directory: {output_dir}\n"
+        f"{wm_hint}\n"
         + "-" * 40 + "\n"
     )
     safe_fmts = [
@@ -262,6 +290,7 @@ def cmd_quantize(args):
 def cmd_lora_merge(args):
     ensure_dirs()
     payload = _load_payload(args)
+    _emit({"type": "log", "text": _watermark_context(payload) + "\n"})
     for event in run_lora_merge(payload):
         _emit(event)
 
@@ -287,6 +316,10 @@ def cmd_watermark_key(args):
                  " (0600, outside the repository). Quant outputs will now "
                  "carry an EC-watermarked modelspec.watermark field."),
     })
+
+
+def cmd_watermark_status(args):
+    _emit(wm_status())
 
 
 def main():
@@ -347,6 +380,12 @@ def main():
     p.add_argument("--passphrase", default="",
                    help="Passphrase to save (omit to be prompted securely).")
     p.set_defaults(func=cmd_watermark_key)
+
+    p = sub.add_parser(
+        "watermark-status",
+        help="Report whether a watermark secret is configured (for the UI).",
+    )
+    p.set_defaults(func=cmd_watermark_status)
 
     args = parser.parse_args()
     args.func(args)

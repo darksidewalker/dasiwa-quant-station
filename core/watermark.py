@@ -229,15 +229,27 @@ def _token_payload_from_hex(token_hex: str, key: bytes):
         return None
 
 
+def _watermark_disabled() -> bool:
+    """
+    Per-run kill switch. The bridge sets DASIWA_WATERMARK_DISABLED=1 when the
+    user opts out of watermarking for this job. Reading (verifying) existing
+    watermarks is unaffected; this only stops new tokens from being written.
+    """
+    val = os.environ.get("DASIWA_WATERMARK_DISABLED", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 def watermark_for(architecture: str, model_name: str, file_path: str = None,
                   bits: str = "FP8") -> dict:
     """
     Build the EC-watermarked author metadata.
 
     Returns:
-      {}                     when no passphrase/key is configured (no-op)
+      {}                     when watermarking is disabled / no secret
       {"modelspec.watermark": "dswm1.<hex>"}  when a secret is available
     """
+    if _watermark_disabled():
+        return {}
     secret = _load_secret()
     if secret is None:
         return {}
@@ -378,3 +390,45 @@ def save_key(passphrase: str) -> str:
         fh.write(passphrase)
     os.chmod(_WATERMARK_KEY_FILE, 0o600)
     return _WATERMARK_KEY_FILE
+
+
+def watermark_status() -> dict:
+    """
+    Report whether a watermark secret is currently resolvable, for the UI.
+
+    Returns a dict with:
+      available: bool      — a secret is configured and usable
+      cipher_ok: bool       — the cryptography package is importable
+      source: str           — where the secret was found ("env" / "key_file"
+                              / "" when none). Never the secret value itself.
+      note: str            — human-readable guidance when not available
+    """
+    secret = _load_secret()
+    if secret is None:
+        return {
+            "available": False,
+            "cipher_ok": _CIPHER_OK,
+            "source": "",
+            "note": ("No watermark key configured. Set DASIWA_WATERMARK_PASSPHRASE "
+                     "or run `go_bridge.py watermark-key` to add provenance "
+                     "watermarks to quant outputs."),
+        }
+    if not _CIPHER_OK:
+        source = "key_file"
+        if os.environ.get("DASIWA_WATERMARK_PASSPHRASE") or os.environ.get("DASIWA_WATERMARK_KEY"):
+            source = "env"
+        return {
+            "available": False,
+            "cipher_ok": False,
+            "source": source,
+            "note": "cryptography package is required to use EC watermarks.",
+        }
+    source = "env"
+    if not (os.environ.get("DASIWA_WATERMARK_PASSPHRASE") or os.environ.get("DASIWA_WATERMARK_KEY")):
+        source = "key_file"
+    return {
+        "available": True,
+        "cipher_ok": True,
+        "source": source,
+        "note": "Watermark secret available; quant outputs will carry modelspec.watermark.",
+    }

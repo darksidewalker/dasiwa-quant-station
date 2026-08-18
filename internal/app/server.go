@@ -82,6 +82,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
 	mux.HandleFunc("POST /api/jobs/{id}/stop", s.handleJobStop)
 	mux.HandleFunc("GET /api/jobs/{id}/summary", s.handleJobSummary)
+	mux.HandleFunc("GET /api/watermark", s.handleWatermarkStatus)
 	mux.HandleFunc("POST /api/tools/scan", s.handleScan)
 	mux.HandleFunc("POST /api/tools/audit", s.handleAudit)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
@@ -412,6 +413,7 @@ type QuantizeRequest struct {
 	Optimizer      string   `json:"optimizer"`
 	LowVRAM        bool     `json:"low_vram"`
 	FullCheckpoint bool     `json:"full_checkpoint"`
+	Watermark      bool     `json:"watermark"`
 }
 
 type LoraSpec struct {
@@ -437,6 +439,7 @@ type LoraMergeRequest struct {
 	MergeDevice    string     `json:"merge_device"`
 	CUDADevice     string     `json:"cuda_device"`
 	VRAMHeadroomMB int        `json:"vram_headroom_mb"`
+	Watermark      bool       `json:"watermark"`
 }
 
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
@@ -866,6 +869,16 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	out, err := s.runBridge(r.Context(), "audit", cleanPath(in.Path, s.modelsDir), "--architecture", in.Architecture)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out)
+}
+
+func (s *Server) handleWatermarkStatus(w http.ResponseWriter, r *http.Request) {
+	out, err := s.runBridge(r.Context(), "watermark-status")
+	if err != nil {
+		writeJSON(w, map[string]any{"available": false, "cipher_ok": true, "note": "could not resolve watermark status"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

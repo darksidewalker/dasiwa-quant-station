@@ -47,6 +47,11 @@
           <input id="low-vram" type="checkbox">
           <span title="Reduce VRAM usage at the cost of slower quantization">Low VRAM</span>
         </label>
+        <label class="checkline">
+          <input id="watermark" type="checkbox" checked>
+          <span title="Stamps an EC-based, only-you-can-decode provenance token into the output's modelspec.watermark field (no key = no token)">Watermark outputs</span>
+        </label>
+        <p id="watermark-hint" class="hint hidden"></p>
       </section>
 
       <section class="panel">

@@ -53,6 +53,7 @@ function saveSettings() {
     loraDryRun: $("lora-dry-run").checked,
     loraStrict: $("lora-strict").checked,
     krea2Unchain: $("krea2-unchain").checked,
+    watermark: $("watermark").checked,
     lastFileDir: state.lastFileDir,
     lastLoraDir: state.lastLoraDir,
     loras: state.loras.map((l) => ({
@@ -118,6 +119,7 @@ function loadSettings() {
       $("lora-dry-run").checked = s.loraDryRun ?? true;
       $("lora-strict").checked = s.loraStrict ?? true;
       $("krea2-unchain").checked = !!s.krea2Unchain;
+      $("watermark").checked = s.watermark ?? true;
       if (Array.isArray(s.loras)) {
         state.loras = s.loras.map((l) => ({
           path: l.path || "",
@@ -287,6 +289,7 @@ async function init() {
   updateArchDependentUI();
   refreshMetadata();
   refreshSystem();
+  refreshWatermarkStatus();
   setInterval(refreshSystem, 5000);
 
   // Restore persisted console log so progress isn't lost across reloads.
@@ -518,6 +521,7 @@ function wireEvents() {
   $("model-name").addEventListener("input", () => { refreshMetadata(); saveSettings(); });
   $("full-checkpoint").addEventListener("change", () => { refreshMetadata(); saveSettings(); });
   $("low-vram").addEventListener("change", saveSettings);
+  $("watermark").addEventListener("change", () => { refreshWatermarkStatus(); saveSettings(); });
 
   document.querySelectorAll("#strategy button").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -994,6 +998,7 @@ async function startLoraMerge() {
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,
         krea2_unchain: $("krea2-unchain").checked,
+        watermark: $("watermark").checked,
       }),
     });
     state.jobId = data.job_id;
@@ -1031,6 +1036,7 @@ async function startJob() {
         optimizer: "prodigy",
         low_vram: $("low-vram").checked,
         full_checkpoint: $("full-checkpoint").checked,
+        watermark: $("watermark").checked,
       }),
     });
     state.jobId = data.job_id;
@@ -1217,6 +1223,32 @@ async function refreshSystem() {
   } catch {
     $("cpu").textContent = "--";
   }
+}
+
+async function refreshWatermarkStatus() {
+  const hint = $("watermark-hint");
+  const box = $("watermark");
+  if (!hint || !box) return;
+  let status;
+  try {
+    status = await api("/api/watermark");
+  } catch {
+    return;
+  }
+  const enabled = box.checked;
+  let text, warn = false;
+  if (!enabled) {
+    text = "Watermarking off for this run — outputs will NOT carry a modelspec.watermark token.";
+  } else if (status.available) {
+    text = `Watermark key available (${status.source}); outputs will carry modelspec.watermark.`;
+  } else {
+    warn = true;
+    text = "No watermark key configured — outputs will NOT carry modelspec.watermark. " +
+      "Set DASIWA_WATERMARK_PASSPHRASE (or run `go_bridge.py watermark-key`) to enable provenance.";
+  }
+  hint.textContent = text;
+  hint.classList.toggle("warn", warn);
+  hint.classList.remove("hidden");
 }
 
 function clampPercent(value) {
