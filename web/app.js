@@ -852,11 +852,15 @@ function renderLoras() {
   const ltxStrategies = ["All", "Video", "Audio"];
   const wan22Strategies = ["Balanced", "Motion", "Visuals"];
   const krea2Strategies = ["Balanced", "Style", "Content", "Detail"];
+  // H3 is an omni-modal joint video+audio DiT; offer video+audio emphasis presets.
+  const h3Strategies = ["Balanced", "Motion", "Visuals", "Audio"];
   const strategies = state.architecture === "Krea 2"
     ? krea2Strategies
     : state.architecture === "WAN 2.2"
       ? wan22Strategies
-      : ltxStrategies;
+      : state.architecture === "MiniMax H3"
+        ? h3Strategies
+        : ltxStrategies;
   state.loras.forEach((lora, idx) => {
     if (!strategies.includes(lora.strategy)) lora.strategy = defaultLoraStrategy();
     const row = document.createElement("div");
@@ -922,7 +926,7 @@ async function selectSource(path) {
   if (path.endsWith(".safetensors")) {
     try {
       const info = await api(`/api/inspect?path=${encodeURIComponent(path)}`);
-      if (["WAN 2.2", "LTX-2.3", "Krea 2"].includes(info.architecture)) {
+      if (["WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3"].includes(info.architecture)) {
         state.architecture = info.architecture;
         $("architecture").value = info.architecture;
         updateArchDependentUI();

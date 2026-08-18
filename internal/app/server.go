@@ -138,7 +138,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"root_dir":   s.rootDir,
 		"models_dir": s.modelsDir,
 		"architectures": []string{
-			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "Hunyuan Video", "Flux.2",
+			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3", "Hunyuan Video", "Flux.2",
 			"Qwen Image", "Z-Image", "Z-Image Refiner", "Anima", "Radiance",
 			"Distillation Large", "Distillation Small", "NeRF Large", "NeRF Small",
 			"T5-XXL", "Qwen 3.5", "Mistral", "Visual", "Generic Text",
