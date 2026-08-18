@@ -679,6 +679,8 @@ function setWorkflowMode(mode) {
   });
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
+  // Show the dry-run checkbox (under Strategy) only in model merge mode.
+  $("mm-dry-run-wrap").style.display = mode === "model" ? "" : "none";
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
   startBtn.classList.remove("hidden");

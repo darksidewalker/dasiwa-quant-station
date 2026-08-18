@@ -52,6 +52,10 @@
           <span title="Stamps an EC-based, only-you-can-decode provenance token into the output's modelspec.watermark field (no key = no token)">Watermark outputs</span>
         </label>
         <p id="watermark-hint" class="hint hidden"></p>
+        <label class="checkline mm-dry-run-wrap" id="mm-dry-run-wrap" style="display:none">
+          <input id="mm-dry-run" type="checkbox" checked>
+          <span title="Validate key sets and plan the merge without writing a file">Dry run</span>
+        </label>
       </section>
 
       <section class="panel mm-side-panel hidden" id="mm-side-panel">
@@ -179,14 +183,8 @@
           <div class="section-title">
             <div>
               <h3>Model Merge</h3>
-              <p>Model-level tensor merge (not LoRA). Base checkpoint reuses the Source panel; overlay, recipe and dry-run are in the sidebar.</p>
+              <p>Model-level tensor merge (not LoRA). Base reuses the Source panel; overlay and recipe live in the sidebar.</p>
             </div>
-          </div>
-          <div class="mm-inline-row">
-            <label class="checkline mm-dry-run">
-              <input id="mm-dry-run" type="checkbox" checked>
-              <span title="Validate key sets and plan the merge without writing a file">Dry run</span>
-            </label>
           </div>
         </section>
 
