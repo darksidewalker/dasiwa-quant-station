@@ -226,6 +226,8 @@ Every quantized and LoRA-merged output carries an EC-based provenance token in t
   2. `DASIWA_WATERMARK_KEY` (environment; 64-hex pre-derived key or a passphrase)
   3. `~/.dasiwa/watermark.key` (0600, written by `go_bridge.py watermark-key`)
 - **Passphrase location:** kept in your environment / a 0600 key file **outside the repository** — never committed to Gitea or GitHub.
+- **UI:** a **Watermark outputs** checkbox (on by default, shared by Quantize and LoRA modes) toggles watermarking per run; a live hint below it tells you whether a key is available, whether no key is configured (no token written), or that watermarking is off for this run. Unchecking it sets a per-job kill switch so that run's outputs skip `modelspec.watermark`.
+- **Status:** `GET /api/watermark` (and `go_bridge.py watermark-status`) reports whether a secret is resolvable — without ever returning the secret value.
 
 ```bash
 # Persist the passphrase (0600, outside the repo)
@@ -233,6 +235,9 @@ python scripts/go_bridge.py watermark-key --passphrase "your-passphrase"
 
 # Decode the watermark in a quant output (safetensors or GGUF)
 python scripts/go_bridge.py watermark path/to/output.safetensors
+
+# Check whether a watermark key is currently configured (for the UI)
+python scripts/go_bridge.py watermark-status
 ```
 
 ---
@@ -296,6 +301,7 @@ lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
 | POST | `/api/tools/audit` | Pattern coverage audit |
 | GET | `/api/jobs/{id}/events` | SSE job log stream |
 | POST | `/api/jobs/{id}/stop` | Cancel running job |
+| GET | `/api/watermark` | Report if a watermark key is configured (no secret returned) |
 
 ---
 
