@@ -156,6 +156,17 @@ input, select, textarea {
 .hint.hidden { display: none; }
 .hint.warn { color: #f0b24e; }
 
+/* Model Merge middle panel: hint (left, flexes) + dry-run (right-aligned) on one line */
+.mm-inline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+}
+.mm-inline-row .hint { margin: 0; flex: 1 1 auto; }
+.mm-dry-run { flex: 0 0 auto; margin: 0; }
+
 /* "Watermark outputs" label: gently pulses red when the box is checked but
    no watermark key is configured (enabled-but-inert state). */
 @keyframes wm-pulse {

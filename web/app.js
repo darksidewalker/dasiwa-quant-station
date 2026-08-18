@@ -130,8 +130,8 @@ function loadSettings() {
       $("watermark").checked = s.watermark ?? true;
       state.mmBasePath = s.mmBasePath || "";
       state.mmOverlayPath = s.mmOverlayPath || "";
-      if (state.mmBasePath) $("mm-base").value = shortPath(state.mmBasePath);
-      if (state.mmOverlayPath) $("mm-overlay").value = shortPath(state.mmOverlayPath);
+      $("mm-base-label").textContent = state.mmBasePath ? shortPath(state.mmBasePath) : "Pick…";
+      $("mm-overlay-label").textContent = state.mmOverlayPath ? shortPath(state.mmOverlayPath) : "Pick…";
       if (s.mmRecipe) $("mm-recipe").value = s.mmRecipe;
       if (s.mmOutput != null) $("mm-output").value = s.mmOutput;
       $("mm-dry-run").checked = s.mmDryRun ?? true;
@@ -442,7 +442,7 @@ function updateArchDependentUI() {
 
 function selectModelMergeBase(path) {
   state.mmBasePath = path;
-  $("mm-base").value = shortPath(path);
+  $("mm-base-label").textContent = shortPath(path);
   $("browser").close();
   saveSettings();
   refreshModelMergeHint();
@@ -450,7 +450,7 @@ function selectModelMergeBase(path) {
 
 function selectModelMergeOverlay(path) {
   state.mmOverlayPath = path;
-  $("mm-overlay").value = shortPath(path);
+  $("mm-overlay-label").textContent = shortPath(path);
   $("browser").close();
   saveSettings();
   refreshModelMergeHint();
@@ -459,8 +459,8 @@ function selectModelMergeOverlay(path) {
 function refreshModelMergeHint() {
   const hint = $("mm-hint");
   if (!hint) return;
-  const base = state.mmBasePath || $("mm-base").value;
-  const overlay = state.mmOverlayPath || $("mm-overlay").value;
+  const base = state.mmBasePath;
+  const overlay = state.mmOverlayPath;
   let text, warn = false;
   if (state.architecture !== "MiniMax H3") {
     warn = true;
@@ -478,7 +478,6 @@ function refreshModelMergeHint() {
   }
   hint.textContent = text;
   hint.classList.toggle("warn", warn);
-  hint.classList.remove("hidden");
 }
 
 function updateModelMergeVisibility() {
@@ -486,8 +485,8 @@ function updateModelMergeVisibility() {
 }
 
 async function startModelMerge() {
-  const base = state.mmBasePath || $("mm-base").value;
-  const overlay = state.mmOverlayPath || $("mm-overlay").value;
+  const base = state.mmBasePath;
+  const overlay = state.mmOverlayPath;
   if (!base) return log("Pick a base (fl2va) checkpoint first.\n");
   if (!overlay) return log("Pick an overlay (ref2va) checkpoint first.\n");
   const dryRun = $("mm-dry-run").checked;
@@ -692,6 +691,8 @@ function setWorkflowMode(mode) {
   document.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
     panel.classList.toggle("hidden", panel.dataset.workflowPanel !== mode);
   });
+  // Show the sidebar Model Merge section only in model mode.
+  $("mm-side-panel").classList.toggle("hidden", mode !== "model");
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
   startBtn.classList.remove("hidden");
