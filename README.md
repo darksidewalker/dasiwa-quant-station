@@ -2,7 +2,7 @@
 
 DaSiWa Quant Station is a local quantization and LoRA merge workbench for video and image diffusion models. It combines a modern Go-powered web UI with proven Python quantization engines for GGUF and safetensors workflows, plus architecture-aware LoRA merging with per-LoRA strategy control.
 
-Built around the practical pain points of WAN 2.2, LTX-2.3, and Krea 2 diffusion checkpoints: preserving 5D/video-critical tensors, keeping full-checkpoint companion modules safe, injecting modelspec metadata, avoiding INT8 paths that produce corrupted video, and merging LoRAs with architecture-specific tensor classification.
+Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax H3 diffusion checkpoints: preserving 5D/video-critical tensors, keeping full-checkpoint companion modules safe, injecting modelspec metadata, avoiding INT8 paths that produce corrupted video, and merging LoRAs with architecture-specific tensor classification. Quant outputs carry an EC-based, only-you-can-decode `modelspec.watermark` provenance token.
 
 ![Quant Station Preview](assets/DaSiWa-QuantStation.webp)
 
@@ -16,7 +16,7 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, and Krea 2 diffusion
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
 | LoRA merge | Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2 with per-LoRA strength, global scaling, dry-run, strict matching, adaptive mode, `.diff` format support, and Krea 2 unchain |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
-| Metadata tools | Preview, read, inject modelspec metadata. SHA256/AutoV1/V2/V3/CRC32 hash calculation. In-place header rewrite (avoids GB-scale full rewrites) |
+| Metadata tools | Preview, read, inject modelspec metadata. SHA256/AutoV1/V2/V3/CRC32 hash calculation. In-place header rewrite (avoids GB-scale full rewrites). EC-based `modelspec.watermark` provenance (only-you-can-decode) |
 | Diagnostics | 5D tensor scanner, pattern audit, LoRA shape-mismatch detection with ratio analysis |
 | Hardware monitor | Real-time CPU%, RAM, GPU%, VRAM bars with 5-second polling |
 | Memory cleanup | One-button RAM/VRAM cache release (Go GC, Python GC, malloc_trim, PyTorch/CuPy cache) |
@@ -69,7 +69,7 @@ Models are loaded from `$DASIWA_MODELS_DIR` (if set), `~/models`, or `<project-r
 | NVFP4 | Blackwell VRAM savings | More aggressive; sensitive layers rescued to FP8 where local tables exist |
 | MXFP8 | Blackwell microscaling | Pure MXFP8; requires SM >= 10.0 (Blackwell). Use Hybrid for Ada compatibility |
 | Hybrid MXFP8 | Ada + Blackwell compatibility | Two-pass: MXFP8 quantize then hybrid conversion with tensorwise FP8 fallback |
-| INT4 ConvRot | Maximum compression | w4a4 ConvRot via comfy-kitchen TensorCore layout. Supports LTX-2.3, WAN 2.2, Krea 2. Requires BF16/FP16 source (refuses lossy sources) |
+| INT4 ConvRot | Maximum compression | w4a4 ConvRot via comfy-kitchen TensorCore layout. Supports LTX-2.3, WAN 2.2, Krea 2, MiniMax H3. Requires BF16/FP16 source (refuses lossy sources) |
 | INT8 Tensor-wise | Safer INT8 path | Recommended INT8 choice for broad ComfyUI compatibility |
 | INT8 Row-wise ConvRot Runtime | Experimental/runtime-specific INT8 | Requires inference code that reads ConvRot metadata and rotates activations |
 | GGUF Q formats | llama.cpp-style deployment | Uses `ggufy` plus sensitivity maps for verified video tensors |
@@ -85,6 +85,7 @@ An architecture marked with 🔒 has locally verified preserve/rescue tables. Ot
 | WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
 | LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
 | Krea 2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
 | Flux.2 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 | Hunyuan Video | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 | Qwen Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
@@ -169,6 +170,7 @@ The architecture selection controls the `convert_to_quant` preset and, for verif
 | WAN 2.2 | Yes | Yes | Verified local table for structural/video-sensitive layers |
 | LTX-2.3 | Yes | Yes | Verified local table, including audio/video connector and gate-sensitive patterns |
 | Krea 2 | Yes | Yes | Verified local table for image diffusion transformer. No convert_to_quant flag; uses generic quantization with local layer config |
+| MiniMax H3 | Yes | Yes | Omni-modal (video+audio) DiT. No upstream convert_to_quant preset (flag=None); the local layer config carries all quality. 2K native (2560x1440). Covers FL2VA and Ref2VA |
 | Hunyuan Video, Flux.2, Qwen Image, Z-Image, Z-Image Refiner, Anima, Radiance, Distillation, NeRF, text presets | No | Limited/none | Uses upstream `convert_to_quant` preset skip logic |
 | Not set | No | Skipped | Runs without architecture flag, local layer config, or architecture verification |
 
@@ -212,6 +214,29 @@ In-app **Update & Restart**: pulls latest source from origin/main, refreshes dep
 
 ---
 
+## Provenance Watermark
+
+Every quantized and LoRA-merged output carries an EC-based provenance token in the `modelspec.watermark` field. No plaintext author string is written, and the rest of the custom metadata is left untouched — only `modelspec.watermark` is added.
+
+- **Scheme:** ephemeral X25519 (ECIES) wrapping an AES-256-GCM ciphertext. The static key is derived from your passphrase via PBKDF2-HMAC-SHA256 (clamped to a valid X25519 scalar). A fresh ephemeral key is generated per output, so every token is unique and only you can decode it.
+- **Payload:** tool, architecture, model name, bit width, timestamp, a random nonce, and the SHA-256 of the output (when the file exists).
+- **Decode:** with the correct passphrase the token decodes to the provenance payload; a wrong or tampered token fails (GCM authentication). Without any configured secret the field is simply not written (clean no-op).
+- **Secret resolution (first hit wins):**
+  1. `DASIWA_WATERMARK_PASSPHRASE` (environment)
+  2. `DASIWA_WATERMARK_KEY` (environment; 64-hex pre-derived key or a passphrase)
+  3. `~/.dasiwa/watermark.key` (0600, written by `go_bridge.py watermark-key`)
+- **Passphrase location:** kept in your environment / a 0600 key file **outside the repository** — never committed to Gitea or GitHub.
+
+```bash
+# Persist the passphrase (0600, outside the repo)
+python scripts/go_bridge.py watermark-key --passphrase "your-passphrase"
+
+# Decode the watermark in a quant output (safetensors or GGUF)
+python scripts/go_bridge.py watermark path/to/output.safetensors
+```
+
+---
+
 ## Project Layout
 
 ```
@@ -227,6 +252,7 @@ core/                          Quantization, metadata, and LoRA merge engines
   lora_merge_engine.py         Architecture-aware LoRA merge pipeline
   layer_config_builder.py      Verified preserve/rescue regex tables
   metadata_manager.py          Modelspec metadata preview/read/injection
+  watermark.py                 EC X25519 provenance watermark (modelspec.watermark)
 utils/                         Detection, scan, audit, system helpers
   arch_detector.py             Header-only architecture detection
   lora_inspector.py            LoRA pair discovery, tensor manifest reading
