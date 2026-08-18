@@ -15,6 +15,7 @@ GGUFY_BIN = os.path.realpath(os.path.join(ROOT_DIR, "bin", "ggufy"))
 _UI_ARCH_TO_CONVERT_ARCH = {
     "WAN 2.2": "wan",
     "LTX-2.3": "ltxv",
+    "MiniMax H3": "minimax_h3",
 }
 
 def _sanitize_model_name(model_name):
