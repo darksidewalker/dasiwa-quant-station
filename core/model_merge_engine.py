@@ -202,21 +202,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     base_keys = set(base_manifest)
     overlay_keys_available = set(overlay_manifest)
 
-    if base_keys != overlay_keys_available:
-        missing_in_overlay = base_keys - overlay_keys_available
-        missing_in_base = overlay_keys_available - base_keys
-        yield _log(
-            f"ERROR: key set mismatch between base ({len(base_keys)} tensors) "
-            f"and overlay ({len(overlay_keys_available)} tensors).\n"
-            f"  missing in overlay: {len(missing_in_overlay)} "
-            f"(sample: {sorted(missing_in_overlay)[:5]})\n"
-            f"  missing in base:    {len(missing_in_base)} "
-            f"(sample: {sorted(missing_in_base)[:5]})\n"
-        )
-        yield {"type": "done", "status": "failed"}
-        return
-
-    yield _status(f"Inspected checkpoints: {len(base_keys)} tensors each")
+    yield _status(f"Inspected checkpoints: base {len(base_keys)} tensors, overlay {len(overlay_keys_available)} tensors")
 
     # Compute which keys come from the overlay
     overlay_set = _compute_overlay_keys(base_manifest, overlay_re)
@@ -225,6 +211,47 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         yield _log("No overlay keys matched — nothing to merge.\n")
         yield {"type": "done", "status": "failed"}
         return
+
+    # The output key set is the BASE key set (streamed in base order). The
+    # overlay file only needs to supply the overlay keys; extra overlay-only
+    # keys are discarded. This keeps quant-layout marker tensors (e.g.
+    # comfy_quant, weight_scale) that one parent quant carries but the other
+    # does not from breaking the merge.
+    missing_in_overlay = overlay_set - overlay_keys_available
+    if missing_in_overlay:
+        yield _log(
+            f"ERROR: overlay is missing {len(missing_in_overlay)} overlay key(s): "
+            f"{sorted(missing_in_overlay)[:5]}\n"
+        )
+        yield {"type": "done", "status": "failed"}
+        return
+
+    # Overlay tensors must match the base's shape/dtype for the same key,
+    # otherwise the base-built header would not describe the written bytes.
+    overlay_mismatches = [
+        k for k in sorted(overlay_set)
+        if (base_manifest[k].shape, base_manifest[k].dtype) != (
+            overlay_manifest[k].shape,
+            overlay_manifest[k].dtype,
+        )
+    ]
+    if overlay_mismatches:
+        k = overlay_mismatches[0]
+        yield _log(
+            f"ERROR: overlay key shape/dtype mismatch for {len(overlay_mismatches)} key(s), "
+            f"e.g. {k!r}: base {base_manifest[k].dtype} {list(base_manifest[k].shape)} "
+            f"vs overlay {overlay_manifest[k].dtype} {list(overlay_manifest[k].shape)}\n"
+        )
+        yield {"type": "done", "status": "failed"}
+        return
+
+    extra_in_overlay = overlay_keys_available - base_keys
+    if extra_in_overlay:
+        yield _log(
+            f"Overlay carries {len(extra_in_overlay)} key(s) not present in the base "
+            f"(sample: {sorted(extra_in_overlay)[:5]}); they are discarded — "
+            f"output keeps the base key set.\n"
+        )
 
     overlay_set_list = sorted(overlay_set)
     block_idxs = sorted({int(overlay_re.match(k).group(1)) for k in overlay_set_list})

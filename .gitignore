@@ -43,4 +43,4 @@ ggufy_sens_*.json
 # --- Agent / AI Tool Config ---
 .agents/
 .hermes/
-skills-lock.json
+skills-lock.json.projectatlas/

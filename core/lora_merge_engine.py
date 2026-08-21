@@ -426,6 +426,10 @@ def _safetensors_dtype(dtype: str) -> str:
         "INT8": "I8",
         "UINT8": "U8",
         "BOOL": "BOOL",
+        "F8_E4M3": "F8_E4M3",
+        "F8_E5M2": "F8_E5M2",
+        "FLOAT8_E4M3FN": "F8_E4M3",
+        "FLOAT8_E5M2": "F8_E5M2",
     }
     if normalized in aliases:
         return aliases[normalized]
@@ -439,6 +443,8 @@ def _dtype_size(dtype: str) -> int:
         "BOOL": 1,
         "U8": 1,
         "I8": 1,
+        "F8_E4M3": 1,
+        "F8_E5M2": 1,
         "I16": 2,
         "I32": 4,
         "I64": 8,
