@@ -32,3 +32,25 @@ func TestUpdateStepsPullsLatestSourceBeforeSetupAndBuild(t *testing.T) {
 		t.Fatalf("third step should build the Go app, got %#v", steps[2].cmd)
 	}
 }
+
+func TestFormatSupportedFor(t *testing.T) {
+	cases := []struct {
+		format string
+		arch   string
+		want   bool
+	}{
+		{"W4A8", "MiniMax H3", true},
+		{"W4A8", "LTX-2.3", false},
+		{"W4A8", "WAN 2.2", false},
+		{"INT4 ConvRot Runtime", "Krea 2", true},
+		{"INT4 ConvRot Runtime", "Flux.2", false},
+		{"INT4 ConvRot Runtime", "Not set", false},
+		{"FP8", "Any Arch", true}, // unrestricted format
+		{"GGUF_Q4_K", "Any Arch", true},
+	}
+	for _, c := range cases {
+		if got := formatSupportedFor(c.format, c.arch); got != c.want {
+			t.Errorf("formatSupportedFor(%q, %q) = %v, want %v", c.format, c.arch, got, c.want)
+		}
+	}
+}

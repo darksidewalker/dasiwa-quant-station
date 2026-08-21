@@ -134,11 +134,35 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// formatSupport lists which architectures each quant format is valid for.
+// Formats without an entry are unrestricted (supported by every diffusion
+// architecture). The UI uses this map to filter the format chips by the
+// selected/auto-detected architecture; handleQuantize re-checks it as a
+// server-side guard for direct API clients.
+var formatSupport = map[string][]string{
+	"INT4 ConvRot Runtime": {"WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3"},
+	"W4A8":                 {"MiniMax H3"},
+}
+
+func formatSupportedFor(format, architecture string) bool {
+	supported, ok := formatSupport[format]
+	if !ok {
+		return true
+	}
+	for _, arch := range supported {
+		if arch == architecture {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"version":    s.version,
 		"root_dir":   s.rootDir,
 		"models_dir": s.modelsDir,
+		"format_support": formatSupport,
 		"architectures": []string{
 			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3", "Hunyuan Video", "Flux.2",
 			"Qwen Image", "Z-Image", "Z-Image Refiner", "Anima", "Radiance",
@@ -471,12 +495,12 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, format := range req.Formats {
-		if format == "INT4 ConvRot Runtime" && req.Strategy != "Simple" {
-			writeError(w, http.StatusBadRequest, "INT4 ConvRot requires the Simple strategy")
+		if (format == "INT4 ConvRot Runtime" || format == "W4A8") && req.Strategy != "Simple" {
+			writeError(w, http.StatusBadRequest, format+" requires the Simple strategy")
 			return
 		}
-		if format == "W4A8" && req.Strategy != "Simple" {
-			writeError(w, http.StatusBadRequest, "W4A8 requires the Simple strategy")
+		if req.Architecture != "" && req.Architecture != "Not set" && !formatSupportedFor(format, req.Architecture) {
+			writeError(w, http.StatusBadRequest, format+" is not supported for architecture "+req.Architecture)
 			return
 		}
 	}

@@ -3,6 +3,8 @@ const state = {
   modelsDir: "",
   sourcePath: "",
   architecture: "WAN 2.2",
+  allFormats: [],
+  formatSupport: {},
   strategy: "Optimizer-driven",
   workflowMode: "quantize",
   formats: new Set(),
@@ -267,6 +269,7 @@ async function init() {
   state.appVersion = cfg.version || "unknown";
 
   const arch = $("architecture");
+  state.formatSupport = cfg.format_support || {};
   cfg.architectures.forEach((name) => {
     const opt = document.createElement("option");
     opt.value = name;
@@ -341,14 +344,30 @@ function schedulePing(delay = PING_INTERVAL_MS) {
 }
 
 function renderFormats(formats) {
+  state.allFormats = formats;
+  renderFormatsForArch(state.allFormats, state.architecture);
+}
+
+// Re-render the format chips, showing only formats the selected
+// architecture supports (per the server's format_support map). Selected
+// formats that are no longer supported are dropped from state with a log
+// line. "Not set" / unknown architectures show every format.
+function renderFormatsForArch(formats, architecture) {
+  const arch = architecture && architecture !== "Not set" ? architecture : null;
+  const supported = (fmt) => {
+    if (!arch) return true;
+    const list = state.formatSupport[fmt.value];
+    return !list || list.includes(arch);
+  };
   const root = $("formats");
   root.textContent = "";
   const groups = [
-    {title: "Safetensors", items: formats.filter((fmt) => !fmt.value.startsWith("GGUF_"))},
-    {title: "GGUF", items: formats.filter((fmt) => fmt.value.startsWith("GGUF_"))},
+    {title: "Safetensors", items: formats.filter(supported).filter((fmt) => !fmt.value.startsWith("GGUF_"))},
+    {title: "GGUF", items: formats.filter(supported).filter((fmt) => fmt.value.startsWith("GGUF_"))},
   ];
-
+  const visible = new Set();
   groups.forEach((group) => {
+    if (group.items.length === 0) return;
     const section = document.createElement("section");
     section.className = "format-group";
     const title = document.createElement("h4");
@@ -356,30 +375,50 @@ function renderFormats(formats) {
     const list = document.createElement("div");
     list.className = "format-list";
     group.items.forEach((fmt) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "chip";
+      visible.add(fmt.value);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip";
       btn.textContent = compactFormatLabel(fmt.label);
-    btn.dataset.value = fmt.value;
-    const tip = formatTitle(fmt.value);
-    if (tip) btn.title = tip;
-    btn.addEventListener("click", () => {
-      if (state.formats.has(fmt.value)) {
-        state.formats.delete(fmt.value);
-        btn.classList.remove("active");
-      } else {
-        state.formats.add(fmt.value);
-        btn.classList.add("active");
-      }
-      enforceInt4ConvRotStrategy();
-      saveSettings();
-    });
+      btn.dataset.value = fmt.value;
+      const tip = formatTitle(fmt.value);
+      if (tip) btn.title = tip;
+      btn.classList.toggle("active", state.formats.has(fmt.value));
+      btn.addEventListener("click", () => {
+        if (state.formats.has(fmt.value)) {
+          state.formats.delete(fmt.value);
+          btn.classList.remove("active");
+        } else {
+          state.formats.add(fmt.value);
+          btn.classList.add("active");
+        }
+        enforceInt4ConvRotStrategy();
+        saveSettings();
+      });
       list.appendChild(btn);
     });
     section.appendChild(title);
     section.appendChild(list);
     root.appendChild(section);
   });
+  // Drop selected formats that are no longer offered for this architecture.
+  let dropped = 0;
+  state.formats.forEach((fmt) => {
+    if (!visible.has(fmt)) {
+      state.formats.delete(fmt);
+      dropped += 1;
+    }
+  });
+  if (dropped) {
+    log(`Architecture "${arch}" dropped ${dropped} unsupported format selection(s).\n`);
+    saveSettings();
+  }
+  return visible;
+}
+
+function applyArchFormatFilter() {
+  if (!state.allFormats || !state.allFormats.length) return;
+  renderFormatsForArch(state.allFormats, state.architecture);
 }
 
 function compactFormatLabel(label) {
@@ -430,6 +469,7 @@ function enforceInt4ConvRotStrategy() {
 }
 
 function updateArchDependentUI() {
+  applyArchFormatFilter();
   const unchainLabel = $("krea2-unchain-label");
   if (unchainLabel) {
     unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
