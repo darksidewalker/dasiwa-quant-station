@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import struct
 from contextlib import ExitStack
@@ -73,6 +74,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     matched_ops: List[Dict[str, Any]] = []
     skipped = 0          # preserve-pattern skips
     strategy_skipped = 0 # tensors excluded by strategy multiplier (e.g. Video → audio)
+    decomposed_skipped = 0  # factorized LoKr (lokr_w1_a/b, lokr_w2_a/b) — reported, not merged
     unmatched = 0
     ambiguous = 0
 
@@ -83,9 +85,22 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         lora_manifest = read_safetensors_manifest(lora_path)
         pairs = discover_lora_pairs(lora_manifest)
         diff_patches = discover_diff_patches(lora_manifest)
-        yield _log(f"LoRA: {os.path.basename(lora_path)} | strategy={lora_strategy} | tensors={len(lora_manifest)} | pairs={len(pairs)} | diff_patches={len(diff_patches)}\n")
+        kind_counts: Dict[str, int] = {}
+        for p in pairs:
+            kind_counts[p.kind] = kind_counts.get(p.kind, 0) + 1
+        kind_note = " | ".join(f"{k}={v}" for k, v in sorted(kind_counts.items()) if k != "lora")
+        yield _log(f"LoRA: {os.path.basename(lora_path)} | strategy={lora_strategy} | tensors={len(lora_manifest)} | pairs={len(pairs)}{(' | ' + kind_note) if kind_note else ''} | diff_patches={len(diff_patches)}\n")
         with safe_open(lora_path, framework="pt", device="cpu") as lf:
             for pair in pairs:
+                if getattr(pair, "kind", "lora") == "lokr_decomposed":
+                    # Factorized LoKr (lokr_w1_a/b, lokr_w2_a/b, optional t2):
+                    # ComfyUI rebuilds w1/w2 on the fly; the merge engine does
+                    # not materialize the rebuild. Report it so users see why
+                    # the LoRA contributes nothing instead of it vanishing.
+                    decomposed_skipped += 1
+                    reports.append(_report(pair.base_name, None, "skipped_decomposed", lora_path,
+                                           detail="factorized LoKr (lokr_w1_a/b, lokr_w2_a/b) — not mergeable by engine"))
+                    continue
                 candidates = [c for c in pair.target_candidates if c in base_keys]
                 if len(candidates) == 0:
                     unmatched += 1
@@ -102,7 +117,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     reports.append(_report(pair.base_name, target_key, "skipped_preserve", lora_path))
                     continue
                 base_shape = base_manifest[target_key].shape
-                delta_shape = _delta_shape(pair.down_shape, pair.up_shape)
+                delta_shape = _delta_shape(pair.down_shape, pair.up_shape, getattr(pair, "kind", "lora"))
                 if tuple(base_shape) != tuple(delta_shape):
                     unmatched += 1
                     reports.append(_report(pair.base_name, target_key, "shape_mismatch", lora_path, base_shape=base_shape, delta_shape=delta_shape))
@@ -119,6 +134,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     matched_ops.append({
                         "lora_path": lora_path,
                         "strategy": lora_strategy,
+                        "kind": getattr(pair, "kind", "lora"),
                         "down_key": pair.down_key,
                         "up_key": pair.up_key,
                         "alpha_key": pair.alpha_key,
@@ -128,7 +144,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                         "scale": scale,
                     })
                     reports.append(_report(pair.base_name, target_key, "matched", lora_path,
-                                           category=category, strategy=lora_strategy, scale=scale, rank=pair.rank))
+                                           category=category, strategy=lora_strategy, scale=scale, rank=pair.rank,
+                                           kind=getattr(pair, "kind", "lora")))
 
             # Process .diff patches (direct additive deltas, ComfyUI format)
             for dp in diff_patches:
@@ -190,7 +207,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if dry_run:
         # Build per-LoRA summary for dry run (computed but not yet displayed)
         from collections import Counter, defaultdict
-        lora_stats = defaultdict(lambda: {"matched": 0, "skipped_preserve": 0, "skipped_strategy": 0, "unmatched": 0, "categories": Counter()})
+        lora_stats = defaultdict(lambda: {"matched": 0, "skipped_preserve": 0, "skipped_strategy": 0, "skipped_decomposed": 0, "unmatched": 0, "categories": Counter()})
         unmatched_by_lora = defaultdict(list)
         for rpt in reports:
             ln = rpt["lora"]
@@ -202,17 +219,23 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 lora_stats[ln]["skipped_preserve"] += 1
             elif st == "skipped_strategy":
                 lora_stats[ln]["skipped_strategy"] += 1
+            elif st == "skipped_decomposed":
+                lora_stats[ln]["skipped_decomposed"] += 1
             else:
                 lora_stats[ln]["unmatched"] += 1
                 unmatched_by_lora[ln].append(rpt["base_name"])
 
         summary = {}
         for ln, st in lora_stats.items():
-            total_skipped = st["skipped_preserve"] + st["skipped_strategy"]
+            total_skipped = st["skipped_preserve"] + st["skipped_strategy"] + st["skipped_decomposed"]
             summary[ln] = {
                 "matched": st["matched"],
                 "skipped": total_skipped,
-                "skipped_breakdown": {"preserve": st["skipped_preserve"], "strategy": st["skipped_strategy"]},
+                "skipped_breakdown": {
+                    "preserve": st["skipped_preserve"],
+                    "strategy": st["skipped_strategy"],
+                    "decomposed": st["skipped_decomposed"],
+                },
                 "unmatched": st["unmatched"],
                 "categories": dict(st["categories"]),
                 "unmatched_sample": unmatched_by_lora[ln][:10],
@@ -228,7 +251,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         # Quick human-readable summary right before done so it's visible at the bottom.
         yield _log(
             f"Dry run summary: matched={len(matched_ops)} "
-            f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
+            f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} "
+            f"skipped_decomposed={decomposed_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
         )
         yield _status("Dry run complete")
         yield {"type": "done", "status": "dry-run complete"}
@@ -325,7 +349,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     # Do NOT embed LoRA details in safetensors metadata — keep it clean.
     recipe_path = _write_recipe(output_path, payload, loras, strategy,
                                 global_strength, adaptive, matched_ops,
-                                skipped, unmatched, ambiguous, device_summary, merge_summary)
+                                skipped, unmatched, ambiguous, device_summary, merge_summary,
+                                strategy_skipped, decomposed_skipped)
 
     yield _log(f"Wrote merged checkpoint: {output_path}\n")
     yield _log(f"Wrote merge recipe: {recipe_path}\n")
@@ -333,7 +358,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     # Post-merge match summary (unconditional, for logs and tests).
     yield _log(
         f"Merge report: matched={len(matched_ops)} "
-        f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
+        f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} "
+        f"skipped_decomposed={decomposed_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
     )
 
     yield _status("LoRA merge complete")
@@ -499,19 +525,31 @@ def _has_cuda_headroom(device: str, estimated_bytes: int, headroom_mb: int) -> b
     return free_bytes > estimated_bytes + max(headroom_mb, 0) * 1024 * 1024
 
 
-def _delta_shape(down_shape: Tuple[int, ...], up_shape: Tuple[int, ...]) -> Tuple[int, ...]:
+def _delta_shape(down_shape: Tuple[int, ...], up_shape: Tuple[int, ...], kind: str = "lora") -> Tuple[int, ...]:
+    if kind == "lokr":
+        # Direct LoKr factors: delta = kron(w1, w2). For linear layers
+        # w1=(out_l, in_m), w2=(out_k, in_n) → full weight (out_l*out_k, in_m*in_n).
+        if len(down_shape) == 2 and len(up_shape) == 2:
+            return (down_shape[0] * up_shape[0], down_shape[1] * up_shape[1])
+        return tuple(int(v) for v in (down_shape[i] * up_shape[i] for i in range(min(len(down_shape), len(up_shape)))))
     if len(down_shape) == 2 and len(up_shape) == 2:
         return (up_shape[0], down_shape[1])
     return up_shape[:-1] + down_shape[1:]
 
 
-def _compute_delta(down: torch.Tensor, up: torch.Tensor, target_shape: Tuple[int, ...]) -> torch.Tensor:
+def _compute_delta(down: torch.Tensor, up: torch.Tensor, target_shape: Tuple[int, ...], kind: str = "lora") -> torch.Tensor:
     if down.ndim == 2 and up.ndim == 2:
-        delta = up @ down
+        if kind == "lokr":
+            # ComfyUI parity (lokr.py): delta = kron(w1, w2) reshaped to the
+            # base weight shape. Here down_key=w1 and up_key=w2, so kron(down, up).
+            # NOTE: kron is NOT commutative in layout — order matters.
+            delta = torch.kron(down, up).reshape(target_shape)
+        else:
+            delta = up @ down
     else:
         raise ValueError(f"Only 2D LoRA tensors are supported initially, got {tuple(down.shape)} and {tuple(up.shape)}")
     if tuple(delta.shape) != target_shape:
-        raise ValueError(f"Delta shape {tuple(delta.shape)} does not match target {target_shape}")
+        raise ValueError(f"Delta shape {tuple(delta.shape)} does not match target {tuple(target_shape)}")
     return delta
 
 
@@ -535,8 +573,9 @@ def _merge_target_cpu(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handle
             lf = lora_handles[op["lora_path"]]
             down = lf.get_tensor(op["down_key"]).to(torch.float32)
             up = lf.get_tensor(op["up_key"]).to(torch.float32)
-            delta = _compute_delta(down, up, tuple(merged.shape))
-            scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"])
+            kind = op.get("kind", "lora")
+            delta = _compute_delta(down, up, tuple(merged.shape), kind)
+            scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"], kind)
             if adaptive:
                 scale *= _adaptive_multiplier(merged, delta)
             merged = (merged.to(torch.float32) + delta * scale).to(original_dtype)
@@ -563,8 +602,9 @@ def _merge_target_cuda(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handl
                 lf = lora_handles[op["lora_path"]]
                 down = lf.get_tensor(op["down_key"]).to(device=device, dtype=torch.float32)
                 up = lf.get_tensor(op["up_key"]).to(device=device, dtype=torch.float32)
-                delta = _compute_delta(down, up, target_shape)
-                scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"])
+                kind = op.get("kind", "lora")
+                delta = _compute_delta(down, up, target_shape, kind)
+                scale = op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"], kind)
                 if adaptive:
                     scale *= _adaptive_multiplier(merged, delta)
                 merged = merged + delta * scale
@@ -599,10 +639,20 @@ def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lor
         return _merge_target_cpu(base, ops, lora_handles, adaptive), "cpu", "cuda_oom"
 
 
-def _alpha_scale(lf: safe_open, alpha_key: str | None, rank: int) -> float:
+def _alpha_scale(lf: safe_open, alpha_key: str | None, rank: int, kind: str = "lora") -> float:
+    if kind == "lokr":
+        # ComfyUI parity (lokr.calculate_weight): for direct w1/w2 factors the
+        # decomposed rank `dim` is None, so the stored .alpha scalar is ignored
+        # and the multiplier is 1.0. This also neutralizes the `alpha=inf`
+        # sentinel some LoKr trainers write (which would otherwise → NaN).
+        return 1.0
     if not alpha_key:
         return 1.0
     alpha = float(lf.get_tensor(alpha_key).reshape(-1)[0].item())
+    if not math.isfinite(alpha):
+        # Non-finite sentinel (inf/NaN) — treat as no alpha scaling rather than
+        # propagating NaN through every merged tensor.
+        return 1.0
     return alpha / max(rank, 1)
 
 
@@ -623,7 +673,9 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
                   matched_ops: List[Dict[str, Any]],
                   skipped: int, unmatched: int, ambiguous: int,
                   device_summary: Dict[str, Any] | None = None,
-                  merge_summary: Dict[str, Any] | None = None) -> str:
+                  merge_summary: Dict[str, Any] | None = None,
+                  strategy_skipped: int = 0,
+                  decomposed_skipped: int = 0) -> str:
     """Write a human-readable merge recipe .txt next to the checkpoint."""
     import datetime
 
@@ -674,6 +726,8 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         "",
         f"  Matched tensors:  {len(matched_ops)}",
         f"  Skipped (preserve): {skipped}",
+        f"  Skipped (strategy): {strategy_skipped}",
+        f"  Skipped (LoKr factorized): {decomposed_skipped}",
         f"  Unmatched:        {unmatched}",
         f"  Ambiguous:        {ambiguous}",
         "",

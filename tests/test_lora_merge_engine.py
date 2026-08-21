@@ -1080,5 +1080,153 @@ class LoraMergeEngineTests(unittest.TestCase):
             ))
 
 
+class H3AndLoKrMergeTests(unittest.TestCase):
+    """MiniMax H3 underscore-key LoRAs and LoKr (Kronecker) adapters."""
+
+    def test_h3_underscore_keys_map_to_dotted_base_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lora = Path(tmp) / "h3.safetensors"
+            save_file({
+                "lora_unet_blocks_0_attn_out_proj.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_out_proj.lora_up.weight": torch.ones(3, 2),
+                "lora_unet_blocks_0_mlp_fc1.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_mlp_fc1.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            manifest = read_safetensors_manifest(str(lora))
+            pairs = discover_lora_pairs(manifest)
+            cand = {c for p in pairs for c in p.target_candidates}
+            self.assertIn("blocks.0.attn.out_proj.weight", cand)
+            self.assertIn("blocks.0.mlp.fc1.weight", cand)
+            # token_refiner variant
+            save_file({
+                "lora_unet_token_refiner_blocks_0_attn_qkv_proj.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_token_refiner_blocks_0_attn_qkv_proj.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+            cand = {c for p in discover_lora_pairs(read_safetensors_manifest(str(lora))) for c in p.target_candidates}
+            self.assertIn("token_refiner.blocks.0.attn.qkv_proj.weight", cand)
+
+    def test_h3_underscore_dry_run_matches_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "h3.safetensors"
+            save_file({
+                "blocks.0.attn.out_proj.weight": torch.zeros(3, 4),
+                "blocks.0.mlp.fc1.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "lora_unet_blocks_0_attn_out_proj.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_out_proj.lora_up.weight": torch.ones(3, 2),
+                "lora_unet_blocks_0_mlp_fc1.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_mlp_fc1.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            text = "".join(e.get("text", "") for e in run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 1.0}],
+                "strategy": "Balanced",
+                "architecture": "MiniMax H3",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": True,
+                "strict_matching": True,
+            }))
+            self.assertIn("matched=2", text)
+            self.assertIn("unmatched=0", text)
+
+    def test_lokr_pair_discovery_and_kron_merge(self):
+        """Direct LoKr (lokr_w1/lokr_w2) merges as kron(w1, w2) with ComfyUI parity."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "lokr.safetensors"
+            out = tmp / "merged.safetensors"
+            # w1=(2,3) [out_l, in_m], w2=(4,5) [out_k, in_n] → kron shape (2*4, 3*5)=(8,15)
+            w1 = torch.arange(1., 2 * 3 + 1).reshape(2, 3)
+            w2 = torch.arange(1., 4 * 5 + 1).reshape(4, 5)
+            save_file({
+                "blocks.0.attn.out_proj.weight": torch.zeros(8, 15),
+            }, str(base))
+            save_file({
+                "blocks.0.attn.out_proj.lokr_w1": w1,
+                "blocks.0.attn.out_proj.lokr_w2": w2,
+                "blocks.0.attn.out_proj.alpha": torch.tensor(float("inf")),  # inf sentinel
+            }, str(lora))
+
+            manifest = read_safetensors_manifest(str(lora))
+            pairs = discover_lora_pairs(manifest)
+            self.assertEqual(len(pairs), 1)
+            self.assertEqual(pairs[0].kind, "lokr")
+            # LoKr delta shape = kron = (8, 15)
+            self.assertEqual(lora_merge_engine._delta_shape(pairs[0].down_shape, pairs[0].up_shape, "lokr"), (8, 15))
+
+            events = list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 1.0}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "MiniMax H3",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": False,
+                "strict_matching": True,
+                "merge_device": "cpu",
+            }))
+            text = "".join(e.get("text", "") for e in events)
+            self.assertIn("matched=1", text)
+
+            merged = load_file(str(out))
+            expected = torch.kron(w1.float(), w2.float()).reshape(8, 15)
+            self.assertTrue(torch.allclose(merged["blocks.0.attn.out_proj.weight"], expected, atol=1e-3))
+            # No NaN from the inf alpha sentinel (LoKr direct factors ignore .alpha)
+            self.assertFalse(torch.isnan(merged["blocks.0.attn.out_proj.weight"]).any())
+
+    def test_lokr_decomposed_reported_not_silently_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "lokr_dec.safetensors"
+            save_file({
+                "blocks.0.attn.out_proj.weight": torch.zeros(8, 15),
+            }, str(base))
+            save_file({
+                "blocks.0.attn.out_proj.lokr_w1_a": torch.ones(2, 3),
+                "blocks.0.attn.out_proj.lokr_w1_b": torch.ones(3, 4),
+            }, str(lora))
+
+            manifest = read_safetensors_manifest(str(lora))
+            pairs = discover_lora_pairs(manifest)
+            self.assertEqual(len(pairs), 1)
+            self.assertEqual(pairs[0].kind, "lokr_decomposed")
+
+            events = list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 1.0}],
+                "strategy": "Balanced",
+                "architecture": "MiniMax H3",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": True,
+                "strict_matching": True,
+            }))
+            text = "".join(e.get("text", "") for e in events)
+            self.assertIn("skipped_decomposed=1", text)
+
+    def test_alpha_inf_sentinel_is_finite_for_regular_lora(self):
+        # A regular LoRA writing alpha=inf must not produce NaN: guard → 1.0
+        from safetensors import safe_open
+        with tempfile.TemporaryDirectory() as tmp:
+            lora = Path(tmp) / "x.safetensors"
+            save_file({
+                "t.lora_down.weight": torch.ones(2, 3),
+                "t.lora_up.weight": torch.ones(4, 2),
+                "t.alpha": torch.tensor(float("inf")),
+            }, str(lora))
+            with safe_open(str(lora), framework="pt", device="cpu") as lf:
+                scale = lora_merge_engine._alpha_scale(lf, "t.alpha", rank=2)
+            self.assertEqual(scale, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

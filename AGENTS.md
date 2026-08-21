@@ -44,6 +44,8 @@ In-App **Update & Restart** (`POST /api/update`): runs `start-linux.sh --setup-o
 - Strategies: LTX23 (Balanced/Motion/Visuals/Audio), WAN 2.2 (Balanced/Motion, **no Audio**), Krea 2 (Balanced/Style/Content/Detail). Norm layers on WAN 2.2 always multiplier 0.0.
 - `scale = global_strength × per_lora_strength × strategy_multiplier(category)`
 - Strength limit: effective strength (`global × per_lora`) max ±3.0 — prevents black images on Krea 2 gate tensors.
+- **LoKr support** (`utils/lora_inspector.py`): direct LoKr adapters (`.lokr_w1`/`.lokr_w2`) merge via Kronecker delta `kron(w1, w2)` (ComfyUI parity, `comfy/weight_adapter/lokr.py`), NOT matrix product. Direct LoKr ignores stored `.alpha` (scale = 1.0; some adapters store `inf` as sentinel). Factorized LoKr (`_a/_b` suffixes) is unsupported → visible `lokr_decomposed` skip class in reports, never silent.
+- **H3 underscore keys**: Krea-style `lora_unet_blocks_N_attn_{out_proj|qkv_proj}` / `lora_unet_blocks_N_mlp_{fc1|fc2}` map to dotted H3 base keys `blocks.N.attn.X` / `blocks.N.mlp.X` in `_target_candidates`.
 - Built-in Krea 2 unchain: negates `txtfusion.projector.weight` positions 8–10 (shape `(1,12)`).
 - Merge device: CPU/CUDA/auto with VRAM headroom check + fallback to CPU on OOM. Summary logs device distribution.
 - Strict matching = reject when LoRA tensor has no base candidate; dry run = report only, no output write.
