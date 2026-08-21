@@ -153,6 +153,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			{"label": "INT8 Tensor-wise", "value": "INT8 Tensor-wise"},
 			{"label": "INT8 Row-wise ConvRot (runtime)", "value": "INT8 Row-wise ConvRot Runtime"},
 			{"label": "INT4 ConvRot (LTX/WAN/Krea/H3 experimental)", "value": "INT4 ConvRot Runtime"},
+			{"label": "W4A8 asymmetric ConvRot (MiniMax H3)", "value": "W4A8"},
 			{"label": "GGUF F32", "value": "GGUF_F32"},
 			{"label": "GGUF BF16", "value": "GGUF_BF16"},
 			{"label": "GGUF F16", "value": "GGUF_F16"},
@@ -472,6 +473,10 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	for _, format := range req.Formats {
 		if format == "INT4 ConvRot Runtime" && req.Strategy != "Simple" {
 			writeError(w, http.StatusBadRequest, "INT4 ConvRot requires the Simple strategy")
+			return
+		}
+		if format == "W4A8" && req.Strategy != "Simple" {
+			writeError(w, http.StatusBadRequest, "W4A8 requires the Simple strategy")
 			return
 		}
 	}

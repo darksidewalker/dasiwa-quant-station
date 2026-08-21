@@ -28,6 +28,7 @@ from core.metadata_manager import (
 )
 from core.lora_merge_engine import run_lora_merge
 from core.int4_convrot_engine import run_int4_convrot_conversion
+from core.w4a8_engine import run_w4a8_conversion
 from core.safetensors_engine import run_safe_conversion
 from core.watermark import verify_watermark as wm_verify, save_key as wm_save_key, watermark_status as wm_status
 from utils.arch_detector import inspect_checkpoint
@@ -268,6 +269,14 @@ def cmd_quantize(args):
 
     if int4_convrot:
         stream(run_int4_convrot_conversion(
+            output_dir, source_path, model_name, model_type, strategy, is_full,
+            custom_metadata=custom_metadata,
+        ))
+        log_acc = last_log or log_acc
+
+    w4a8 = "W4A8" in formats
+    if w4a8:
+        stream(run_w4a8_conversion(
             output_dir, source_path, model_name, model_type, strategy, is_full,
             custom_metadata=custom_metadata,
         ))

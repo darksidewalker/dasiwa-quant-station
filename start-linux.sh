@@ -100,16 +100,20 @@ uv pip install --refresh -r requirements.txt
 echo "💎 Installing FP Quantization Tools..."
 uv pip install --refresh git+https://github.com/silveroxides/convert_to_quant.git@main#egg=convert_to_quant --no-deps --force-reinstall
 
-echo "🍳 Installing Comfy Kitchen [CUBLAS + INT4 ConvRot]..."
-# Pin a revision that exports TensorCoreConvRotW4A4Layout. The PyPI 0.1.0
-# package lacks this layout, while its package metadata can still resolve it
-# for unconstrained installs.
+echo "🍳 Installing Comfy Kitchen [CUBLAS + INT4 ConvRot + W4A8]..."
+# Track the default branch HEAD (user chose latest-over-pinned so the install
+# always carries the newest layouts, incl. AsymW4A8Int8Layout from PR #90).
+# Both layout exports must import after the install — without the guard a
+# broken upstream commit would silently degrade quant features instead of
+# failing setup loudly.
 uv pip install --python "$VENV_PATH/bin/python" --refresh --upgrade \
-    "comfy-kitchen[cublas] @ git+https://github.com/Comfy-Org/comfy-kitchen.git@911d47e6c355f31a1f66fe74ea64a1760fad581a"
+    "comfy-kitchen[cublas] @ git+https://github.com/Comfy-Org/comfy-kitchen.git"
 
 "$VENV_PATH/bin/python" - <<'PY'
 from comfy_kitchen.tensor import TensorCoreConvRotW4A4Layout
 print("✅ Comfy Kitchen INT4 ConvRot layout available:", TensorCoreConvRotW4A4Layout.__name__)
+from comfy_kitchen.tensor import AsymW4A8Int8Layout
+print("✅ Comfy Kitchen W4A8 (asym_w4a8_int8) layout available:", AsymW4A8Int8Layout.__name__)
 PY
 
 # --- 4. LAUNCH ---

@@ -12,7 +12,7 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 
 | Area | What it does |
 |------|-------------|
-| Safetensors quantization | FP8, NVFP4, MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
+| Safetensors quantization | FP8, NVFP4, MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot** and **W4A8 (asym_w4a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
 | LoRA merge | Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2 with per-LoRA strength, global scaling, dry-run, strict matching, adaptive mode, `.diff` format support, and Krea 2 unchain |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
@@ -42,7 +42,7 @@ The startup script handles everything:
 - Installs/checks system build tools where supported
 - Installs `uv` if missing, creates `.venv/`, installs Python dependencies
 - Refreshes `convert_to_quant` from GitHub
-- Installs `comfy-kitchen[cublas]` (required for INT4 ConvRot)
+- Installs `comfy-kitchen[cublas]` from the default branch (required for INT4 ConvRot and W4A8; carries both the TensorCore ConvRot W4A4 and AsymW4A8Int8 layouts)
 - Downloads/repairs `bin/ggufy`
 - Builds and starts the Go UI
 
@@ -70,6 +70,7 @@ Models are loaded from `$DASIWA_MODELS_DIR` (if set), `~/models`, or `<project-r
 | MXFP8 | Blackwell microscaling | Pure MXFP8; requires SM >= 10.0 (Blackwell). Use Hybrid for Ada compatibility |
 | Hybrid MXFP8 | Ada + Blackwell compatibility | Two-pass: MXFP8 quantize then hybrid conversion with tensorwise FP8 fallback |
 | INT4 ConvRot | Maximum compression | w4a4 ConvRot via comfy-kitchen TensorCore layout. Supports LTX-2.3, WAN 2.2, Krea 2, MiniMax H3. Requires BF16/FP16 source (refuses lossy sources) |
+| W4A8 | MiniMax H3 reference low-bit | asym_w4a8_int8 ConvRot via comfy-kitchen AsymW4A8Int8Layout (packed INT8 + 16-value codebook + FP8 group scales, ConvRot group 256). MiniMax H3 only; packs the heavy linears, preserves structural layers. Requires BF16/FP16 source, Simple strategy |
 | INT8 Tensor-wise | Safer INT8 path | Recommended INT8 choice for broad ComfyUI compatibility |
 | INT8 Row-wise ConvRot Runtime | Experimental/runtime-specific INT8 | Requires inference code that reads ConvRot metadata and rotates activations |
 | GGUF Q formats | llama.cpp-style deployment | Uses `ggufy` plus sensitivity maps for verified video tensors |
@@ -80,25 +81,25 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 
 An architecture marked with 🔒 has locally verified preserve/rescue tables. Others rely on upstream `convert_to_quant` preset skip rules. GGUF always applies sensitivity maps for 🔒 architectures; Q1_0 is disabled.
 
-| Architecture | FP8 | NVFP4 | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
-|-------------|:---:|:-----:|:-----:|:------------:|:------------:|:----------------:|:---------------:|:----:|
-| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
-| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
-| Krea 2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
-| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
-| Flux.2 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Hunyuan Video | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Qwen Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Z-Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Z-Image Refiner | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Anima | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Radiance | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Distillation Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Distillation Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| NeRF Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| NeRF Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Architecture | FP8 | NVFP4 | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | W4A8 | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
+|-------------|:---:|:-----:|:-----:|:------------:|:------------:|:----:|:----------------:|:---------------:|:----:|
+| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Krea 2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| Flux.2 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Hunyuan Video | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Qwen Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image Refiner | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Anima | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Radiance | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 
-INT4 ConvRot requires Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas]. MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility.
+INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas] (W4A8 needs the AsymW4A8Int8Layout build, installed via the unpinned default-branch `comfy-kitchen`). MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility. W4A8 is MiniMax H3 only.
 
 ---
 
@@ -268,6 +269,7 @@ scripts/go_bridge.py           Bridge from Go API to Python engines
 core/                          Quantization, metadata, and LoRA merge engines
   gguf_engine.py               GGUF conversion + sensitivity maps
   int4_convrot_engine.py       INT4 ConvRot streaming conversion (w4a4)
+  w4a8_engine.py               W4A8 (asym_w4a8_int8) streaming conversion (MiniMax H3)
   safetensors_engine.py        Safetensors quantization via convert_to_quant
   lora_merge_engine.py         Architecture-aware LoRA merge pipeline
   model_merge_engine.py        Model-level merge (H3 hybrid fl2va/ref2va)
@@ -329,4 +331,4 @@ lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
 - [Starnodes2024/comfyui-starnodes-modelconverter](https://github.com/Starnodes2024/comfyui-starnodes-modelconverter) — INT4 quantization code basis
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) — GGUF format reference
 - [City96 ComfyUI-GGUF tools](https://github.com/city96/ComfyUI-GGUF/tree/main/tools) — GGUF tooling
-- [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) — TensorCore ConvRot W4A4 layout for INT4 ConvRot
+- [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) — TensorCore ConvRot W4A4 layout for INT4 ConvRot, and the AsymW4A8Int8 layout for W4A8 (MiniMax H3)
