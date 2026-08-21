@@ -22,6 +22,7 @@ const state = {
   selectedLoraPaths: new Set(),
   lastLoraDir: "",
   lastFileDir: "",
+  lastOverlayDir: "",
   appVersion: "",
   mmOverlayPath: "",
   mmRecipe: "h3_hybrid",
@@ -61,6 +62,7 @@ function saveSettings() {
     mmDryRun: $("mm-dry-run").checked,
     lastFileDir: state.lastFileDir,
     lastLoraDir: state.lastLoraDir,
+    lastOverlayDir: state.lastOverlayDir,
     loras: state.loras.map((l) => ({
       path: l.path,
       strength: l.strength,
@@ -106,6 +108,7 @@ function loadSettings() {
       const s = JSON.parse(json);
       state.lastFileDir = s.lastFileDir || "";
       state.lastLoraDir = s.lastLoraDir || "";
+      state.lastOverlayDir = s.lastOverlayDir || "";
       // Only restore if version matches (prevents stale settings after updates)
       if (s.v !== state.appVersion) return false;
       state.workflowMode = s.mode || "quantize";
@@ -481,6 +484,8 @@ function updateArchDependentUI() {
 
 function selectModelMergeOverlay(path) {
   state.mmOverlayPath = path;
+  const dir = path.substring(0, path.lastIndexOf("/"));
+  if (dir) state.lastOverlayDir = dir;
   $("mm-overlay-label").textContent = shortPath(path);
   $("browser").close();
   saveSettings();
@@ -755,6 +760,7 @@ async function openBrowser(mode) {
   let startPath;
   if (mode === "lora" && state.lastLoraDir) startPath = state.lastLoraDir;
   else if (mode === "file" && state.lastFileDir) startPath = state.lastFileDir;
+  else if (mode === "mm-overlay" && state.lastOverlayDir) startPath = state.lastOverlayDir;
   else startPath = state.modelsDir || state.rootDir;
 
   await browse(startPath);
