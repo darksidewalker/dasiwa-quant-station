@@ -86,6 +86,10 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             "--comfy_quant",
         ],
         "NVFP4": ["--nvfp4", "--comfy_quant"],
+        # NVFP4 HQ: same dedicated NVFP4 path. The quality difference (mixed
+        # per-block profile) comes entirely from the layer config, which
+        # layer_config_builder attaches with H3's HQ preserves.
+        "NVFP4 HQ": ["--nvfp4", "--comfy_quant"],
         "MXFP8": ["--mxfp8", "--comfy_quant"],
     }
 
@@ -95,6 +99,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
     LAYER_CONFIG_ELIGIBLE = {
         "FP8",
         "NVFP4",
+        "NVFP4 HQ",
         "MXFP8",
         "Hybrid MXFP8",
         "INT8 Tensor-wise",
@@ -574,7 +579,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         if "--optimizer" in cmd and "--simple" in cmd:
             guard_errors.append("--optimizer combined with --simple")
 
-        if fmt == "NVFP4" and "--custom-type" in cmd:
+        if fmt in ("NVFP4", "NVFP4 HQ") and "--custom-type" in cmd:
             guard_errors.append(
                 "NVFP4 must use convert_to_quant's dedicated --nvfp4 path; "
                 "--custom-type routes to the unified FP8 path and produces "

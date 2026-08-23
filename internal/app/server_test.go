@@ -42,6 +42,10 @@ func TestFormatSupportedFor(t *testing.T) {
 		{"W4A8", "MiniMax H3", true},
 		{"W4A8", "LTX-2.3", false},
 		{"W4A8", "WAN 2.2", false},
+		{"NVFP4 HQ", "MiniMax H3", true},
+		{"NVFP4 HQ", "LTX-2.3", false},
+		{"NVFP4 HQ", "WAN 2.2", false},
+		{"NVFP4", "LTX-2.3", true}, // plain NVFP4 stays unrestricted
 		{"INT4 ConvRot Runtime", "Krea 2", true},
 		{"INT4 ConvRot Runtime", "Flux.2", false},
 		{"INT4 ConvRot Runtime", "Not set", false},

@@ -143,6 +143,29 @@ class SafetensorsEngineCommandTests(unittest.TestCase):
         self.assertIn("--nvfp4", cmd)
         self.assertNotIn("--custom-type", cmd)
 
+    def test_minimax_h3_nvfp4_hq_command_carries_hq_layer_config(self):
+        # NVFP4 HQ is the mixed-profile variant: same dedicated --nvfp4 path,
+        # but the attached layer config additionally skips the 30-layer HQ
+        # plan (27 out_proj + 3 fc2) at source precision.
+        import json
+        commands = self._capture_commands("MiniMax H3", formats=("NVFP4 HQ",))
+        self.assertEqual(len(commands), 1, "NVFP4 HQ must pass the H3 guard")
+        cmd = commands[0]
+        self.assertIn("--nvfp4", cmd)
+        self.assertIn("--comfy_quant", cmd)
+        self.assertNotIn("--custom-type", cmd)
+        self.assertIn("--layer-config", cmd)
+        layer_config_path = cmd[cmd.index("--layer-config") + 1]
+        with open(layer_config_path) as f:
+            config = json.load(f)
+        # The HQ plan patterns are present as skip entries (single source of
+        # truth from layer_config_builder.H3_NVFP4_HQ_PRESERVE_PATTERNS).
+        from core.layer_config_builder import H3_NVFP4_HQ_PRESERVE_PATTERNS
+        for pattern in H3_NVFP4_HQ_PRESERVE_PATTERNS:
+            self.assertEqual(config.get(pattern), {"skip": True}, pattern)
+        # _default is the dedicated nvfp4 base format.
+        self.assertEqual(config["_default"]["format"], "nvfp4")
+
 
 if __name__ == "__main__":
     unittest.main()

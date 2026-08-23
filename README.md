@@ -12,7 +12,7 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 
 | Area | What it does |
 |------|-------------|
-| Safetensors quantization | FP8, NVFP4, MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot** and **W4A8 (asym_w4a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
+| Safetensors quantization | FP8, NVFP4, **NVFP4 HQ** (H3 per-block mixed profile), MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot** and **W4A8 (asym_w4a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
 | LoRA merge | Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2 with per-LoRA strength, global scaling, dry-run, strict matching, adaptive mode, `.diff` format support, and Krea 2 unchain |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
@@ -67,6 +67,7 @@ Models are loaded from `$DASIWA_MODELS_DIR` (if set), `~/models`, or `<project-r
 |--------|----------|-------|
 | FP8 | RTX 40/50-series quality baseline | Good default for video model compression |
 | NVFP4 | Blackwell VRAM savings | More aggressive; sensitive layers rescued to FP8 where local tables exist |
+| NVFP4 HQ | MiniMax H3 VRAM + quality balance | Mixed NVFP4 profile: same `--nvfp4 --comfy_quant` command as NVFP4, but a verified 30-layer plan (27× `attn.out_proj` + 3× `mlp.fc2` at specific blocks) stays at source BF16 while the other 170 main-matrix layers stay NVFP4-packed. MiniMax H3 only |
 | MXFP8 | Blackwell microscaling | Pure MXFP8; requires SM >= 10.0 (Blackwell). Use Hybrid for Ada compatibility |
 | Hybrid MXFP8 | Ada + Blackwell compatibility | Two-pass: MXFP8 quantize then hybrid conversion with tensorwise FP8 fallback |
 | INT4 ConvRot | Maximum compression | w4a4 ConvRot via comfy-kitchen TensorCore layout. Supports LTX-2.3, WAN 2.2, Krea 2, MiniMax H3. Requires BF16/FP16 source (refuses lossy sources) |
@@ -81,25 +82,25 @@ If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot
 
 An architecture marked with 🔒 has locally verified preserve/rescue tables. Others rely on upstream `convert_to_quant` preset skip rules. GGUF always applies sensitivity maps for 🔒 architectures; Q1_0 is disabled.
 
-| Architecture | FP8 | NVFP4 | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | W4A8 | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
-|-------------|:---:|:-----:|:-----:|:------------:|:------------:|:----:|:----------------:|:---------------:|:----:|
-| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Krea 2 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
-| Flux.2 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Hunyuan Video | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Qwen Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Z-Image | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Z-Image Refiner | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Anima | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Radiance | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Distillation Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Distillation Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| NeRF Large | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| NeRF Small | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Architecture | FP8 | NVFP4 | NVFP4 HQ | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | W4A8 | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
+|-------------|:---:|:-----:|:--------:|:-----:|:------------:|:------------:|:----:|:----------------:|:---------------:|:----:|
+| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Krea 2 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| Flux.2 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Hunyuan Video | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Qwen Image | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image Refiner | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Anima | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Radiance | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 
-INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas] (W4A8 needs the AsymW4A8Int8Layout build, installed via the unpinned default-branch `comfy-kitchen`). MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility. W4A8 is MiniMax H3 only.
+INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas] (W4A8 needs the AsymW4A8Int8Layout build, installed via the unpinned default-branch `comfy-kitchen`). MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility. W4A8 is MiniMax H3 only. NVFP4 HQ is a MiniMax H3-only quality variant of NVFP4 — the same packed NVFP4 layout plus a verified per-block BF16 retention plan (30 heavy linears kept at source precision).
 
 ---
 
@@ -113,6 +114,19 @@ INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and comfy-kitch
 6. Toggle **Low VRAM** if GPU memory is constrained
 7. Start the batch and watch the streamed log
 8. Use Metadata tools to read/inject modelspec metadata when needed
+
+---
+
+### MiniMax H3 NVFP4 HQ mixed profile
+
+NVFP4 HQ is a quality-boosted NVFP4 variant, available for MiniMax H3 only. It runs the same dedicated command (`--nvfp4 --comfy_quant`); the entire quality difference comes from the layer config, which keeps a verified per-block subset of the heavy linears at source precision instead of packing all 200 main-matrix layers:
+
+- 27× `attn.out_proj` kept BF16 at blocks 0-15, 17, 19, 20, 27, 38, 43-47, 49
+- 3× `mlp.fc2` kept BF16 at blocks 39, 45, 49
+
+The 30-layer plan is a single source of truth in `core/layer_config_builder.py` (`H3_NVFP4_HQ_LAYER_PLAN` and related exports) and was verified against DmitryDB's comment-proofed NVFP4-HQ community quants (FL2VA + Ref2VA, Blackwell loadtest JSONs shipped in that repo).
+
+The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp4_pure`, `nvfp4_hq_mixed`, `nvfp4_fp8_adaln_mixed`, or `nvfp4_mixed_unknown` — and reports mixed retention in a dedicated **MIXED-KEPT** section as a recognized variant, not a pattern miss. H3's heavy linears (incl. `fc2`) are excluded from the suspicious check, so intentionally-BF16 layers are never falsely flagged.
 
 ---
 
@@ -203,7 +217,7 @@ Full checkpoints are detected from the source header when possible. When local l
 ## Diagnostic Tools
 
 - **5D Scanner:** Validate 5D tensor shapes in safetensors files. Detects video structural tensors and reports dimension anomalies
-- **Pattern Audit:** Compare preserve/rescue pattern coverage against a checkpoint's tensor manifest. Shows matched/missed categories
+- **Pattern Audit:** Compare preserve/rescue pattern coverage against a checkpoint's tensor manifest. Shows matched/missed categories. For MiniMax H3 NVFP4 files it also detects the quant profile (`nvfp4_pure`, `nvfp4_hq_mixed`, `nvfp4_fp8_adaln_mixed`, `nvfp4_mixed_unknown`) and reports intentional mixed retention in a MIXED-KEPT section without false-flagging the kept heavy linears
 - **Memory Cleanup:** One-button release of Go runtime memory, Python GC, libc malloc_trim, PyTorch CUDA cache, and CuPy cache
 - **LoRA Shape Diagnostics:** Automatic detection of systematic shape mismatches (e.g., LoRA trained on different hidden dimensions) with ratio analysis and actionable warnings
 
@@ -273,7 +287,7 @@ core/                          Quantization, metadata, and LoRA merge engines
   safetensors_engine.py        Safetensors quantization via convert_to_quant
   lora_merge_engine.py         Architecture-aware LoRA merge pipeline
   model_merge_engine.py        Model-level merge (H3 hybrid fl2va/ref2va)
-  layer_config_builder.py      Verified preserve/rescue regex tables
+  layer_config_builder.py      Verified preserve/rescue regex tables + H3 NVFP4-HQ layer plan
   metadata_manager.py          Modelspec metadata preview/read/injection
   watermark.py                 EC X25519 provenance watermark (modelspec.watermark)
 utils/                         Detection, scan, audit, system helpers

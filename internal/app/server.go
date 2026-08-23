@@ -142,6 +142,9 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 var formatSupport = map[string][]string{
 	"INT4 ConvRot Runtime": {"WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3"},
 	"W4A8":                 {"MiniMax H3"},
+	// Mixed-profile NVFP4: per-block source-precision preserves, only
+	// defined for MiniMax H3 (layer config + audit plan).
+	"NVFP4 HQ": {"MiniMax H3"},
 }
 
 func formatSupportedFor(format, architecture string) bool {
@@ -172,6 +175,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"formats": []map[string]string{
 			{"label": "FP8", "value": "FP8"},
 			{"label": "NVFP4", "value": "NVFP4"},
+			{"label": "NVFP4 HQ (H3 mixed profile)", "value": "NVFP4 HQ"},
 			{"label": "MXFP8", "value": "MXFP8"},
 			{"label": "Hybrid MXFP8", "value": "Hybrid MXFP8"},
 			{"label": "INT8 Tensor-wise", "value": "INT8 Tensor-wise"},

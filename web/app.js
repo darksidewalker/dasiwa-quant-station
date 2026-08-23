@@ -428,6 +428,7 @@ function compactFormatLabel(label) {
   return label
     .replace("Safetensors: ", "")
     .replace("GGUF ", "")
+    .replace("NVFP4 HQ (H3 mixed profile)", "NVFP4 HQ")
     .replace("INT8 Row-wise ConvRot (runtime)", "INT8 ConvRot")
     .replace("INT4 ConvRot (LTX/WAN/Krea/H3 experimental)", "INT4 ConvRot")
     .replace("W4A8 asymmetric ConvRot (MiniMax H3)", "W4A8 ConvRot")
@@ -438,6 +439,7 @@ function compactFormatLabel(label) {
 const FORMAT_TITLES = {
   FP8:              "FP8 — Balanced mixed-precision quantization. Best quality/size trade-off for most use cases.",
   NVFP4:            "NVFP4 (E2M1) — Low-bit tensor format for Blackwell GPUs (RTX 5090). Smallest size, good quality on supported hardware.",
+  "NVFP4 HQ":       "NVFP4 HQ — MiniMax H3 mixed profile. Same dedicated NVFP4 path, but 30 per-block heavy linears (27 out_proj + 3 fc2, community-verified HQ plan) are kept at source precision; all other heavy linears are NVFP4-packed.",
   MXFP8:            "MXFP8 (Block FP8) — Block-norm quantized FP8. Good balance of compression and fidelity, works across GPU generations.",
   "Hybrid MXFP8":   "Hybrid MXFP8 — Combines block-norm and per-channel scaling for improved accuracy over pure MXFP8.",
   "INT8 Tensor-wise": "INT8 (Tensor-wise) — Per-tensor scale quantization to INT8. Fastest inference, slightly lower quality than FP8.",

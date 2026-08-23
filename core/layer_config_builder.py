@@ -46,6 +46,10 @@ BASE_FORMAT_FOR_CONFIG = {
     # removed from the default INT8 path.
     "INT8 Row-wise ConvRot": "int8_tensorwise",
     "NVFP4": "nvfp4",
+    # Mixed-profile NVFP4 (MiniMax H3 only): same NVFP4 base format, but the
+    # layer config additionally keeps a per-block subset of heavy linears at
+    # source precision (see H3_NVFP4_HQ_PRESERVE_PATTERNS).
+    "NVFP4 HQ": "nvfp4",
 }
 
 
@@ -213,6 +217,47 @@ LTX23_NVFP4_OFFICIAL_PRESERVE_PATTERNS = [
     r"^.*\.transformer_blocks\.(0|1|46|47)($|\..*)",
 ]
 
+# ---------------------------------------------------------------------------
+# MiniMax H3 "NVFP4 HQ" mixed profile (per-block source-precision preserves)
+#
+# Verified 2026-08-23 against DmitryDB/MiniMax-H3-ComfyUI-Quants
+# (FL2VA + Ref2VA NVFP4-HQ, both 1042 tensors, identical plan, Blackwell
+# loadtest JSONs shipped in-repo). Of the 200 main-matrix heavy linears,
+# 170 are NVFP4-packed (U8 + F8_E4M3 block scale + F32 scalar) and 30 stay
+# at source precision (BF16):
+#
+#   attn.out_proj  -> blocks 0-15, 17, 19, 20, 27, 38, 43-47, 49   (27 layers)
+#   mlp.fc2        -> blocks 39, 45, 49                             (3 layers)
+#
+# Source: reports/layer_policy.json / layer_policy_ref2va.json
+# ("bf16_main_layers", profile "quality21"). token_refiner and adaln layers
+# already stay at source precision through the standard H3 preserve patterns,
+# so the HQ plan is expressed purely as additional per-block preserves.
+#
+# This is a known, comment-proofed mixed profile — audits must recognize it
+# as a valid variant instead of flagging the 30 kept layers as suspicious
+# (see utils/pattern_audit.py profile detection).
+H3_NVFP4_HQ_PRESERVE_PATTERNS = [
+    # attn.out_proj kept at source precision (27 blocks).
+    # Prefix-tolerant like the other H3 patterns: H3 keys are naked
+    # ("blocks.3.attn.out_proj.weight"), so no mandatory leading prefix.
+    r"^.*(^|\.)blocks\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|17|19|20|27|38|43|44|45|46|47|49)\.attn\.out_proj($|\..*)",
+    # mlp.fc2 kept at source precision (3 blocks)
+    r"^.*(^|\.)blocks\.(39|45|49)\.mlp\.fc2($|\..*)",
+]
+
+# Exported layer plan (single source of truth) for audits and tests:
+# H3_NVFP4_HQ_LAYER_PLAN maps (block_index, matrix_kind) -> True for every
+# heavy linear that the NVFP4-HQ profile keeps at source precision.
+H3_NVFP4_HQ_OUTPROJ_BLOCKS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                              14, 15, 17, 19, 20, 27, 38, 43, 44, 45, 46,
+                              47, 49)
+H3_NVFP4_HQ_FC2_BLOCKS = (39, 45, 49)
+H3_NVFP4_HQ_LAYER_PLAN = (
+    [(b, "attn.out_proj") for b in H3_NVFP4_HQ_OUTPROJ_BLOCKS]
+    + [(b, "mlp.fc2") for b in H3_NVFP4_HQ_FC2_BLOCKS]
+)
+
 def build_layer_config_dict(model_type, base_format_ui_label):
     """
     Build the layer config as a Python dict.
@@ -267,9 +312,23 @@ def build_layer_config_dict(model_type, base_format_ui_label):
     elif base_fmt == "nvfp4":
         if model_type == "LTX-2.3":
             preserve_patterns.extend(LTX23_NVFP4_OFFICIAL_PRESERVE_PATTERNS)
+        # MiniMax H3 "NVFP4 HQ" mixed profile: on top of the standard H3
+        # structural preserves, keep a per-block subset of heavy linears at
+        # source precision (27 attn.out_proj + 3 mlp.fc2, verified against
+        # DmitryDB's comment-proofed NVFP4-HQ quants). Plain "NVFP4" keeps
+        # the pure-NVFP4 policy (all 200 heavy linears packed).
+        if model_type == "MiniMax H3" and base_format_ui_label == "NVFP4 HQ":
+            preserve_patterns.extend(H3_NVFP4_HQ_PRESERVE_PATTERNS)
         for pat in rescue_patterns:
             config[pat] = {"format": "float8_e4m3fn", "scaling_mode": "tensor"}
-        rescue_action = "rescue to float8_e4m3fn" if rescue_patterns else "no rescue (all eligible weights NVFP4)"
+        if model_type == "MiniMax H3" and base_format_ui_label == "NVFP4 HQ":
+            rescue_action = (
+                "H3 mixed profile: keep "
+                f"{len(H3_NVFP4_HQ_LAYER_PLAN)} heavy linears at source "
+                "precision, rest NVFP4"
+            )
+        else:
+            rescue_action = "rescue to float8_e4m3fn" if rescue_patterns else "no rescue (all eligible weights NVFP4)"
     elif base_fmt == "int8_tensorwise":
         # INT8 tensor-wise: no rescue, all transformer weights stay INT8.
         rescue_action = "no rescue (all INT8)"

@@ -74,6 +74,9 @@ def normalize_quantization_bits(bits):
     labels = {
         "FP8": "FP8",
         "NVFP4": "NVFP4",
+        # Mixed-profile NVFP4 (H3 per-block preserves). Kept distinct from
+        # plain NVFP4 so metadata describes the actual layer plan.
+        "NVFP4 HQ": "NVFP4 HQ",
         "MXFP8": "MXFP8",
         "Hybrid MXFP8": "Hybrid MXFP8",
         "INT8 Tensor-wise": "INT8 Tensor-wise",

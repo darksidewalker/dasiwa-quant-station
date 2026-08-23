@@ -231,6 +231,7 @@ def cmd_quantize(args):
         if f in {
             "FP8",
             "NVFP4",
+            "NVFP4 HQ",
             "MXFP8",
             "Hybrid MXFP8",
             "INT8 Tensor-wise",

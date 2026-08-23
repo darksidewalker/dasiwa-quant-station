@@ -259,6 +259,77 @@ class LayerConfigBuilderTests(unittest.TestCase):
         config, summary = build_layer_config_dict("MiniMax H3", "NVFP4")
         self.assertEqual(summary["rescue_count"], 0)
 
+    # --- MiniMax H3 NVFP4 HQ mixed profile -------------------------------
+    # Verified plan (DmitryDB NVFP4-HQ, FL2VA+Ref2VA identical): of the 200
+    # main-matrix heavy linears, 170 are NVFP4-packed and 30 stay at source
+    # precision: attn.out_proj in 27 blocks + mlp.fc2 in 3 blocks.
+
+    HQ_OUTPROJ = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                  17, 19, 20, 27, 38, 43, 44, 45, 46, 47, 49)
+    HQ_FC2 = (39, 45, 49)
+
+    def test_minimax_h3_nvfp4_hq_keeps_planned_heavy_linears_at_source_precision(self):
+        config, summary = build_layer_config_dict("MiniMax H3", "NVFP4 HQ")
+        self.assertEqual(summary["base_format"], "nvfp4")
+        self.assertIn("30 heavy linears", summary["keep_action"])
+
+        # Planned out_proj blocks -> skip
+        for b in self.HQ_OUTPROJ:
+            key = f"blocks.{b}.attn.out_proj.weight"
+            self.assertEqual(self._action_for(config, key), {"skip": True}, key)
+            self.assertEqual(
+                self._action_for(config, f"model.diffusion_model.{key}"),
+                {"skip": True}, f"prefixed {key}",
+            )
+        # Planned fc2 blocks -> skip
+        for b in self.HQ_FC2:
+            key = f"blocks.{b}.mlp.fc2.weight"
+            self.assertEqual(self._action_for(config, key), {"skip": True}, key)
+
+    def test_minimax_h3_nvfp4_hq_packs_unplanned_heavy_linears(self):
+        config, _ = build_layer_config_dict("MiniMax H3", "NVFP4 HQ")
+
+        def packed(key):
+            return self._action_for(config, key) == {"format": "nvfp4"}
+
+        # All 50 qkv_proj + all 50 fc1 stay packed.
+        for b in range(50):
+            self.assertTrue(packed(f"blocks.{b}.attn.qkv_proj.weight"))
+            self.assertTrue(packed(f"blocks.{b}.mlp.fc1.weight"))
+        # out_proj: packed outside the 27-block plan.
+        for b in range(50):
+            if b not in self.HQ_OUTPROJ:
+                self.assertTrue(packed(f"blocks.{b}.attn.out_proj.weight"), b)
+        # fc2: packed outside the 3-block plan.
+        for b in range(50):
+            if b not in self.HQ_FC2:
+                self.assertTrue(packed(f"blocks.{b}.mlp.fc2.weight"), b)
+        # Structural layers still skipped.
+        self.assertEqual(
+            self._action_for(config, "blocks.0.adaln_proj.linear.weight"),
+            {"skip": True},
+        )
+
+    def test_minimax_h3_plain_nvfp4_stays_pure_all_200_packed(self):
+        config, _ = build_layer_config_dict("MiniMax H3", "NVFP4")
+        for b in self.HQ_OUTPROJ:
+            key = f"blocks.{b}.attn.out_proj.weight"
+            self.assertNotEqual(self._action_for(config, key), {"skip": True}, key)
+        for b in self.HQ_FC2:
+            key = f"blocks.{b}.mlp.fc2.weight"
+            self.assertNotEqual(self._action_for(config, key), {"skip": True}, key)
+        # 200 packed heavy linears = default base format applies to all.
+
+    def test_minimax_h3_nvfp4_hq_preserve_count_matches_plan(self):
+        _, plain_summary = build_layer_config_dict("MiniMax H3", "NVFP4")
+        _, hq_summary = build_layer_config_dict("MiniMax H3", "NVFP4 HQ")
+        # HQ adds exactly 2 pattern entries (out_proj plan + fc2 plan).
+        self.assertEqual(
+            hq_summary["preserve_count"], plain_summary["preserve_count"] + 2
+        )
+        from core.layer_config_builder import H3_NVFP4_HQ_LAYER_PLAN
+        self.assertEqual(len(H3_NVFP4_HQ_LAYER_PLAN), 30)
+
 
 if __name__ == "__main__":
     unittest.main()
