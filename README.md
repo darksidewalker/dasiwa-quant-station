@@ -6,8 +6,7 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 
 ![Quant Station Preview](assets/DaSiWa-QuantStation.webp)
 
-<details>
-<summary><strong>📑 Table of Contents</strong></summary>
+## Table of Contents
 
 - [At a Glance](#at-a-glance)
 - [Quick Start](#quick-start)
@@ -23,8 +22,6 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 - [Project Layout](#project-layout)
 - [API Endpoints](#api-endpoints)
 - [Credits](#credits)
-
-</details>
 
 ---
 
