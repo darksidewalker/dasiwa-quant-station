@@ -6,6 +6,26 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 
 ![Quant Station Preview](assets/DaSiWa-QuantStation.webp)
 
+<details>
+<summary><strong>📑 Table of Contents</strong></summary>
+
+- [At a Glance](#at-a-glance)
+- [Quick Start](#quick-start)
+- [Choosing Formats](#choosing-formats) · [Support Matrix](#support-matrix)
+- [Quantization Workflow](#quantization-workflow) · [NVFP4 HQ mixed profile](#minimax-h3-nvfp4-hq-mixed-profile)
+- [LoRA Merge Workflow](#lora-merge-workflow) · [Strategies](#lora-merge-strategies) · [LoRA Formats](#supported-lora-formats) · [Recipe Reload](#recipe-reload)
+- [Model Merge (model-level)](#model-merge-model-level)
+- [Architecture And Preservation](#architecture-and-preservation)
+- [Diagnostic Tools](#diagnostic-tools)
+- [UI Features](#ui-features)
+- [Update & Restart](#update--restart)
+- [Provenance Watermark](#provenance-watermark)
+- [Project Layout](#project-layout)
+- [API Endpoints](#api-endpoints)
+- [Credits](#credits)
+
+</details>
+
 ---
 
 ## At a Glance
@@ -63,6 +83,9 @@ Models are loaded from `$DASIWA_MODELS_DIR` (if set), `~/models`, or `<project-r
 
 ## Choosing Formats
 
+<details>
+<summary><strong>Open format table + per-architecture support matrix</strong></summary>
+
 | Format | Best Use | Notes |
 |--------|----------|-------|
 | FP8 | RTX 40/50-series quality baseline | Good default for video model compression |
@@ -102,6 +125,8 @@ An architecture marked with 🔒 has locally verified preserve/rescue tables. Ot
 
 INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas] (W4A8 needs the AsymW4A8Int8Layout build, installed via the unpinned default-branch `comfy-kitchen`). MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility. W4A8 is MiniMax H3 only. NVFP4 HQ is a MiniMax H3-only quality variant of NVFP4 — the same packed NVFP4 layout plus a verified per-block BF16 retention plan (30 heavy linears kept at source precision).
 
+</details>
+
 ---
 
 ## Quantization Workflow
@@ -124,7 +149,7 @@ NVFP4 HQ is a quality-boosted NVFP4 variant, available for MiniMax H3 only. It r
 - 27× `attn.out_proj` kept BF16 at blocks 0-15, 17, 19, 20, 27, 38, 43-47, 49
 - 3× `mlp.fc2` kept BF16 at blocks 39, 45, 49
 
-The 30-layer plan is a single source of truth in `core/layer_config_builder.py` (`H3_NVFP4_HQ_LAYER_PLAN` and related exports) and was verified against DmitryDB's comment-proofed NVFP4-HQ community quants (FL2VA + Ref2VA, Blackwell loadtest JSONs shipped in that repo).
+The 30-layer plan is a single source of truth in `core/layer_config_builder.py` (`H3_NVFP4_HQ_LAYER_PLAN` and related exports). It was derived from a deep analysis of working community NVFP4 quants of MiniMax H3 — see the upstream analysis repos listed under [Credits](#credits).
 
 The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp4_pure`, `nvfp4_hq_mixed`, `nvfp4_fp8_adaln_mixed`, or `nvfp4_mixed_unknown` — and reports mixed retention in a dedicated **MIXED-KEPT** section as a recognized variant, not a pattern miss. H3's heavy linears (incl. `fc2`) are excluded from the suspicious check, so intentionally-BF16 layers are never falsely flagged.
 
@@ -142,6 +167,9 @@ The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp
 8. The **Display & Output Name** field in the Source panel sets the merged output filename (shared across all merge modes). Start the merge from the sidebar **Start Merge** button
 
 ### LoRA Merge Strategies
+
+<details>
+<summary><strong>Open per-architecture strategy details</strong></summary>
 
 Each architecture applies its own filter-based preset to tensor categories:
 
@@ -166,6 +194,8 @@ Each architecture applies its own filter-based preset to tensor categories:
 
 Strength limit: effective strength (`global x per_lora`) capped at +/-3.0 to prevent black images on Krea 2 gate tensors. Merge device: CPU/CUDA/auto with VRAM headroom check and OOM fallback.
 
+</details>
+
 ### Supported LoRA Formats
 
 Standard `.safetensors` LoRAs and ComfyUI `.diff` format are both supported.
@@ -180,6 +210,9 @@ Every quantization and LoRA merge writes a human-readable `.txt` recipe alongsid
 
 A model-level merge — not LoRA math. Currently one recipe:
 
+<details>
+<summary><strong>Hybrid MiniMax H3 (h3_hybrid)</strong></summary>
+
 ### Hybrid MiniMax H3 (`h3_hybrid`)
 
 Switch to **Model Merge** mode. The base (fl2va) checkpoint is the one picked in the Source panel; the sidebar Model Merge section holds the recipe selector and the overlay (ref2va) picker. Output name = the **Display & Output Name** field in the Source panel.
@@ -189,9 +222,14 @@ Switch to **Model Merge** mode. The base (fl2va) checkpoint is the one picked in
 
 Selection order doesn't matter — the engine auto-detects roles from filenames (fl2va/ref2va markers). Works for both pruned (932 keys) and full (1035 keys) variants. Output carries `minimax_h3_hybrid=baked` + `base_model`/`overlay_model` provenance.
 
+</details>
+
 ---
 
 ## Architecture And Preservation
+
+<details>
+<summary><strong>Open preservation tables and layer model details</strong></summary>
 
 The architecture selection controls the `convert_to_quant` preset and, for verified models, DaSiWa's local preservation table.
 
@@ -211,6 +249,8 @@ Full checkpoints are detected from the source header when possible. When local l
 - **PRESERVE_PATTERNS:** Structural/routing/I/O layers that stay at source precision via `{"skip": true}`
 - **RESCUE_PATTERNS:** Layers bumped to FP8 when the base format is lower-bit (NVFP4, INT8, MXFP8, Hybrid MXFP8). On FP8 base they remain normal FP8, not BF16/FP16
 - **BAKED_VAE_PATTERNS:** Unconditional companion-module skip patterns for VAE, audio VAE, vocoder, text encoders, audio encoders, projection layers, and similar full-checkpoint components
+
+</details>
 
 ---
 
@@ -246,6 +286,9 @@ In-app **Update & Restart**: pulls latest source from origin/main, refreshes dep
 
 ## Provenance Watermark
 
+<details>
+<summary><strong>Open watermark scheme, secret resolution, and command examples</strong></summary>
+
 Every quantized and LoRA-merged output carries an EC-based provenance token in the `modelspec.watermark` field. No plaintext author string is written, and the rest of the custom metadata is left untouched — only `modelspec.watermark` is added.
 
 - **Scheme:** ephemeral X25519 (ECIES) wrapping an AES-256-GCM ciphertext. The static key is derived from your passphrase via PBKDF2-HMAC-SHA256 (clamped to a valid X25519 scalar). A fresh ephemeral key is generated per output, so every token is unique and only you can decode it.
@@ -270,9 +313,14 @@ python scripts/go_bridge.py watermark path/to/output.safetensors
 python scripts/go_bridge.py watermark-status
 ```
 
+</details>
+
 ---
 
 ## Project Layout
+
+<details>
+<summary><strong>Open file tree</strong></summary>
 
 ```
 cmd/quantstation/main.go       Go entry point - web server at :7878
@@ -309,9 +357,14 @@ build.sh                       Go binary rebuild
 lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
 ```
 
+</details>
+
 ---
 
 ## API Endpoints
+
+<details>
+<summary><strong>Open endpoint table</strong></summary>
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -336,6 +389,8 @@ lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
 | POST | `/api/jobs/{id}/stop` | Cancel running job |
 | GET | `/api/watermark` | Report if a watermark key is configured (no secret returned) |
 
+</details>
+
 ---
 
 ## Credits
@@ -346,3 +401,4 @@ lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) — GGUF format reference
 - [City96 ComfyUI-GGUF tools](https://github.com/city96/ComfyUI-GGUF/tree/main/tools) — GGUF tooling
 - [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) — TensorCore ConvRot W4A4 layout for INT4 ConvRot, and the AsymW4A8Int8 layout for W4A8 (MiniMax H3)
+- Upstream MiniMax H3 NVFP4 analysis (deep structural + mixed-profile analysis, incl. the NVFP4 HQ layer plan): [lilcheaty/MiniMax-H3-NVFP4](https://huggingface.co/lilcheaty/MiniMax-H3-NVFP4), [coolthor/MiniMax-H3-pruned-NVFP4](https://huggingface.co/coolthor/MiniMax-H3-pruned-NVFP4), [Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot](https://huggingface.co/Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot), [DmitryDB/MiniMax-H3-ComfyUI-Quants](https://huggingface.co/DmitryDB/MiniMax-H3-ComfyUI-Quants)
