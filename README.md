@@ -6,13 +6,16 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 
 ![Quant Station Preview](assets/DaSiWa-QuantStation.webp)
 
+---
+
 ## Table of Contents
 
 - [At a Glance](#at-a-glance)
 - [Quick Start](#quick-start)
-- [Choosing Formats](#choosing-formats) · [Support Matrix](#support-matrix)
-- [Quantization Workflow](#quantization-workflow) · [NVFP4 HQ mixed profile](#minimax-h3-nvfp4-hq-mixed-profile)
-- [LoRA Merge Workflow](#lora-merge-workflow) · [Strategies](#lora-merge-strategies) · [LoRA Formats](#supported-lora-formats) · [Recipe Reload](#recipe-reload)
+- [Choosing Formats](#choosing-formats) (incl. [Support Matrix](#support-matrix))
+- [Quantization Workflow](#quantization-workflow)
+- [MiniMax H3 NVFP4 HQ mixed profile](#minimax-h3-nvfp4-hq-mixed-profile)
+- [LoRA Merge Workflow](#lora-merge-workflow)
 - [Model Merge (model-level)](#model-merge-model-level)
 - [Architecture And Preservation](#architecture-and-preservation)
 - [Diagnostic Tools](#diagnostic-tools)
@@ -22,6 +25,8 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 - [Project Layout](#project-layout)
 - [API Endpoints](#api-endpoints)
 - [Credits](#credits)
+
+Detailed reference material lives in the [doc/](doc/) folder — linked from each section below.
 
 ---
 
@@ -54,14 +59,7 @@ Then open:
 http://127.0.0.1:7878
 ```
 
-The startup script handles everything:
-
-- Installs/checks system build tools where supported
-- Installs `uv` if missing, creates `.venv/`, installs Python dependencies
-- Refreshes `convert_to_quant` from GitHub
-- Installs `comfy-kitchen[cublas]` from the default branch (required for INT4 ConvRot and W4A8; carries both the TensorCore ConvRot W4A4 and AsymW4A8Int8 layouts)
-- Downloads/repairs `bin/ggufy`
-- Builds and starts the Go UI
+The startup script handles everything: it installs/refreshes build tools, Python dependencies (`uv` + `.venv/`), `convert_to_quant`, `comfy-kitchen[cublas]` (required for INT4 ConvRot and W4A8), and the `bin/ggufy` binary, then builds and starts the Go UI.
 
 ### Launch Modes
 
@@ -80,23 +78,20 @@ Models are loaded from `$DASIWA_MODELS_DIR` (if set), `~/models`, or `<project-r
 
 ## Choosing Formats
 
-<details>
-<summary><strong>Open format table + per-architecture support matrix</strong></summary>
+| Format | Best Use |
+|--------|----------|
+| FP8 | RTX 40/50-series quality baseline |
+| NVFP4 | Blackwell VRAM savings |
+| NVFP4 HQ | MiniMax H3 VRAM + quality balance (mixed NVFP4 profile) |
+| MXFP8 | Blackwell microscaling (SM >= 10.0 required) |
+| Hybrid MXFP8 | Ada + Blackwell compatibility |
+| INT4 ConvRot | Maximum compression (LTX-2.3, WAN 2.2, Krea 2, MiniMax H3) |
+| W4A8 | MiniMax H3 reference low-bit (asym_w4a8_int8) |
+| INT8 Tensor-wise | Safer INT8 path for broad ComfyUI compatibility |
+| INT8 Row-wise ConvRot Runtime | Runtime-specific INT8 (requires matching activation rotation) |
+| GGUF Q formats | llama.cpp-style deployment |
 
-| Format | Best Use | Notes |
-|--------|----------|-------|
-| FP8 | RTX 40/50-series quality baseline | Good default for video model compression |
-| NVFP4 | Blackwell VRAM savings | More aggressive; sensitive layers rescued to FP8 where local tables exist |
-| NVFP4 HQ | MiniMax H3 VRAM + quality balance | Mixed NVFP4 profile: same `--nvfp4 --comfy_quant` command as NVFP4, but a verified 30-layer plan (27× `attn.out_proj` + 3× `mlp.fc2` at specific blocks) stays at source BF16 while the other 170 main-matrix layers stay NVFP4-packed. MiniMax H3 only |
-| MXFP8 | Blackwell microscaling | Pure MXFP8; requires SM >= 10.0 (Blackwell). Use Hybrid for Ada compatibility |
-| Hybrid MXFP8 | Ada + Blackwell compatibility | Two-pass: MXFP8 quantize then hybrid conversion with tensorwise FP8 fallback |
-| INT4 ConvRot | Maximum compression | w4a4 ConvRot via comfy-kitchen TensorCore layout. Supports LTX-2.3, WAN 2.2, Krea 2, MiniMax H3. Requires BF16/FP16 source (refuses lossy sources) |
-| W4A8 | MiniMax H3 reference low-bit | asym_w4a8_int8 ConvRot via comfy-kitchen AsymW4A8Int8Layout (packed INT8 + 16-value codebook + FP8 group scales, ConvRot group 256). MiniMax H3 only; packs the heavy linears, preserves structural layers. Requires BF16/FP16 source, Simple strategy |
-| INT8 Tensor-wise | Safer INT8 path | Recommended INT8 choice for broad ComfyUI compatibility |
-| INT8 Row-wise ConvRot Runtime | Experimental/runtime-specific INT8 | Requires inference code that reads ConvRot metadata and rotates activations |
-| GGUF Q formats | llama.cpp-style deployment | Uses `ggufy` plus sensitivity maps for verified video tensors |
-
-If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. ConvRot row-wise INT8 only works correctly when the runtime implements the matching activation rotation.
+Full per-format details (notes, strategy/source requirements) are in [doc/choosing-formats.md](doc/choosing-formats.md).
 
 ### Support Matrix
 
@@ -120,9 +115,7 @@ An architecture marked with 🔒 has locally verified preserve/rescue tables. Ot
 | NeRF Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 | NeRF Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 
-INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and comfy-kitchen[cublas] (W4A8 needs the AsymW4A8Int8Layout build, installed via the unpinned default-branch `comfy-kitchen`). MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada compatibility. W4A8 is MiniMax H3 only. NVFP4 HQ is a MiniMax H3-only quality variant of NVFP4 — the same packed NVFP4 layout plus a verified per-block BF16 retention plan (30 heavy linears kept at source precision).
-
-</details>
+If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. W4A8 and NVFP4 HQ are MiniMax H3 only.
 
 ---
 
@@ -163,91 +156,19 @@ The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp
 7. Shape-mismatch diagnostics automatically detect LoRAs trained on different hidden dimensions and warn before merge
 8. The **Display & Output Name** field in the Source panel sets the merged output filename (shared across all merge modes). Start the merge from the sidebar **Start Merge** button
 
-### LoRA Merge Strategies
-
-<details>
-<summary><strong>Open per-architecture strategy details</strong></summary>
-
-Each architecture applies its own filter-based preset to tensor categories:
-
-**LTX-2.3 types** (All, Video, Audio):
-- Classifies tensors into: attn_qkv, attn_out, ff_in, ff_out, audio_attn, audio_attn_out, audio_to_video_attn, video_to_audio_attn, audio_ff_in, audio_ff_out, caption_projection, patchify_or_output, norm, other
-- Preserves structural layers (adaln, gate logits, baked VAE/text/audio modules)
-- All merges all non-preserved weights (normal ComfyUI LoRA load behavior)
-- Video merges only weights without `audio` in their key. Audio merges every weight with `audio` in its key, including cross-modal bridge weights
-
-**WAN 2.2 strategies** (Balanced, Motion, Visuals):
-- Classifies tensors into: self_attn_qkv, self_attn_out, cross_attn_qkv, cross_attn_out, ffn_in, ffn_out, modulation, caption_projection, patchify_or_output, norm, other
-- No Audio strategy (WAN 2.2 has no audio components)
-- Preserves modulation.lin, patch_embedding, and baked companion modules
-- Norm layers always get 0.0 multiplier (untouched)
-
-**Krea 2 strategies** (Balanced, Style, Content, Detail):
-- Classifies tensors into: attn_qkv, attn_out, attn_gate, ff_in, ff_out, text_fusion, structural, other
-- Style boosts attention (qkv/out/gate), reduces text_fusion — for aesthetic/style LoRAs
-- Content boosts feed-forward, moderates attention — for subject/content LoRAs
-- Detail applies mild global boost — for quality/detail LoRAs
-- Preserves modulation.lin, tproj, tmlp, txtmlp, first/last layers, txtfusion.projector, norm.scale, qknorm
-
-Strength limit: effective strength (`global x per_lora`) capped at +/-3.0 to prevent black images on Krea 2 gate tensors. Merge device: CPU/CUDA/auto with VRAM headroom check and OOM fallback.
-
-</details>
-
-### Supported LoRA Formats
-
-Standard `.safetensors` LoRAs and ComfyUI `.diff` format are both supported.
-
-### Recipe Reload
-
-Every quantization and LoRA merge writes a human-readable `.txt` recipe alongside the output. Click **Load Recipe** in the UI to reload a previous run's exact settings (source, output name, all LoRAs, formats, strategy, strength) — useful for reproducing results or iterating on parameters.
+Per-architecture strategy presets (LTX-2.3 All/Video/Audio, WAN 2.2 Balanced/Motion/Visuals, Krea 2 Balanced/Style/Content/Detail), supported LoRA formats, and recipe reload are documented in [doc/lora-merge-strategies.md](doc/lora-merge-strategies.md).
 
 ---
 
 ## Model Merge (model-level)
 
-A model-level merge — not LoRA math. Currently one recipe:
-
-<details>
-<summary><strong>Hybrid MiniMax H3 (h3_hybrid)</strong></summary>
-
-### Hybrid MiniMax H3 (`h3_hybrid`)
-
-Switch to **Model Merge** mode. The base (fl2va) checkpoint is the one picked in the Source panel; the sidebar Model Merge section holds the recipe selector and the overlay (ref2va) picker. Output name = the **Display & Output Name** field in the Source panel.
-
-- **Base** = fl2va checkpoint (all tensors)
-- **Overlay** = ref2va checkpoint (`blocks.{25..49}.adaln_proj.linear.{bias,weight,weight_scale}`)
-
-Selection order doesn't matter — the engine auto-detects roles from filenames (fl2va/ref2va markers). Works for both pruned (932 keys) and full (1035 keys) variants. Output carries `minimax_h3_hybrid=baked` + `base_model`/`overlay_model` provenance.
-
-</details>
+A model-level merge — not LoRA math. The current recipe is the **Hybrid MiniMax H3** merge (fl2va base + ref2va overlay, roles auto-detected). Full details: [doc/model-merge.md](doc/model-merge.md).
 
 ---
 
 ## Architecture And Preservation
 
-<details>
-<summary><strong>Open preservation tables and layer model details</strong></summary>
-
-The architecture selection controls the `convert_to_quant` preset and, for verified models, DaSiWa's local preservation table.
-
-| Architecture | Local Preserve/Rescue Table | Detection | Notes |
-|-------------|--------------------------|-----------|-------|
-| WAN 2.2 | Yes | Yes | Verified local table for structural/video-sensitive layers |
-| LTX-2.3 | Yes | Yes | Verified local table, including audio/video connector and gate-sensitive patterns |
-| Krea 2 | Yes | Yes | Verified local table for image diffusion transformer. No convert_to_quant flag; uses generic quantization with local layer config |
-| MiniMax H3 | Yes | Yes | Omni-modal (video+audio) DiT. No upstream convert_to_quant preset (flag=None); the local layer config carries all quality. 2K native (2560x1440). Covers FL2VA and Ref2VA |
-| Hunyuan Video, Flux.2, Qwen Image, Z-Image, Z-Image Refiner, Anima, Radiance, Distillation, NeRF, text presets | No | Limited/none | Uses upstream `convert_to_quant` preset skip logic |
-| Not set | No | Skipped | Runs without architecture flag, local layer config, or architecture verification |
-
-Full checkpoints are detected from the source header when possible. When local layer configs are active, baked companion modules such as VAE, audio VAE, vocoder, text encoders, audio encoders, and text projection layers are preserved instead of being quantized as transformer weights.
-
-### Layer Preservation Model
-
-- **PRESERVE_PATTERNS:** Structural/routing/I/O layers that stay at source precision via `{"skip": true}`
-- **RESCUE_PATTERNS:** Layers bumped to FP8 when the base format is lower-bit (NVFP4, INT8, MXFP8, Hybrid MXFP8). On FP8 base they remain normal FP8, not BF16/FP16
-- **BAKED_VAE_PATTERNS:** Unconditional companion-module skip patterns for VAE, audio VAE, vocoder, text encoders, audio encoders, projection layers, and similar full-checkpoint components
-
-</details>
+The architecture selection controls the `convert_to_quant` preset and, for verified models, DaSiWa's local preservation table (WAN 2.2, LTX-2.3, Krea 2, MiniMax H3). Unverified architectures fall back to upstream preset skip rules. The layer preservation model — **PRESERVE_PATTERNS** (skip), **RESCUE_PATTERNS** (FP8 bump on lower-bit bases), **BAKED_VAE_PATTERNS** (unconditional companion-module skip) — is explained in [doc/architecture-and-preservation.md](doc/architecture-and-preservation.md).
 
 ---
 
@@ -283,110 +204,30 @@ In-app **Update & Restart**: pulls latest source from origin/main, refreshes dep
 
 ## Provenance Watermark
 
-<details>
-<summary><strong>Open watermark scheme, secret resolution, and command examples</strong></summary>
+Every quantized and LoRA-merged output carries an EC-based provenance token in the `modelspec.watermark` field: ephemeral X25519 (ECIES) wrapping AES-256-GCM, derived from your local passphrase — unique per output, decodable only by you. Without a configured secret the field is simply not written.
 
-Every quantized and LoRA-merged output carries an EC-based provenance token in the `modelspec.watermark` field. No plaintext author string is written, and the rest of the custom metadata is left untouched — only `modelspec.watermark` is added.
-
-- **Scheme:** ephemeral X25519 (ECIES) wrapping an AES-256-GCM ciphertext. The static key is derived from your passphrase via PBKDF2-HMAC-SHA256 (clamped to a valid X25519 scalar). A fresh ephemeral key is generated per output, so every token is unique and only you can decode it.
-- **Payload:** tool, architecture, model name, bit width, timestamp, a random nonce, and the SHA-256 of the output (when the file exists).
-- **Decode:** with the correct passphrase the token decodes to the provenance payload; a wrong or tampered token fails (GCM authentication). Without any configured secret the field is simply not written (clean no-op).
-- **Secret resolution (first hit wins):**
-  1. `DASIWA_WATERMARK_PASSPHRASE` (environment)
-  2. `DASIWA_WATERMARK_KEY` (environment; 64-hex pre-derived key or a passphrase)
-  3. `~/.dasiwa/watermark.key` (0600, written by `go_bridge.py watermark-key`)
-- **Passphrase location:** kept in your environment / a 0600 key file **outside the repository** — never committed to Gitea or GitHub.
-- **UI:** a **Watermark outputs** checkbox (on by default, shared by Quantize and LoRA modes) toggles watermarking per run; a live hint below it tells you whether a key is available, whether no key is configured (no token written), or that watermarking is off for this run. Unchecking it sets a per-job kill switch so that run's outputs skip `modelspec.watermark`.
-- **Status:** `GET /api/watermark` (and `go_bridge.py watermark-status`) reports whether a secret is resolvable — without ever returning the secret value.
+- Scheme, payload, decode semantics: [doc/watermark.md](doc/watermark.md)
+- Secret resolution: `DASIWA_WATERMARK_PASSPHRASE` → `DASIWA_WATERMARK_KEY` → `~/.dasiwa/watermark.key` (0600, outside the repo)
+- UI: **Watermark outputs** checkbox (on by default) with live key-status hint; per-job kill switch when unchecked
+- Status endpoint: `GET /api/watermark` (never returns the secret value)
 
 ```bash
-# Persist the passphrase (0600, outside the repo)
-python scripts/go_bridge.py watermark-key --passphrase "your-passphrase"
-
-# Decode the watermark in a quant output (safetensors or GGUF)
-python scripts/go_bridge.py watermark path/to/output.safetensors
-
-# Check whether a watermark key is currently configured (for the UI)
-python scripts/go_bridge.py watermark-status
+python scripts/go_bridge.py watermark-key --passphrase "your-passphrase"  # persist key (0600)
+python scripts/go_bridge.py watermark path/to/output.safetensors         # decode token
+python scripts/go_bridge.py watermark-status                             # key available?
 ```
-
-</details>
 
 ---
 
 ## Project Layout
 
-<details>
-<summary><strong>Open file tree</strong></summary>
-
-```
-cmd/quantstation/main.go       Go entry point - web server at :7878
-internal/app/server.go         Go HTTP server, API routes, SSE job manager
-internal/pathbrowser/          Pure Go directory browser
-web/                           Frontend (HTML/CSS/JS, dark theme)
-scripts/go_bridge.py           Bridge from Go API to Python engines
-core/                          Quantization, metadata, and LoRA merge engines
-  gguf_engine.py               GGUF conversion + sensitivity maps
-  int4_convrot_engine.py       INT4 ConvRot streaming conversion (w4a4)
-  w4a8_engine.py               W4A8 (asym_w4a8_int8) streaming conversion (MiniMax H3)
-  safetensors_engine.py        Safetensors quantization via convert_to_quant
-  lora_merge_engine.py         Architecture-aware LoRA merge pipeline
-  model_merge_engine.py        Model-level merge (H3 hybrid fl2va/ref2va)
-  layer_config_builder.py      Verified preserve/rescue regex tables + H3 NVFP4-HQ layer plan
-  metadata_manager.py          Modelspec metadata preview/read/injection
-  watermark.py                 EC X25519 provenance watermark (modelspec.watermark)
-utils/                         Detection, scan, audit, system helpers
-  arch_detector.py             Header-only architecture detection
-  lora_inspector.py            LoRA pair discovery, tensor manifest reading
-  ltx23_layer_profiles.py      LTX-2.3 tensor classification + strategy multipliers
-  wan22_layer_profiles.py      WAN 2.2 tensor classification + strategy multipliers
-  krea2_layer_profiles.py      Krea 2 tensor classification + strategy multipliers
-  scanner_5d.py                5D tensor validation
-  pattern_audit.py             Pattern coverage audit
-  system.py                    CPU/RAM/GPU/VRAM monitoring
-  file_ops.py                  Filesystem utilities
-tests/                         Unit tests
-models/                        Local model tree
-logs/                          Conversion logs
-bin/ggufy                      GGUFY binary maintained by start-linux.sh
-start-linux.sh                 Preferred launcher
-build.sh                       Go binary rebuild
-lcpp.patch                     llama.cpp patch for Wan 2.2 GGUF support
-```
-
-</details>
+The full annotated file tree is in [doc/project-layout.md](doc/project-layout.md). Short version: `cmd/quantstation` (Go entry point), `internal/app` (HTTP server + SSE jobs), `web/` (frontend), `scripts/go_bridge.py` (Go→Python bridge), `core/` (quantization, LoRA/model merge, metadata, watermark engines), `utils/` (detection, audit, scanning, monitoring).
 
 ---
 
 ## API Endpoints
 
-<details>
-<summary><strong>Open endpoint table</strong></summary>
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/config` | Architectures, formats, root/models directories, output_dir |
-| GET | `/api/system` | CPU%, RAM, GPU%, VRAM metrics |
-| GET | `/api/browse` | Directory browser (models) |
-| GET | `/api/search` | Recursive file search (models) |
-| GET | `/api/files` | Recursive model file listing |
-| GET | `/api/inspect` | Header-only architecture detection |
-| GET | `/api/metadata-preview` | Generate modelspec metadata preview |
-| POST | `/api/metadata/read` | Read metadata from safetensors/GGUF |
-| POST | `/api/metadata/inject` | Inject metadata into safetensors |
-| POST | `/api/quantize` | Start quantization job |
-| POST | `/api/lora/merge` | Start LoRA merge job |
-| POST | `/api/model-merge` | Start model-level merge job (e.g. H3 hybrid) |
-| POST | `/api/update` | Pull source, update dependencies, and restart |
-| POST | `/api/memory/clean` | Release RAM/VRAM caches |
-| POST | `/api/shutdown` | Graceful server shutdown |
-| POST | `/api/tools/scan` | 5D tensor scan |
-| POST | `/api/tools/audit` | Pattern coverage audit |
-| GET | `/api/jobs/{id}/events` | SSE job log stream |
-| POST | `/api/jobs/{id}/stop` | Cancel running job |
-| GET | `/api/watermark` | Report if a watermark key is configured (no secret returned) |
-
-</details>
+The full endpoint table (config, system, browse/search, metadata, quantize, merges, update, jobs/SSE, tools, watermark) is in [doc/api-endpoints.md](doc/api-endpoints.md).
 
 ---
 
