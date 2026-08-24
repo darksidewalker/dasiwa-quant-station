@@ -27,6 +27,10 @@ Recipes:
              conditioning table (pruned `adaln_t_table` / full-model
              `time_embedder.*`). W = fl + strength * Δ', with
              Δ' = rank-N reconstruction + exact families.
+             Single streaming pass: the SVD energy report is accumulated
+             during the write pass; the header (a size-bound all-spaces
+             placeholder) is finalized in place afterwards, so each
+             source file is read exactly once.
     Strength s: uniform scale on the delta (s=1.0 = full delta;
     s<1.0 blends back toward fl2va). s=0 is treated as unset → 1.0.
     Works on both pruned (adaln_t_table, 532 keys) and full
@@ -43,6 +47,7 @@ import json
 import os
 import re
 import struct
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -327,10 +332,11 @@ def _run_h3_delta(
     rank = 0  → exact delta, every tensor (single streaming pass).
     rank  = N → SVD rank-N on SVD-eligible 2-D matrices; exact
                 application for norm/bias/timestep/rope families.
-                Energy is computed in a deterministic pre-pass so the
-                header (which carries the energy report) is complete
-                before any tensor bytes are written.
-
+                The energy report is accumulated DURING the write pass
+                (single read of both sources); the header is written
+                first as a size-bound all-spaces placeholder, then
+                finalized in place so the file carries
+                ``h3_delta_energy`` without a second source read.
     The output key/shape/dtype set is the base's: deltas never change
     shape, and each result is cast back to the base tensor dtype.
     """
@@ -349,51 +355,45 @@ def _run_h3_delta(
         return
 
     # ------------------------------------------------------------------
-    # SVD mode: deterministic energy pre-pass (fills meta before header)
-    # ------------------------------------------------------------------
-    if rank > 0:
-        # scratch accumulator (not written into the safetensors header)
-        energy_scratch: Dict[str, Dict[str, float]] = {}
-        yield _log(f"h3_delta SVD pre-pass: computing captured energy (rank {rank})...\n")
-        with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
-             safe_open(ref2va_path, framework="pt", device="cpu") as of:
-            for j, key in enumerate(keys):
-                if _is_svd_eligible(key, tuple(base_manifest[key].shape)):
-                    base_t = bf.get_tensor(key)
-                    ref_t = of.get_tensor(key)
-                    delta = ref_t.to(torch.float32) - base_t.to(torch.float32)
-                    _approx, cap_frac, _ach = _randomized_svd_cap(delta, rank)
-                    fam = _classify_h3_family(key)
-                    rec = energy_scratch.setdefault(fam, {"cap": 0.0, "n": 0})
-                    rec["cap"] += cap_frac
-                    rec["n"] += 1
-                    if (j + 1) % 50 == 0:
-                        yield _status(f"h3_delta SVD pre-pass {j + 1}/{total_keys}")
-        energy_report = {
-            fam: {"avg_captured": round(rec["cap"] / rec["n"], 6), "tensors": rec["n"]}
-            for fam, rec in energy_scratch.items()
-        }
-        meta["h3_delta_energy"] = json.dumps(energy_report, sort_keys=True)
-
-    # ------------------------------------------------------------------
-    # Header + streaming write
+    # Header + single streaming pass
+    #
+    # SVD mode: the energy report is accumulated DURING this pass (no
+    # separate source re-read). The header is written first as a
+    # size-reserving placeholder (a 4 KiB spacer), then re-serialized
+    # and rewritten in place after the pass, so the file carries
+    # h3_delta_energy without a second full source read — the same
+    # spacer-padding trick as metadata_manager._try_inplace_metadata_rewrite.
+    # Exact mode (rank=0): header is final and written directly.
     # ------------------------------------------------------------------
     meta["h3_delta_mode"] = mode
     meta["h3_delta_rank"] = str(rank)
     meta["h3_delta_strength"] = f"{strength:.6f}"
     meta["h3_delta_variant"] = _h3_variant(base_manifest)
 
-    header = _build_safetensors_header(base_manifest, meta)
-    tmp_output_path = output_path + ".tmp"
-    os.makedirs(os.path.dirname(tmp_output_path) or ".", exist_ok=True)
-
     svd_counts = 0
     zero_delta_keys = 0
     exact_family_counts: Dict[str, int] = {}
+    energy_scratch: Dict[str, Dict[str, float]] = {}
+
+    if rank > 0:
+        # Reserve header room for the post-pass energy report.
+        meta["__spacer"] = " " * 4096
+    else:
+        if "__spacer" not in meta:
+            meta["__spacer"] = " " * 2048
+
+    header_bytes = _build_safetensors_header(base_manifest, meta)
+    header_size = len(header_bytes)
+
+    tmp_output_path = output_path + ".tmp"
+    os.makedirs(os.path.dirname(tmp_output_path) or ".", exist_ok=True)
+
+    progress_every = max(1, total_keys // 100)
+    t0 = time.monotonic()
 
     with open(tmp_output_path, "wb") as out_f:
-        out_f.write(struct.pack("<Q", len(header)))
-        out_f.write(header)
+        out_f.write(struct.pack("<Q", header_size))
+        out_f.write(header_bytes)
         with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
              safe_open(ref2va_path, framework="pt", device="cpu") as of:
             for i, key in enumerate(keys):
@@ -405,9 +405,13 @@ def _run_h3_delta(
                 delta = ref32 - base32
 
                 if rank > 0 and _is_svd_eligible(key, tuple(base_t.shape)):
-                    approx, _cap, _ach = _randomized_svd_cap(delta, rank)
+                    approx, cap_frac, _ach = _randomized_svd_cap(delta, rank)
                     delta = approx
                     svd_counts += 1
+                    fam = _classify_h3_family(key)
+                    rec = energy_scratch.setdefault(fam, {"cap": 0.0, "n": 0})
+                    rec["cap"] += cap_frac
+                    rec["n"] += 1
                 elif rank > 0:
                     exact_family_counts[_classify_h3_family(key)] = \
                         exact_family_counts.get(_classify_h3_family(key), 0) + 1
@@ -419,20 +423,58 @@ def _run_h3_delta(
                 _write_tensor_bytes(out_f, out)
                 del out, base_t, ref_t, base32, ref32, delta
 
-                if (i + 1) % 50 == 0 or i + 1 == total_keys:
+                done = i + 1
+                if done % progress_every == 0 or done == total_keys:
+                    elapsed = time.monotonic() - t0
+                    eta = elapsed * (total_keys - done) / done
                     yield _status(
-                        f"h3_delta {i + 1}/{total_keys} tensors "
-                        f"(svd={svd_counts}, zero-delta={zero_delta_keys})"
+                        f"h3_delta {done}/{total_keys} tensors "
+                        f"(svd={svd_counts}, zero-delta={zero_delta_keys}, "
+                        f"elapsed {_format_duration(elapsed)}, "
+                        f"eta {_format_duration(eta)})"
                     )
+
+    if rank > 0:
+        # Finalize the header in place: add the energy report, adjust the
+        # spacer so the final JSON lands exactly at the reserved size.
+        energy_report = {
+            fam: {"avg_captured": round(rec["cap"] / rec["n"], 6), "tensors": rec["n"]}
+            for fam, rec in energy_scratch.items()
+        }
+        meta["h3_delta_energy"] = json.dumps(energy_report, sort_keys=True)
+        final_header = _build_safetensors_header(base_manifest, meta)
+        for _ in range(2):  # spacer length changes serialize 1:1; one adjust suffices
+            align = header_size - len(final_header)
+            if align == 0:
+                break
+            spacer = meta["__spacer"]
+            if align > 0:
+                spacer = spacer + " " * align
+            else:
+                if len(spacer) + align < 0:
+                    raise RuntimeError("Could not align h3_delta header size via spacer")
+                spacer = spacer[: len(spacer) + align]
+            meta["__spacer"] = spacer
+            final_header = _build_safetensors_header(base_manifest, meta)
+        if len(final_header) != header_size:
+            raise RuntimeError(
+                f"h3_delta header finalization misaligned "
+                f"({len(final_header)} vs {header_size})"
+            )
+        with open(tmp_output_path, "r+b") as f:
+            f.seek(0)
+            f.write(struct.pack("<Q", header_size))
+            f.write(final_header)
 
     os.replace(tmp_output_path, output_path)
 
+    elapsed_total = time.monotonic() - t0
     yield _log(
         f"h3_delta complete: {total_keys} tensors "
         f"(svd-approx={svd_counts}, exact-families="
         f"{sum(exact_family_counts.values()) if rank > 0 else total_keys}, "
         f"zero-delta={zero_delta_keys}), mode={mode}, strength={strength}, "
-        f"output={output_path}\n"
+        f"elapsed {_format_duration(elapsed_total)}, output={output_path}\n"
     )
     yield {"type": "done", "status": "finished"}
 
@@ -674,6 +716,9 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     # Stream: base order, overlay keys read from ref2va
     overlay_set_frozenset = frozenset(overlay_set)
+    total_keys = len(base_manifest)
+    progress_every = max(1, total_keys // 100)
+    t0 = time.monotonic()
     with open(tmp_output_path, "wb") as out_f:
         header = _build_safetensors_header(base_manifest, meta)
         out_f.write(struct.pack("<Q", len(header)))
@@ -681,7 +726,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
         with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
              safe_open(ref2va_path, framework="pt", device="cpu") as of:
-            for key in base_manifest:
+            for i, key in enumerate(base_manifest):
                 if key in overlay_set_frozenset:
                     tensor = of.get_tensor(key)
                 else:
@@ -689,12 +734,24 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 _write_tensor_bytes(out_f, tensor)
                 del tensor
 
+                done = i + 1
+                if done % progress_every == 0 or done == total_keys:
+                    elapsed = time.monotonic() - t0
+                    eta = elapsed * (total_keys - done) / done
+                    yield _status(
+                        f"h3_hybrid {done}/{total_keys} tensors "
+                        f"(elapsed {_format_duration(elapsed)}, "
+                        f"eta {_format_duration(eta)})"
+                    )
+
     os.replace(tmp_output_path, output_path)
 
+    elapsed_total = time.monotonic() - t0
     yield _log(f"Wrote merged checkpoint: {output_path}\n")
     yield _log(
         f"Model merge complete: {len(base_keys)} tensors "
-        f"({len(overlay_set)} overlay + {len(base_keys) - len(overlay_set)} base)\n"
+        f"({len(overlay_set)} overlay + {len(base_keys) - len(overlay_set)} base), "
+        f"elapsed {_format_duration(elapsed_total)}\n"
     )
     yield _status("Model merge complete")
     yield {"type": "done", "status": "finished"}
@@ -744,6 +801,18 @@ def _write_tensor_bytes(out_f: Any, tensor: torch.Tensor) -> None:
 
 def _log(text: str) -> Dict[str, str]:
     return {"type": "log", "text": text}
+
+
+def _format_duration(seconds: float) -> str:
+    """Compact duration for progress events: 90s -> '1m 30s', 3661s -> '1h 1m'."""
+    seconds = max(0, int(round(seconds)))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
 def _status(status: str) -> Dict[str, str]:
