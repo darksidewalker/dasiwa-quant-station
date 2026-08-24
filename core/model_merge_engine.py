@@ -1,7 +1,7 @@
 """
 Model-level merge engine (NOT LoRA math).
 
-Currently one recipe:
+Recipes:
 
   h3_hybrid
     Base   : fl2va  (all tensors)
@@ -10,6 +10,31 @@ Currently one recipe:
     Order-agnostic: filenames are inspected to auto-detect which is which.
     Metadata: base __metadata__ + minimax_h3_hybrid=baked
               + base_model/overlay_model filenames.
+
+  h3_delta
+    Base   : fl2va (all tensors)
+    Overlay: ref2va — the full ref2va − fl2va weight delta, fused back
+             into the fl2va base so one partition can serve both
+             keyframe (fl2va) and reference (ref2va) conditioning.
+    Two modes (payload `rank`):
+      rank = 0 (default) — exact delta: W = fl + strength * (ref − fl),
+             every shared tensor. Output ≈ ref2va-equivalent on the
+             reference path, pristine fl2va where the delta is zero.
+      rank = N  — SVD-rank-N (diffusers-modular / ethanfel style):
+             randomized SVD of the delta on SVD-eligible 2-D matrices,
+             exact (non-SVD) application for the non-compressible
+             families — biases, RMSNorm weights, and the timestep
+             conditioning table (pruned `adaln_t_table` / full-model
+             `time_embedder.*`). W = fl + strength * Δ', with
+             Δ' = rank-N reconstruction + exact families.
+    Strength s: uniform scale on the delta (s=1.0 = full delta;
+    s<1.0 blends back toward fl2va). s=0 is treated as unset → 1.0.
+    Works on both pruned (adaln_t_table, 532 keys) and full
+    (time_embedder MLP, 535 keys) key sets — detection is automatic
+    from the base manifest; no pruned/full choice.
+    Metadata: base __metadata__ + minimax_h3_delta=baked +
+              h3_delta_{mode,rank,strength} + h3_delta_energy
+              (per-family captured-energy JSON) + base/overlay names.
 
 All merges stream tensor-by-tensor (no full model in memory).
 """
@@ -43,6 +68,8 @@ class _Recipe:
     extra_meta_static: Dict[str, str]
     # human-readable label for the UI
     label: str
+    # runner name — "splice" (tensor copy) or "delta" (ref − fl math)
+    kind: str = "splice"
 
 _H3_ADALN_RE = re.compile(
     r"^blocks\.(\d+)\.adaln_proj\.linear\.(bias|weight|weight_scale)$"
@@ -57,8 +84,106 @@ RECIPES: Dict[str, _Recipe] = {
             "minimax_h3_hybrid": "baked",
         },
         label="Hybrid MiniMax H3",
+        kind="splice",
+    ),
+    "h3_delta": _Recipe(
+        name="h3_delta",
+        architecture="MiniMax H3",
+        # Delta uses every shared key; the pattern is only used for
+        # validation, and ".*" matches all keys in the base.
+        overlay_key_pattern=r".*",
+        extra_meta_static={
+            "minimax_h3_delta": "baked",
+        },
+        label="Delta-fused MiniMax H3 (fl2va + ref2va)",
+        kind="delta",
     ),
 }
+
+# ---------------------------------------------------------------------------
+# H3 tensor family classification (delta recipe)
+#
+# Families mirror the NVFP4 preserve-table philosophy: the
+# non-compressible conditioning families are applied exactly (or via
+# rank-0 SVD, which is exact) even in SVD mode; the heavy 2-D trunk
+# matrices are where the rank cap actually compresses.
+# ---------------------------------------------------------------------------
+
+_H3_EXACT_FAMILIES = {
+    # timestep conditioning: pruned adaln_t_table or full time_embedder
+    "timestep_table", "time_embedder",
+    # RMS / layer norms
+    "norm",
+    # biases (1-D, incompressible by 2-D SVD)
+    "bias",
+    # structural buffers
+    "rope",
+}
+
+
+def _classify_h3_family(key: str) -> str:
+    """
+    Classify an H3 tensor key into a merge family.
+
+    Family sets:
+      exact (incompressible / must stay exact):
+        timestep_table — pruned adaln_t_table (8-wide curve)
+        time_embedder — full-model timestep MLP
+        norm         — layer/RMS norm scales (norm1/norm2, q/k_norm,
+                       final norms); all 1-D, SVD cannot compress
+        bias         — 1-D biases
+        rope         — inv_freq buffer
+      SVD-eligible (rank cap applies):
+        ada  — adaln_proj.linear.weight (2-D; tiny rank in practice)
+        attn — qkv_proj / out_proj (q/k_norm lands in 'norm')
+        mlp  — fc1 / fc2
+        out  — final_layer.video_out / audio_out
+        proj — video_patch_proj / audio_patch_proj / condition_proj
+
+    Prefix/structural checks first, then norm detection, then
+    adaln_proj (so its bias stays in 'ada', not 'bias'), then the
+    leaf-name fallbacks.
+    """
+    if "adaln_t_table" in key:
+        return "timestep_table"
+    if key.startswith("time_embedder.") or ".time_embedder." in key:
+        return "time_embedder"
+    if key == "rope.inv_freq" or key.startswith("rope.") or ".rope." in key:
+        return "rope"
+    # Norm scales: block norms, final norms, q/k norms, final_layer.norm
+    if (
+        re.search(r"(^|\.)norm[12]\.", key)
+        or re.search(r"(^|\.)final_norm\.", key)
+        or re.search(r"(^|\.)attn\.[qk]_norm\.", key)
+        or re.search(r"(^|\.)norm\.(weight|bias)$", key)
+    ):
+        return "norm"
+    # AdaLN modulation — before the bias fallback so adaln_proj biases
+    # report under 'ada' instead of 'bias' (both are exact families;
+    # only the energy-report bucket differs).
+    if "adaln_proj" in key:
+        return "ada"
+    if key.endswith(".bias"):
+        return "bias"
+    if re.search(r"(^|\.)final_layer\.(video_out|audio_out)\.", key):
+        return "out"
+    if ".mlp." in key or key.startswith("mlp."):
+        return "mlp"
+    if ".attn." in key or key.startswith("attn."):
+        return "attn"
+    if re.match(r"^(video|audio)_patch_proj\.", key) or re.match(r"^condition_proj\.", key):
+        return "proj"
+    return "attn"
+
+
+def _is_svd_eligible(key: str, shape: Tuple[int, ...]) -> bool:
+    """
+    2-D matrices that a rank cap can actually compress.
+    """
+    if len(shape) != 2:
+        return False
+    fam = _classify_h3_family(key)
+    return fam not in _H3_EXACT_FAMILIES
 
 # ---------------------------------------------------------------------------
 # File-type detection (order-agnostic)
@@ -133,6 +258,186 @@ def _compute_overlay_keys(
 
 
 # ---------------------------------------------------------------------------
+# Delta runner (h3_delta)
+# ---------------------------------------------------------------------------
+
+def _h3_variant(base_manifest: Dict[str, Any]) -> str:
+    """'pruned' (adaln_t_table) or 'full' (time_embedder) H3 key set."""
+    keys = set(base_manifest)
+    if any(k == "adaln_t_table" or k.endswith(".adaln_t_table") for k in keys):
+        return "pruned"
+    if any(k.startswith("time_embedder.") for k in keys):
+        return "full"
+    return "unknown"
+
+
+def _randomized_svd_cap(
+    mat: torch.Tensor, rank: int
+) -> Tuple[torch.Tensor, float, int]:
+    """
+    Randomized SVD reconstruction of a 2-D matrix, capped at `rank`.
+
+    Returns (approx, captured_energy_fraction, achieved_rank).
+    Deterministic per input (fixed seed) so re-runs are reproducible.
+    """
+    r = min(rank, min(mat.shape))
+    # Oversampled power-iteration SVD: sketch against a fixed random
+    # Gaussian, iterate a few powers, QR-reduce, and SVD the small
+    # projected matrix. Rank <= r on either dimension.
+    mat32 = mat.to(torch.float32)
+    if r <= 0:
+        return mat32.new_zeros(mat.shape), 0.0, 0
+    if r >= min(mat.shape):
+        # Cap does not bind: full-rank reconstruction is the matrix itself,
+        # so the approximation is exact and all energy is captured.
+        return mat32.clone(), 1.0, r
+    k = min(r + 5, min(mat.shape))
+    gen = torch.Generator(device=mat.device).manual_seed(42)
+    omega = torch.randn(mat.shape[1], k, generator=gen,
+                        dtype=torch.float32, device=mat.device)
+    y = mat32 @ omega
+    for _ in range(3):  # power iteration
+        y = mat32.t() @ y
+        y = mat32 @ y
+    q, _ = torch.linalg.qr(y)
+    b = q.t() @ mat32
+    ub, S, vh = torch.linalg.svd(b, full_matrices=False)
+    S = S[:r]
+    U = q @ ub[:, :r]
+    approx = (U * S) @ vh[:r]
+    full_energy = float((mat32.pow(2).sum()))
+    cap_energy = float((S.pow(2).sum()))
+    return approx, (cap_energy / full_energy) if full_energy > 0 else 1.0, r
+
+
+def _run_h3_delta(
+    fl2va_path: str,
+    ref2va_path: str,
+    base_manifest: Dict[str, Any],
+    output_path: str,
+    rank: int,
+    strength: float,
+    dry_run: bool,
+    meta: Dict[str, str],
+) -> Iterable[Dict[str, str]]:
+    """
+    Compute W = fl + s * Δ (Δ = ref − fl, optionally rank-capped) for
+    every base key, streamed tensor-by-tensor into ``output_path``.
+
+    rank = 0  → exact delta, every tensor (single streaming pass).
+    rank  = N → SVD rank-N on SVD-eligible 2-D matrices; exact
+                application for norm/bias/timestep/rope families.
+                Energy is computed in a deterministic pre-pass so the
+                header (which carries the energy report) is complete
+                before any tensor bytes are written.
+
+    The output key/shape/dtype set is the base's: deltas never change
+    shape, and each result is cast back to the base tensor dtype.
+    """
+    keys = list(base_manifest.keys())
+    rank = max(0, int(rank))
+    strength = float(strength)
+    mode = "exact" if rank == 0 else f"svd-r{rank}"
+    total_keys = len(keys)
+
+    if dry_run:
+        yield _log(
+            f"h3_delta dry run: {total_keys} tensors, mode={mode}, "
+            f"strength={strength}, variant={_h3_variant(base_manifest)}\n"
+        )
+        yield {"type": "done", "status": "dry-run complete"}
+        return
+
+    # ------------------------------------------------------------------
+    # SVD mode: deterministic energy pre-pass (fills meta before header)
+    # ------------------------------------------------------------------
+    if rank > 0:
+        # scratch accumulator (not written into the safetensors header)
+        energy_scratch: Dict[str, Dict[str, float]] = {}
+        yield _log(f"h3_delta SVD pre-pass: computing captured energy (rank {rank})...\n")
+        with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
+             safe_open(ref2va_path, framework="pt", device="cpu") as of:
+            for j, key in enumerate(keys):
+                if _is_svd_eligible(key, tuple(base_manifest[key].shape)):
+                    base_t = bf.get_tensor(key)
+                    ref_t = of.get_tensor(key)
+                    delta = ref_t.to(torch.float32) - base_t.to(torch.float32)
+                    _approx, cap_frac, _ach = _randomized_svd_cap(delta, rank)
+                    fam = _classify_h3_family(key)
+                    rec = energy_scratch.setdefault(fam, {"cap": 0.0, "n": 0})
+                    rec["cap"] += cap_frac
+                    rec["n"] += 1
+                    if (j + 1) % 50 == 0:
+                        yield _status(f"h3_delta SVD pre-pass {j + 1}/{total_keys}")
+        energy_report = {
+            fam: {"avg_captured": round(rec["cap"] / rec["n"], 6), "tensors": rec["n"]}
+            for fam, rec in energy_scratch.items()
+        }
+        meta["h3_delta_energy"] = json.dumps(energy_report, sort_keys=True)
+
+    # ------------------------------------------------------------------
+    # Header + streaming write
+    # ------------------------------------------------------------------
+    meta["h3_delta_mode"] = mode
+    meta["h3_delta_rank"] = str(rank)
+    meta["h3_delta_strength"] = f"{strength:.6f}"
+    meta["h3_delta_variant"] = _h3_variant(base_manifest)
+
+    header = _build_safetensors_header(base_manifest, meta)
+    tmp_output_path = output_path + ".tmp"
+    os.makedirs(os.path.dirname(tmp_output_path) or ".", exist_ok=True)
+
+    svd_counts = 0
+    zero_delta_keys = 0
+    exact_family_counts: Dict[str, int] = {}
+
+    with open(tmp_output_path, "wb") as out_f:
+        out_f.write(struct.pack("<Q", len(header)))
+        out_f.write(header)
+        with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
+             safe_open(ref2va_path, framework="pt", device="cpu") as of:
+            for i, key in enumerate(keys):
+                base_t = bf.get_tensor(key)
+                ref_t = of.get_tensor(key)
+                # fp32 delta for numerical stability; cast back to base dtype.
+                base32 = base_t.to(torch.float32)
+                ref32 = ref_t.to(torch.float32)
+                delta = ref32 - base32
+
+                if rank > 0 and _is_svd_eligible(key, tuple(base_t.shape)):
+                    approx, _cap, _ach = _randomized_svd_cap(delta, rank)
+                    delta = approx
+                    svd_counts += 1
+                elif rank > 0:
+                    exact_family_counts[_classify_h3_family(key)] = \
+                        exact_family_counts.get(_classify_h3_family(key), 0) + 1
+
+                if torch.equal(ref32, base32):
+                    zero_delta_keys += 1
+
+                out = (base32 + strength * delta).to(base_t.dtype)
+                _write_tensor_bytes(out_f, out)
+                del out, base_t, ref_t, base32, ref32, delta
+
+                if (i + 1) % 50 == 0 or i + 1 == total_keys:
+                    yield _status(
+                        f"h3_delta {i + 1}/{total_keys} tensors "
+                        f"(svd={svd_counts}, zero-delta={zero_delta_keys})"
+                    )
+
+    os.replace(tmp_output_path, output_path)
+
+    yield _log(
+        f"h3_delta complete: {total_keys} tensors "
+        f"(svd-approx={svd_counts}, exact-families="
+        f"{sum(exact_family_counts.values()) if rank > 0 else total_keys}, "
+        f"zero-delta={zero_delta_keys}), mode={mode}, strength={strength}, "
+        f"output={output_path}\n"
+    )
+    yield {"type": "done", "status": "finished"}
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -203,6 +508,77 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     overlay_keys_available = set(overlay_manifest)
 
     yield _status(f"Inspected checkpoints: base {len(base_keys)} tensors, overlay {len(overlay_keys_available)} tensors")
+
+    # ------------------------------------------------------------------
+    # Delta recipe (h3_delta): W = fl + s * (ref - fl) over every tensor.
+    # Both files must carry the same key set (shape + dtype) because the
+    # delta is computed for all base tensors; no overlay-key subset.
+    # ------------------------------------------------------------------
+    if recipe.kind == "delta":
+        missing = base_keys - overlay_keys_available
+        if missing:
+            yield _log(
+                f"ERROR: delta recipe needs every base tensor in the overlay; "
+                f"overlay is missing {len(missing)} key(s): "
+                f"{sorted(missing)[:5]}\n"
+            )
+            yield {"type": "done", "status": "failed"}
+            return
+        mismatched = [
+            k for k in sorted(base_keys)
+            if (base_manifest[k].shape, base_manifest[k].dtype) != (
+                overlay_manifest[k].shape, overlay_manifest[k].dtype,
+            )
+        ]
+        if mismatched:
+            k = mismatched[0]
+            yield _log(
+                f"ERROR: shape/dtype mismatch on {len(mismatched)} key(s), "
+                f"e.g. {k!r}: base {base_manifest[k].dtype} {list(base_manifest[k].shape)} "
+                f"vs overlay {overlay_manifest[k].dtype} {list(overlay_manifest[k].shape)}\n"
+            )
+            yield {"type": "done", "status": "failed"}
+            return
+
+        rank_raw = payload.get("rank", 0)
+        rank = int(rank_raw) if str(rank_raw).lstrip("-").isdigit() else 0
+        strength_raw = payload.get("strength", 1.0)
+        try:
+            strength = float(strength_raw)
+        except (TypeError, ValueError):
+            strength = 1.0
+        if strength == 0.0:  # 0 is treated as unset → full delta
+            strength = 1.0
+
+        # Build metadata before the header (delta runner writes it in).
+        base_meta = _read_base_metadata(fl2va_path)
+        delta_meta: Dict[str, str] = dict(base_meta)
+        delta_meta.update(recipe.extra_meta_static)
+        delta_meta["base_model"] = os.path.basename(fl2va_path)
+        delta_meta["overlay_model"] = os.path.basename(ref2va_path)
+        if do_watermark:
+            wm = watermark_for(
+                architecture,
+                os.path.basename(output_path).replace(".safetensors", ""),
+                output_path,
+                bits="model-merge",
+            )
+            if wm:
+                delta_meta.update(wm)
+        if "__spacer" not in delta_meta:
+            delta_meta["__spacer"] = " " * 2048
+
+        yield _log(
+            f"h3_delta init: mode=rank {rank} "
+            f"({'exact' if rank == 0 else 'SVD-capped'}), strength={strength}, "
+            f"variant auto-detect from base\n"
+        )
+        for event in _run_h3_delta(
+            fl2va_path, ref2va_path, base_manifest,
+            output_path, rank, strength, dry_run, delta_meta,
+        ):
+            yield event
+        return
 
     # Compute which keys come from the overlay
     overlay_set = _compute_overlay_keys(base_manifest, overlay_re)

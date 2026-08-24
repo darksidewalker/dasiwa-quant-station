@@ -26,6 +26,8 @@ const state = {
   appVersion: "",
   mmOverlayPath: "",
   mmRecipe: "h3_hybrid",
+  mmRank: 1024,
+  mmStrength: 1,
 };
 
 const JOB_PERSIST_KEY = "dasiwa_active_job";
@@ -59,6 +61,8 @@ function saveSettings() {
     watermark: $("watermark").checked,
     mmOverlayPath: state.mmOverlayPath,
     mmRecipe: $("mm-recipe").value,
+    mmRank: $("mm-rank").value,
+    mmStrength: $("mm-strength").value,
     mmDryRun: $("mm-dry-run").checked,
     lastFileDir: state.lastFileDir,
     lastLoraDir: state.lastLoraDir,
@@ -131,6 +135,9 @@ function loadSettings() {
       state.mmOverlayPath = s.mmOverlayPath || "";
       $("mm-overlay-label").textContent = state.mmOverlayPath ? shortPath(state.mmOverlayPath) : "Pick…";
       if (s.mmRecipe) $("mm-recipe").value = s.mmRecipe;
+      if (s.mmRank != null) $("mm-rank").value = s.mmRank;
+      if (s.mmStrength != null) $("mm-strength").value = s.mmStrength;
+      updateDeltaOptionsVisibility();
       $("mm-dry-run").checked = s.mmDryRun ?? (s.loraDryRun ?? true);
       if (Array.isArray(s.loras)) {
         state.loras = s.loras.map((l) => ({
@@ -499,25 +506,39 @@ function refreshModelMergeHint() {
   if (!hint) return;
   const base = state.sourcePath;
   const overlay = state.mmOverlayPath;
+  const recipe = $("mm-recipe").value;
   let text, warn = false;
   if (state.architecture !== "MiniMax H3") {
     warn = true;
-    text = "Hybrid MiniMax H3 requires two MiniMax H3 checkpoints. " +
+    text = "MiniMax H3 model merge requires two MiniMax H3 checkpoints. " +
       "Select MiniMax H3 as the architecture (or pick an H3 checkpoint in the Source panel).";
   } else if (!base || !overlay) {
     warn = true;
     text = !base
       ? "Pick a base (fl2va) checkpoint in the Source panel to start."
-      : "Pick the overlay (ref2va) checkpoint to start.";
+      : "Pick the second (ref2va) checkpoint to start.";
   } else if (base === overlay) {
     warn = true;
-    text = "Base (Source panel) and overlay must be two different checkpoints.";
+    text = "Base (Source panel) and second checkpoint must be two different files.";
+  } else if (recipe === "h3_delta") {
+    const rank = parseInt($("mm-rank").value, 10) || 0;
+    text = "Delta recipe: fuses the full ref2va − fl2va weight delta into the base " +
+      (rank === 0
+        ? "(exact mode — output ≈ ref2va-equivalent, largest file)."
+        : `(SVD rank ${rank} — trunk deltas compressed, norms/biases/timestep exact).`) +
+      " Works on pruned and full key sets (auto-detected).";
   } else {
     text = "Base = Source-panel checkpoint, overlay = ref2va. Role auto-detection by filename; " +
       "only blocks.{25..49} adaln_proj tensors come from the overlay.";
   }
   hint.textContent = text;
   hint.classList.toggle("warn", warn);
+}
+
+function updateDeltaOptionsVisibility() {
+  const wrap = $("mm-delta-options");
+  if (!wrap) return;
+  wrap.style.display = $("mm-recipe").value === "h3_delta" ? "" : "none";
 }
 
 function updateModelMergeVisibility() {
@@ -531,15 +552,24 @@ async function startModelMerge() {
   if (!overlay) return log("Pick an overlay (ref2va) checkpoint in the Model Merge sidebar first.\n");
   const dryRun = $("mm-dry-run").checked;
   if (state.architecture !== "MiniMax H3") {
-    return log("Hybrid MiniMax H3 needs MiniMax H3 as the architecture. Pick an H3 checkpoint or set the architecture to MiniMax H3.\n");
+    return log("MiniMax H3 model merge needs MiniMax H3 as the architecture. Pick an H3 checkpoint or set the architecture to MiniMax H3.\n");
   }
   const outputName = $("model-name").value.trim();
   if (!dryRun && !outputName) return log("Enter a Display Name before writing a merged checkpoint.\n");
+  const recipe = $("mm-recipe").value;
+  let rank = 0;
+  let strength = 1.0;
+  if (recipe === "h3_delta") {
+    const r = parseInt($("mm-rank").value, 10);
+    rank = Number.isFinite(r) && r >= 0 ? r : 0;
+    const s = parseFloat($("mm-strength").value);
+    strength = Number.isFinite(s) && s > 0 ? s : 1.0;
+  }
 
   $("start").disabled = true;
   $("stop").disabled = false;
   setStatus(dryRun ? "Starting model merge dry run" : "Starting model merge");
-  log(`\nStarting ${dryRun ? "model merge dry run" : "model merge"} (recipe ${$("mm-recipe").value}, output "${outputName || "(dry run)"}")...\n`);
+  log(`\nStarting ${dryRun ? "model merge dry run" : "model merge"} (recipe ${recipe}${recipe === "h3_delta" ? `, rank ${rank}, strength ${strength}` : ""}, output "${outputName || "(dry run)"}")...\n`);
 
   try {
     const data = await api("/api/model-merge", {
@@ -551,7 +581,9 @@ async function startModelMerge() {
         models_dir: state.modelsDir,
         output_name: outputName,
         architecture: state.architecture,
-        recipe: $("mm-recipe").value,
+        recipe,
+        rank,
+        strength,
         dry_run: dryRun,
         watermark: $("watermark").checked,
       }),
@@ -688,7 +720,13 @@ function wireEvents() {
   // Model Merge (model-level) — base reuses the Source panel; only overlay is picked here
   $("mm-pick-overlay").addEventListener("click", () => openBrowser("mm-overlay"));
   wireDropTarget($("mm-pick-overlay"), "mm-overlay");
-  $("mm-recipe").addEventListener("change", saveSettings);
+  $("mm-recipe").addEventListener("change", () => {
+    updateDeltaOptionsVisibility();
+    refreshModelMergeHint();
+    saveSettings();
+  });
+  $("mm-rank").addEventListener("change", saveSettings);
+  $("mm-strength").addEventListener("change", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
 
   $("start").addEventListener("click", () => {
@@ -728,6 +766,7 @@ function setWorkflowMode(mode) {
   });
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
+  updateDeltaOptionsVisibility();
   // Show the dry-run checkbox (under Strategy) for LoRA merge + Model Merge modes only
   // (the two merge workflows that support a plan-only, no-write run).
   $("mm-dry-run-wrap").style.display = mode === "model" || mode === "lora" ? "" : "none";

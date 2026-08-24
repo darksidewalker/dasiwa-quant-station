@@ -481,8 +481,13 @@ type ModelMergeRequest struct {
 	OutputName   string `json:"output_name"`
 	Architecture string `json:"architecture"`
 	Recipe       string `json:"recipe"`
-	DryRun       bool   `json:"dry_run"`
-	Watermark    bool   `json:"watermark"`
+	// h3_delta recipe options (ignored by splice recipes):
+	// Rank 0 = exact delta; Rank N = SVD rank cap on SVD-eligible matrices.
+	// Strength scales the delta (0 → treated as 1.0).
+	Rank     int     `json:"rank"`
+	Strength float64 `json:"strength"`
+	DryRun   bool    `json:"dry_run"`
+	Watermark bool   `json:"watermark"`
 }
 
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
