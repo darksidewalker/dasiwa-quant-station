@@ -96,11 +96,14 @@
 
     <main class="main">
       <div class="topbar">
-        <div class="mode-switch" id="workflow-mode">
-          <span class="mode-label">Mode:</span>
-          <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
-          <button data-mode="lora" type="button" title="Merge one or more LoRAs into a base checkpoint">LoRA Merge</button>
-          <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
+        <div class="topbar-left">
+          <div class="mode-switch" id="workflow-mode">
+            <span class="mode-label">Mode:</span>
+            <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
+            <button data-mode="lora" type="button" title="Merge one or more LoRAs into a base checkpoint">LoRA Merge</button>
+            <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
+          </div>
+          <p id="status">Idle</p>
         </div>
         <div id="hardware" class="hardware">
           <div class="meter" data-meter="cpu">

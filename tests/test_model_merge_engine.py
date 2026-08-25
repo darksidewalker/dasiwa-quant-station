@@ -401,6 +401,33 @@ class H3DeltaRecipeTests(unittest.TestCase):
         self.assertEqual(ta.mean().item(), 2.0)
         self.assertEqual(tb.mean().item(), 2.0)
 
+    def test_delta_streams_progress_events(self):
+        """h3_delta streams `h3_delta N/M tensors` status events (~100 steps)
+        plus a final completion status, so the UI's status line never freezes
+        for the whole merge (regression guard: UI progress lives in
+        `{"type": "status"}` events only, not in console logs)."""
+        self._write_delta_pair()
+        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir)))
+        progress = [
+            e["status"] for e in events
+            if e.get("type") == "status" and "h3_delta" in e["status"]
+        ]
+        total = len(_read_safetensors_keys(self.fl))
+        # Fixture is small (< 100 keys) → progress_every = 1 → one status
+        # event per tensor. Real 532-key models emit ~106 events.
+        self.assertGreaterEqual(len(progress), total)
+        self.assertTrue(progress[0].startswith(f"h3_delta 1/{total}"))
+        self.assertTrue(progress[-1].startswith(f"h3_delta {total}/{total}"))
+        # The done event is separate; the last status event is progress, not done.
+        self.assertEqual(events[-1], {"type": "done", "status": "finished"})
+
+    def test_delta_dry_run_streams_no_progress(self):
+        self._write_delta_pair()
+        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir),
+                                        dry_run=True, rank=64))
+        self.assertEqual(events[-1]["status"], "dry-run complete")
+        self.assertNotIn("h3_delta", events[-1]["status"])
+
     def test_full_variant_detected(self):
         """time_embedder keys (no adaln_t_table) → variant 'full'."""
         fl, ref = _delta_pair_tensors()

@@ -246,6 +246,20 @@ input, select, textarea {
   font-weight: 800;
   box-shadow: 0 0 16px 2px rgba(80, 200, 120, 0.45);
 }
+.topbar-left {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+#status {
+  color: var(--muted);
+  font-size: 13px;
+  min-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .hidden { display: none !important; }
 
 .hardware {
