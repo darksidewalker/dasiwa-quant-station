@@ -521,10 +521,12 @@ input, select, textarea {
 .console-card,
 .meta-card {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
+
+.console-card { grid-template-rows: auto minmax(0, 1fr) auto; }
+.meta-card { grid-template-rows: auto minmax(0, 1fr); }
 
 #console {
   margin: 0;
@@ -537,6 +539,69 @@ input, select, textarea {
   border: 1px solid rgba(125,255,178,.14);
   border-radius: 8px;
   padding: 14px;
+  font: 12px/1.5 "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Positioned wrapper so the copy button can overlay the <pre> corner. */
+.console-body {
+  position: relative;
+  min-height: 0;
+}
+
+/* Copy overlay on the console, like the copy button on web code fields:
+   two-rectangle copy glyph + label, floating top-right over the scrollback.
+   Success state swaps the glyph for a check and the label to "Copied". */
+.console-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid rgba(125,255,178,.25);
+  border-radius: 6px;
+  background: rgba(8,10,12,.86);
+  color: var(--muted);
+  font: 11px/1 system-ui, sans-serif;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.console-copy:hover {
+  color: #7dffb2;
+  border-color: rgba(125,255,178,.5);
+}
+.console-copy svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.console-copy .check-icon { display: none; }
+.console-copy .copy-label:empty { display: none; } /* no gap when icon-only */
+.console-copy.copied { color: #7dffb2; border-color: rgba(125,255,178,.5); }
+.console-copy.copied .copy-icon { display: none; }
+.console-copy.copied .check-icon { display: block; }
+
+/* Self-updating single progress line inside the console card. Lives below
+   the scrollback <pre> (never appended to it) and is re-rendered in place
+   by updateProgressLine(); hidden until the first progress event. */
+.console-progress {
+  margin: 4px 0 0;
+  min-height: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #7dffb2;
+  background: #080a0c;
+  border: 1px solid rgba(125,255,178,.14);
+  border-radius: 8px;
+  padding: 4px 14px;
   font: 12px/1.5 "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 

@@ -260,6 +260,23 @@ function setStatus(text) {
   startPolling(); // keep polling once a job is running.
 }
 
+// Progress ticks (type === "progress") never touch the scrollback <pre> or
+// the topbar status line: they overwrite this single line in place, so the
+// rest of the console window stays intact while a job streams progress.
+function showProgressLine(text) {
+  const el = $("console-progress");
+  if (!el) return;
+  el.textContent = text || "";
+  el.hidden = false;
+}
+
+function clearProgressLine() {
+  const el = $("console-progress");
+  if (!el) return;
+  el.hidden = true;
+  el.textContent = "";
+}
+
 function shortPath(path) {
   if (!path) return "";
   const parts = path.split("/");
@@ -680,9 +697,50 @@ function wireEvents() {
     const currentJobId = state.jobId;
     state.logBuffer = "";
     $("console").textContent = "";
+    clearProgressLine();
     try { localStorage.removeItem(LOG_PERSIST_KEY); } catch {}
     if (currentJobId) clearPersistedJob(currentJobId);
   });
+
+  // Copy the console window (scrollback + live progress line, if shown)
+  // to the clipboard; flashes the "Copied" state briefly.
+  let copyResetTimer = null;
+  async function copyConsole() {
+    const pre = $("console");
+    let text = pre ? (pre.textContent || "") : "";
+    const prog = $("console-progress");
+    if (prog && !prog.hidden && prog.textContent) {
+      text = (text ? text + "\n" : "") + prog.textContent;
+    }
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {}
+    if (!ok && text) {
+      // Fallback for contexts without the async Clipboard API.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand("copy"); } catch {}
+      ta.remove();
+    }
+    const btn = $("copy-console");
+    if (!btn) return;
+    btn.classList.add("copied");
+    btn.querySelector(".copy-label").textContent = ok ? "Copied" : "Copy failed";
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.querySelector(".copy-label").textContent = "";
+    }, 1600);
+  }
+  $("copy-console").addEventListener("click", copyConsole);
   $("refresh-meta").addEventListener("click", refreshMetadata);
   $("read-meta").addEventListener("click", readMetadata);
   $("inject-meta").addEventListener("click", injectMetadata);
@@ -1256,6 +1314,7 @@ async function startJob() {
 function attachEvents(id) {
   saveActiveJob(); // persist jobId so reloads can reconnect to running jobs.
   if (state.events) state.events.close();
+  clearProgressLine(); // stale line from a finished job must not linger.
   state.events = new EventSource(`/api/jobs/${id}/events`);
   let doneHandled = false;
 
@@ -1268,10 +1327,17 @@ function attachEvents(id) {
 
   state.events.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
-    if (ev.text) log(ev.text);
-    if (ev.status) setStatus(ev.status);
+    if (ev.type === "progress") {
+      // Self-updating single line inside the console window. Deliberately NOT
+      // appended to the scrollback and NOT written to the topbar status line.
+      showProgressLine(ev.text);
+    } else {
+      if (ev.text) log(ev.text);
+      if (ev.status) setStatus(ev.status);
+    }
     if (ev.type === "done" || ev.type === "error") {
       markDone();
+      clearProgressLine(); // progress is over; keep the final log lines only.
       if (ev.type === "error" && ev.text) log(`Error: ${ev.text}\n`);
       $("start").disabled = false;
       $("stop").disabled = true;

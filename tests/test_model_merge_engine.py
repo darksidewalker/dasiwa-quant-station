@@ -167,6 +167,27 @@ class H3ModelMergeTests(unittest.TestCase):
         self.assertEqual(events[-1]["status"], "dry-run complete")
         self.assertFalse(out.exists())
 
+    def test_hybrid_streams_progress_events(self):
+        """h3_hybrid streams `h3_hybrid N/M tensors` progress ticks as
+        `type: "progress"` events carrying only `text` — the UI renders them
+        as a self-updating single line inside the console window (no
+        status-bar output, nothing appended to the scrollback)."""
+        self._write_pair()
+        events = _events(_payload(str(self.fl), str(self.ref), str(self.dir)))
+        progress = [
+            e for e in events
+            if e.get("type") == "progress" and "h3_hybrid" in e.get("text", "")
+        ]
+        total = len(_read_safetensors_keys(self.fl))
+        # Fixture is small (< 100 keys) → progress_every = 1 → one progress
+        # event per tensor.
+        self.assertGreaterEqual(len(progress), total)
+        self.assertTrue(progress[0]["text"].startswith(f"h3_hybrid 1/{total}"))
+        self.assertTrue(progress[-1]["text"].startswith(f"h3_hybrid {total}/{total}"))
+        # Progress ticks must not touch the topbar status line: no `status` field.
+        self.assertFalse(any(e.get("status") for e in progress))
+        self.assertEqual(events[-1], {"type": "done", "status": "finished"})
+
     def test_missing_overlay_key_fails(self):
         self._write_pair()
         # REF missing an overlay-side adaln key
@@ -402,23 +423,26 @@ class H3DeltaRecipeTests(unittest.TestCase):
         self.assertEqual(tb.mean().item(), 2.0)
 
     def test_delta_streams_progress_events(self):
-        """h3_delta streams `h3_delta N/M tensors` status events (~100 steps)
-        plus a final completion status, so the UI's status line never freezes
-        for the whole merge (regression guard: UI progress lives in
-        `{"type": "status"}` events only, not in console logs)."""
+        """h3_delta streams `h3_delta N/M tensors` progress events (~100 ticks),
+        each a distinct `type: "progress"` event carrying ONLY `text` — the UI
+        renders those as a self-updating single line inside the console window,
+        without appending to the scrollback or writing the topbar status line
+        (regression guard for the h3_delta "no progress in console" bug)."""
         self._write_delta_pair()
         events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir)))
         progress = [
-            e["status"] for e in events
-            if e.get("type") == "status" and "h3_delta" in e["status"]
+            e for e in events
+            if e.get("type") == "progress" and "h3_delta" in e.get("text", "")
         ]
         total = len(_read_safetensors_keys(self.fl))
-        # Fixture is small (< 100 keys) → progress_every = 1 → one status
+        # Fixture is small (< 100 keys) → progress_every = 1 → one progress
         # event per tensor. Real 532-key models emit ~106 events.
         self.assertGreaterEqual(len(progress), total)
-        self.assertTrue(progress[0].startswith(f"h3_delta 1/{total}"))
-        self.assertTrue(progress[-1].startswith(f"h3_delta {total}/{total}"))
-        # The done event is separate; the last status event is progress, not done.
+        self.assertTrue(progress[0]["text"].startswith(f"h3_delta 1/{total}"))
+        self.assertTrue(progress[-1]["text"].startswith(f"h3_delta {total}/{total}"))
+        # Progress ticks must not touch the topbar status line: no `status` field.
+        self.assertFalse(any(e.get("status") for e in progress))
+        # The done event is separate; completion log lines stay type "log".
         self.assertEqual(events[-1], {"type": "done", "status": "finished"})
 
     def test_delta_dry_run_streams_no_progress(self):

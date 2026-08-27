@@ -427,12 +427,15 @@ def _run_h3_delta(
                 if done % progress_every == 0 or done == total_keys:
                     elapsed = time.monotonic() - t0
                     eta = elapsed * (total_keys - done) / done
-                    yield _status(
+                    progress_msg = (
                         f"h3_delta {done}/{total_keys} tensors "
                         f"(svd={svd_counts}, zero-delta={zero_delta_keys}, "
                         f"elapsed {_format_duration(elapsed)}, "
                         f"eta {_format_duration(eta)})"
                     )
+                    # Self-updating single line in the console window; no
+                    # status-bar output, nothing appended to the scrollback.
+                    yield _progress(progress_msg)
 
     if rank > 0:
         # Finalize the header in place: add the energy report, adjust the
@@ -738,11 +741,13 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 if done % progress_every == 0 or done == total_keys:
                     elapsed = time.monotonic() - t0
                     eta = elapsed * (total_keys - done) / done
-                    yield _status(
+                    progress_msg = (
                         f"h3_hybrid {done}/{total_keys} tensors "
                         f"(elapsed {_format_duration(elapsed)}, "
                         f"eta {_format_duration(eta)})"
                     )
+                    # Self-updating single line in the console window.
+                    yield _progress(progress_msg)
 
     os.replace(tmp_output_path, output_path)
 
@@ -817,6 +822,19 @@ def _format_duration(seconds: float) -> str:
 
 def _status(status: str) -> Dict[str, str]:
     return {"type": "status", "status": status}
+
+
+def _progress(text: str) -> Dict[str, str]:
+    """One progress tick for the UI's self-updating console line.
+
+    ``type: "progress"`` events carry only ``text``: the frontend renders
+    them into a dedicated single line inside the console card, overwriting
+    the line in place. No ``status`` field, so the topbar status line and
+    the job summary status are untouched; and unlike ``type: "log"``
+    events, nothing is appended to the console scrollback, so the rest of
+    the console window stays intact while the line keeps updating.
+    """
+    return {"type": "progress", "text": text}
 
 
 # ---------------------------------------------------------------------------
