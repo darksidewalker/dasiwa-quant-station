@@ -766,14 +766,33 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Metadata keys inherited from a base checkpoint describe that checkpoint,
+# not the merged output, so they must not be carried into merge results.
+_INHERITED_HASH_METADATA_PREFIX = "civitai.hash."
+_INHERITED_HASH_METADATA_KEYS = {"modelspec.hash_sha256"}
+
+
 def _read_base_metadata(file_path: str) -> Dict[str, str]:
-    """Read __metadata__ from a safetensors file (header-only)."""
+    """Read __metadata__ from a safetensors file (header-only).
+
+    Hash metadata is dropped: it describes the source checkpoint, not the
+    merged output, and may be a stale/placeholder value from an upstream
+    tool. Merge outputs never re-carry base hash keys.
+    """
     with open(file_path, "rb") as f:
         (n8,) = struct.unpack("<Q", f.read(8))
         f.seek(8)
         header = json.loads(f.read(n8))
     md = header.get("__metadata__", {})
-    return {str(k): str(v) for k, v in md.items()}
+    meta = {
+        str(k): str(v)
+        for k, v in md.items()
+        if not (
+            str(k).startswith(_INHERITED_HASH_METADATA_PREFIX)
+            or str(k) in _INHERITED_HASH_METADATA_KEYS
+        )
+    }
+    return meta
 
 
 def _build_safetensors_header(

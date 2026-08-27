@@ -23,10 +23,15 @@ _SPACER_KEY = "__spacer"
 _PROTECTED_EXISTING_METADATA_KEYS = {"_quantization_metadata"}
 
 def calculate_sha256(file_path):
-    """Calculates a clean 0x-prefixed SHA256 hash of the target file."""
+    """Calculates a clean 0x-prefixed SHA256 hash of the target file.
+
+    Returns None when the file does not exist yet (or in PREVIEW_MODE) so
+    callers can simply omit the hash field instead of planting a fake value
+    that would be mistaken for a real hash.
+    """
     if not os.path.exists(file_path) or file_path == "PREVIEW_MODE":
-        return "0x[HASH_WILL_BE_CALCULATED_ON_SAVE]"
-    
+        return None
+
     sha256_hash = hashlib.sha256()
     with open(file_path, "rb") as f:
         # Read in 64kb chunks for memory efficiency
@@ -36,16 +41,14 @@ def calculate_sha256(file_path):
 
 
 def calculate_civitai_hashes(file_path):
-    """Calculate common Civitai file hash fields for metadata/recipes."""
+    """Calculate common Civitai file hash fields for metadata/recipes.
+
+    Returns an empty dict when the file does not exist yet (or in
+    PREVIEW_MODE) so the hash fields are simply omitted instead of
+    carrying a fake placeholder that survives the merge pipeline.
+    """
     if not os.path.exists(file_path) or file_path == "PREVIEW_MODE":
-        placeholder = "HASH_WILL_BE_CALCULATED_ON_SAVE"
-        return {
-            "AutoV1": placeholder,
-            "AutoV2": placeholder,
-            "AutoV3": placeholder,
-            "SHA256": placeholder,
-            "CRC32": placeholder,
-        }
+        return {}
 
     sha256_hash = hashlib.sha256()
     crc = 0
@@ -144,7 +147,11 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8", 
             
             # 2. OVERWRITE ONLY our specific UI/Session fields
             meta["modelspec.title"] = model_name 
-            meta["modelspec.hash_sha256"] = calculate_sha256(final_file_path)
+            # Omit the hash key entirely when the file does not exist yet
+            # (PREVIEW_MODE / pre-write build) so no fake hash is planted.
+            hash_sha256 = calculate_sha256(final_file_path)
+            if hash_sha256 is not None:
+                meta["modelspec.hash_sha256"] = hash_sha256
             meta["modelspec.date"] = datetime.datetime.now().strftime("%Y-%m-%d")
             meta["quantization.bits"] = bits
             meta["quantization.tool"] = "https://github.com/darksidewalker/dasiwa-quant-station"

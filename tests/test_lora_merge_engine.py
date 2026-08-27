@@ -150,6 +150,45 @@ class LoraMergeEngineTests(unittest.TestCase):
             ))
             self.assertEqual(merged["bf16.weight"].dtype, torch.bfloat16)
 
+    def test_real_merge_output_carries_no_hash_metadata(self):
+        """Merge output is built before the file exists; it must carry no
+        civitai.hash.* / modelspec.hash_sha256 keys (old behavior baked a
+        marker string that never got finalized)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "style.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({
+                "model.diffusion_model.transformer_blocks.0.attn1.to_k.weight": torch.zeros(3, 4),
+            }, str(base))
+            save_file({
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_A.weight": torch.ones(2, 4),
+                "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            list(run_lora_merge({
+                "base_path": str(base),
+                "loras": [{"path": str(lora), "strength": 0.5}],
+                "output_path": str(out),
+                "strategy": "Balanced",
+                "architecture": "LTX-2.3",
+                "global_strength": 1.0,
+                "adaptive": False,
+                "dry_run": False,
+                "strict_matching": True,
+                "merge_device": "cpu",
+            }))
+
+            with safe_open(str(out), framework="pt", device="cpu") as handle:
+                metadata = handle.metadata() or {}
+            for key in metadata:
+                self.assertFalse(
+                    key.startswith("civitai.hash.") or key == "modelspec.hash_sha256",
+                    f"fake/placeholder hash key {key!r} leaked into merge output: "
+                    f"{metadata[key]!r}",
+                )
+
     def test_real_merge_logs_success_summary_when_all_matched_tensors_changed(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

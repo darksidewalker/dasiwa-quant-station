@@ -9,6 +9,7 @@ from safetensors.torch import save_file
 
 from core.metadata_manager import (
     calculate_civitai_hashes,
+    calculate_sha256,
     inject_metadata,
     merge_custom_metadata,
     normalize_quantization_bits,
@@ -37,6 +38,30 @@ class QuantMetadataTests(unittest.TestCase):
             self.assertEqual(meta["civitai.hash.AutoV3"], hashes["AutoV3"])
             self.assertEqual(meta["civitai.hash.SHA256"], hashes["SHA256"])
             self.assertEqual(meta["civitai.hash.CRC32"], hashes["CRC32"])
+
+    def test_missing_file_omits_hash_keys_instead_of_placeholder(self):
+        """No dead placeholders: a not-yet-existing target must not plant any
+        hash fields at all (old behavior baked in a marker string that then
+        survived the whole merge pipeline)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "does_not_exist_yet.safetensors")
+            self.assertIsNone(calculate_sha256(missing))
+            self.assertEqual(calculate_civitai_hashes(missing), {})
+            self.assertEqual(calculate_sha256("PREVIEW_MODE"), None)
+            self.assertEqual(calculate_civitai_hashes("PREVIEW_MODE"), {})
+
+            meta = merge_custom_metadata("WAN 2.2", "pre-write", missing, bits="BF16")
+            for key in list(meta):
+                self.assertFalse(
+                    key.startswith("civitai.hash.") or key == "modelspec.hash_sha256",
+                    f"stale hash key {key!r} leaked into pre-write metadata",
+                )
+
+    def test_preview_mode_carries_no_hash_keys(self):
+        preview = json.loads(update_metadata_preview("preview-model", "LTX-2.3"))
+        self.assertNotIn("modelspec.hash_sha256", preview)
+        for key in preview:
+            self.assertFalse(key.startswith("civitai.hash."))
 
     def test_quant_recipe_writes_summary_txt_next_to_output(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -107,7 +107,11 @@ def cmd_inject_metadata_path(args):
         _emit({"ok": False, "text": "Metadata injection currently supports safetensors sources."})
         return
     meta = json.loads(payload["metadata"])
-    meta["modelspec.hash_sha256"] = calculate_sha256(path)
+    # Omit the hash key when it cannot be computed (file missing) so the
+    # injected metadata never carries a "null"/placeholder hash value.
+    sha256 = calculate_sha256(path)
+    if sha256 is not None:
+        meta["modelspec.hash_sha256"] = sha256
     ok, msg = inject_metadata(path, meta)
     _emit({"ok": ok, "text": msg})
 

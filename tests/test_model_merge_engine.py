@@ -148,6 +148,37 @@ class H3ModelMergeTests(unittest.TestCase):
         self.assertEqual(meta.get("base_model"), "minimax_h3_fl2va_test.safetensors")
         self.assertEqual(meta.get("overlay_model"), "minimax_h3_ref2va_test.safetensors")
 
+    def test_base_hash_metadata_not_inherited(self):
+        """Hash fields describe the source checkpoint, not the merged output,
+        so a base carrying civitai.hash.* / modelspec.hash_sha256 (real or
+        placeholder) must not propagate them into merge results."""
+        save_file(
+            _h3_tensors(distinct_blocks=(), base=0.0),
+            self.fl,
+            metadata={
+                "civitai.hash.AutoV1": "DEADBEEF",
+                "civitai.hash.AutoV2": "DEADBEEF00",
+                "civitai.hash.AutoV3": "DEADBEEF0000",
+                "civitai.hash.SHA256": "DEADBEEF" * 8,
+                "civitai.hash.CRC32": "CAFEF00D",
+                "modelspec.hash_sha256": "0xDEADBEEF",
+                "modelspec.title": "base-title",
+            },
+        )
+        save_file(_h3_tensors(distinct_blocks=(2, 3), base=0.0, distinct=1.0), self.ref)
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir)))
+        out = Path(self.dir) / "out_hybrid.safetensors"
+        with open(out, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            meta = json.loads(f.read(n)).get("__metadata__", {})
+        for key in list(meta):
+            self.assertFalse(
+                key.startswith("civitai.hash.") or key == "modelspec.hash_sha256",
+                f"inherited base hash key {key!r} leaked into merged output",
+            )
+        # non-hash metadata is still carried forward
+        self.assertEqual(meta.get("modelspec.title"), "base-title")
+
     def test_extra_overlay_keys_discarded(self):
         """Extra overlay-only marker keys (comfy_quant-style) must not break the
         merge; the output keeps the base key set."""
