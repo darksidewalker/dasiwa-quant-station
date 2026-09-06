@@ -52,6 +52,10 @@
           <span title="Stamps an EC-based, only-you-can-decode provenance token into the output's modelspec.watermark field (no key = no token)">Watermark outputs</span>
         </label>
         <p id="watermark-hint" class="hint hidden"></p>
+        <label class="checkline" title="Carry compatible source/custom metadata into every output. Required loader configuration and valid output quantization metadata remain protected even when disabled. Quantized LoRA bases are unsupported; merge BF16/FP16 first, then quantize.">
+          <input id="preserve-loader-metadata" type="checkbox" checked>
+          <span>Preserve source metadata</span>
+        </label>
         <label class="checkline mm-dry-run-wrap" id="mm-dry-run-wrap" style="display:none">
           <input id="mm-dry-run" type="checkbox" checked>
           <span title="Validate key sets and plan the merge without writing a file">Dry run</span>

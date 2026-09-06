@@ -269,6 +269,7 @@ def cmd_quantize(args):
             low_vram=low_vram,
             is_full_checkpoint=is_full,
             custom_metadata=custom_metadata,
+            preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
         ))
         log_acc = last_log or log_acc
 
@@ -276,6 +277,7 @@ def cmd_quantize(args):
         stream(run_int4_convrot_conversion(
             output_dir, source_path, model_name, model_type, strategy, is_full,
             custom_metadata=custom_metadata,
+            preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
         ))
         log_acc = last_log or log_acc
 
@@ -284,6 +286,7 @@ def cmd_quantize(args):
         stream(run_w4a8_conversion(
             output_dir, source_path, model_name, model_type, strategy, is_full,
             custom_metadata=custom_metadata,
+            preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
         ))
         log_acc = last_log or log_acc
 
@@ -296,6 +299,7 @@ def cmd_quantize(args):
             log_acc,
             model_type=model_type,
             is_full=is_full,
+            preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
         ))
 
     _emit({"type": "done", "status": "Finished"})

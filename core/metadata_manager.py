@@ -21,6 +21,35 @@ _SPACER_KEY = "__spacer"
 # Loader-critical runtime metadata is authored by the quantizer and must not
 # be replaced by arbitrary JSON pasted into the manual metadata editor.
 _PROTECTED_EXISTING_METADATA_KEYS = {"_quantization_metadata"}
+_LOADER_CONFIG_KEYS = {"config", "format", "tae_latent_channels", "modelspec.architecture", "modelspec.implementation"}
+
+
+def read_source_metadata(file_path):
+    """Read source metadata without materializing checkpoint tensors.
+
+    Returns an empty dict for files without a readable safetensors header
+    (non-safetensors sources, placeholders): there is simply nothing to
+    preserve, and callers treat ``{}`` and ``None`` identically.
+    """
+    try:
+        return dict(_read_safetensors_header(file_path)[0].get("__metadata__", {}))
+    except Exception:
+        return {}
+
+
+def reject_quantized_merge_source(file_path):
+    """Raw packed/scaled arithmetic is not dequantization, even if shapes match."""
+    header = _read_safetensors_header(file_path)[0]
+    metadata = header.get("__metadata__", {})
+    if metadata.get("_quantization_metadata"):
+        raise ValueError("Unsupported quantized merge source: use the original BF16/FP16/FP32 checkpoint, merge first, then quantize.")
+    for key, info in header.items():
+        if key == "__metadata__":
+            continue
+        if (info.get("dtype", "").startswith("F8") or
+                key.endswith((".comfy_quant", ".weight_scale", ".weight_scale_2", ".weight_s_rel", ".weight_codebook")) or
+                (key.endswith(".weight") and info.get("dtype") not in {"BF16", "F16", "F32", "F64"})):
+            raise ValueError(f"Unsupported quantized merge source ({key}): use BF16/FP16/FP32, merge first, then quantize.")
 
 def calculate_sha256(file_path):
     """Calculates a clean 0x-prefixed SHA256 hash of the target file.
@@ -196,7 +225,8 @@ _LTX23_REQUIRED_KEYS = {
 }
 
 def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
-                          custom_meta=None, is_full=False, extra_meta=None):
+                          custom_meta=None, is_full=False, extra_meta=None,
+                          source_metadata=None, preserve_loader_metadata=True):
     """
     Build final metadata dict for safetensors output.
 
@@ -210,17 +240,29 @@ def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
 
     Returns dict of string -> string ready for save_file(..., metadata=...).
     """
-    base = get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full)
+    base = {}
+    if preserve_loader_metadata and source_metadata:
+        base = {k: v for k, v in source_metadata.items()
+                if k not in _PROTECTED_EXISTING_METADATA_KEYS | {"modelspec.watermark", "modelspec.hash_sha256", "__spacer"}
+                and not k.startswith(("quantization.", "civitai.hash."))}
+    base.update(get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full))
     base.update(_civitai_hash_metadata(file_path))
 
     if custom_meta:
         for k, v in custom_meta.items():
-            if k in _LTX23_REQUIRED_KEYS:
+            if k in _LTX23_REQUIRED_KEYS or k in _PROTECTED_EXISTING_METADATA_KEYS:
                 continue
             base[k] = v
 
     if extra_meta:
         base.update(extra_meta)
+
+    # Configuration remains valid when tensor values change; a source quant
+    # layout does not. Only the output quantizer may author runtime layout.
+    if source_metadata:
+        for key in _LOADER_CONFIG_KEYS:
+            if key in source_metadata:
+                base[key] = source_metadata[key]
 
     # EC watermark (X25519 + AES-256-GCM) written into the modelspec.watermark
     # field (no-op if no passphrase is configured).
@@ -360,7 +402,7 @@ def inject_metadata(file_path, meta_dict):
         existing_meta = header_dict.get("__metadata__", {})
         merged_meta = dict(existing_meta)
         merged_meta.update(meta_dict)
-        for key in _PROTECTED_EXISTING_METADATA_KEYS:
+        for key in _PROTECTED_EXISTING_METADATA_KEYS | _LOADER_CONFIG_KEYS:
             if key in existing_meta:
                 merged_meta[key] = existing_meta[key]
     except Exception:
@@ -444,7 +486,8 @@ def _gguf_add_existing_field(writer, field):
     return False
 
 
-def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=False):
+def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=False,
+                    source_path=None, preserve_loader_metadata=True):
     """
     Inject modelspec.* metadata into an existing GGUF file by reading it,
     copying tensors and KV pairs to a new file with the additional metadata,
@@ -489,7 +532,16 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
             custom_alignment = None
 
     # Build the modelspec metadata to merge in.
-    new_meta = get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full)
+    source_meta = (read_source_metadata(source_path)
+                   if source_path and source_path.lower().endswith(".safetensors") else None)
+    new_meta = merge_custom_metadata(architecture, model_name, file_path, bits, is_full=is_full,
+                                     source_metadata=source_meta,
+                                     preserve_loader_metadata=preserve_loader_metadata)
+    # The converter's typed GGUF fields are authoritative. Never transplant
+    # source quant layout or replace native KV types with safetensors strings.
+    for key in list(new_meta):
+        if key in reader.fields and not key.startswith(("modelspec.", "civitai.hash.", "quantization.")):
+            new_meta.pop(key)
     # Coerce non-string values to strings (the format we already use elsewhere).
     new_meta_strings = {
         k: (v if isinstance(v, str) else json.dumps(v))

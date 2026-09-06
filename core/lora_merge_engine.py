@@ -10,7 +10,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from utils.lora_inspector import discover_lora_pairs, discover_diff_patches, read_safetensors_manifest
-from core.metadata_manager import merge_custom_metadata
+from core.metadata_manager import merge_custom_metadata, read_source_metadata, reject_quantized_merge_source
 
 
 MAX_EFFECTIVE_LORA_STRENGTH = 3.0
@@ -66,6 +66,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
 
     yield _log(f"LoRA merge init\nBase: {base_path}\nArchitecture: {architecture}\nStrategy: {strategy}\nAdaptive: {'yes' if adaptive else 'no'}\nDry run: {'yes' if dry_run else 'no'}\nMerge device: requested={merge_device} cuda_device={cuda_device} headroom={vram_headroom_mb}MB\n")
+    reject_quantized_merge_source(base_path)
+    base_metadata = read_source_metadata(base_path)
     base_manifest = read_safetensors_manifest(base_path)
     base_keys = set(base_manifest)
     yield _status(f"Inspected base: {len(base_manifest)} tensors")
@@ -292,6 +294,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         output_path,
         bits="BF16 merged",
         custom_meta=payload.get("custom_metadata"),
+        source_metadata=base_metadata,
+        preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
     )
     tmp_output_path = output_path + ".tmp"
     with open(tmp_output_path, "wb") as out_f, ExitStack() as stack:
@@ -709,6 +713,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         f"Dry run first:     {'yes' if dry_run else 'no'}",
         f"Strict matching:   {'yes' if strict else 'no'}",
         f"Krea2 unchain:     {'yes' if krea2_unchain else 'no'}",
+        f"Preserve loader metadata: {'yes' if payload.get('preserve_loader_metadata', True) else 'no'}",
         "",
         "-" * 64,
         "  LoRAs",

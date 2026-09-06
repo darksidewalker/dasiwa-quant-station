@@ -1,6 +1,6 @@
 # core/safetensors_engine.py
 import os, subprocess, sys, datetime
-from core.metadata_manager import inject_metadata, merge_custom_metadata, calculate_civitai_hashes
+from core.metadata_manager import inject_metadata, merge_custom_metadata, calculate_civitai_hashes, read_source_metadata
 from core.layer_config_builder import write_layer_config
 from utils.arch_detector import verify_architecture_match
 from config import ROOT_DIR
@@ -12,7 +12,7 @@ FILTERS_DIR = os.path.join(ROOT_DIR, "filters")
 def write_quant_recipe(output_path, source_path, model_name, architecture, fmt,
                        strategy, optimizer_choice, low_vram, actcal,
                        is_full_checkpoint, layer_config_path, command,
-                       metadata_injected, metadata_message, hashes=None):
+                       metadata_injected, metadata_message, hashes=None, preserve_loader_metadata=True):
     """Write a human-readable quantization recipe next to a quant output."""
     hashes = hashes or calculate_civitai_hashes(output_path)
     recipe_path = output_path.rsplit(".", 1)[0] + ".txt"
@@ -38,6 +38,7 @@ def write_quant_recipe(output_path, source_path, model_name, architecture, fmt,
         f"Layer config:      {layer_config_path or 'none'}",
         f"Metadata injected: {'yes' if metadata_injected else 'no'}",
         f"Metadata message:  {metadata_message}",
+        f"Preserve loader metadata: {'yes' if preserve_loader_metadata else 'no'}",
         "",
         "-" * 64,
         "  Civitai/Common Hashes",
@@ -61,7 +62,7 @@ def write_quant_recipe(output_path, source_path, model_name, architecture, fmt,
 
 def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type,
                         optimizer_choice, options, log_acc, low_vram=False, actcal=False,
-                        is_full_checkpoint=False, custom_metadata=None):
+                        is_full_checkpoint=False, custom_metadata=None, preserve_loader_metadata=True):
 
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
@@ -474,6 +475,8 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                     model_type, model_name, final_path,
                     bits=fmt,
                     custom_meta=custom_metadata,
+                source_metadata=read_source_metadata(source_path),
+                preserve_loader_metadata=preserve_loader_metadata,
                     is_full=is_full_checkpoint,
                 )
                 success, msg = inject_metadata(final_path, meta)
@@ -490,7 +493,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                     final_path, source_path, model_name, model_type, fmt,
                     options, optimizer_choice, low_vram, actcal,
                     is_full_checkpoint, layer_config_path, cmd_pass2,
-                    success, msg, hashes,
+                    success, msg, hashes, preserve_loader_metadata=preserve_loader_metadata,
                 )
                 log_acc += f"🧾 Quant recipe written: {os.path.basename(recipe_path)}\n"
                 yield log_acc, "Recipe file written"
@@ -645,6 +648,8 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                 model_type, model_name, final_path,
                 bits=fmt,
                 custom_meta=custom_metadata,
+                source_metadata=read_source_metadata(source_path),
+                preserve_loader_metadata=preserve_loader_metadata,
                 is_full=is_full_checkpoint,
             )
             
@@ -661,7 +666,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
                 final_path, source_path, model_name, model_type, fmt,
                 options, optimizer_choice, low_vram, actcal,
                 is_full_checkpoint, layer_config_path, cmd,
-                success, msg, hashes,
+                success, msg, hashes, preserve_loader_metadata=preserve_loader_metadata,
             )
             log_acc += f"🧾 Quant recipe written: {os.path.basename(recipe_path)}\n"
         else:

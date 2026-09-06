@@ -72,7 +72,7 @@ def _generate_ggufy_sensitivities(source_path, model_type, convert_arch, is_full
     return sens_path
 
 def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
-                        model_type="WAN 2.2", is_full=False):
+                        model_type="WAN 2.2", is_full=False, preserve_loader_metadata=True):
     base_name = os.path.splitext(os.path.basename(source_path))[0]
     convert_arch = _UI_ARCH_TO_CONVERT_ARCH.get(model_type, "wan")
 
@@ -225,7 +225,8 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
 
         # 4. Final Meta Injection
         if os.path.exists(final_path):
-            success, msg = write_gguf_meta(final_path, model_name, model_type, bits=q_flag.upper(), is_full=is_full)
+            success, msg = write_gguf_meta(final_path, model_name, model_type, bits=q_flag.upper(), is_full=is_full,
+                                         source_path=source_path, preserve_loader_metadata=preserve_loader_metadata)
             if success:
                 log_acc += f"📝 GGUF Meta Injected: {os.path.basename(final_path)} ({msg})\n"
             else:
@@ -235,6 +236,7 @@ def run_gguf_conversion(MODELS_DIR, source_path, formats, model_name, log_acc,
                 final_path, source_path, model_name, model_type, fmt,
                 "ggufy", "n/a", False, False, is_full,
                 sens_path, cmd, success, msg, hashes,
+                preserve_loader_metadata=preserve_loader_metadata,
             )
             log_acc += f"🧾 Quant recipe written: {os.path.basename(recipe_path)}\n"
         else:

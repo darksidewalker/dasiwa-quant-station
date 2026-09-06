@@ -433,6 +433,7 @@ func (s *Server) handleMetadataInject(w http.ResponseWriter, r *http.Request) {
 }
 
 type QuantizeRequest struct {
+ PreserveLoaderMetadata *bool `json:"preserve_loader_metadata,omitempty"`
 	ModelsDir      string   `json:"models_dir"`
 	OutputDir      string   `json:"output_dir"`
 	SourcePath     string   `json:"source_path"`
@@ -453,6 +454,7 @@ type LoraSpec struct {
 }
 
 type LoraMergeRequest struct {
+ PreserveLoaderMetadata *bool `json:"preserve_loader_metadata,omitempty"`
 	BasePath       string     `json:"base_path"`
 	ModelsDir      string     `json:"models_dir"`
 	OutputDir      string     `json:"output_dir"`
@@ -473,6 +475,7 @@ type LoraMergeRequest struct {
 }
 
 type ModelMergeRequest struct {
+ PreserveLoaderMetadata *bool `json:"preserve_loader_metadata,omitempty"`
 	BasePath     string `json:"base_path"`
 	OverlayPath  string `json:"overlay_path"`
 	ModelsDir    string `json:"models_dir"`

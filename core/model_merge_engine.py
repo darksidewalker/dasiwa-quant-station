@@ -56,7 +56,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from utils.lora_inspector import read_safetensors_manifest
-from core.metadata_manager import merge_custom_metadata
+from core.metadata_manager import _LOADER_CONFIG_KEYS, merge_custom_metadata
 from core.watermark import watermark_for
 
 # ---------------------------------------------------------------------------
@@ -508,6 +508,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     recipe_name = payload.get("recipe") or "h3_hybrid"
     dry_run = bool(payload.get("dry_run", False))
     do_watermark = payload.get("watermark", True)
+    preserve_loader_metadata = bool(payload.get("preserve_loader_metadata", True))
 
     recipe = RECIPES.get(recipe_name)
     if recipe is None:
@@ -596,7 +597,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             strength = 1.0
 
         # Build metadata before the header (delta runner writes it in).
-        base_meta = _read_base_metadata(fl2va_path)
+        base_meta = _read_base_metadata(fl2va_path, preserve_loader_metadata)
         delta_meta: Dict[str, str] = dict(base_meta)
         delta_meta.update(recipe.extra_meta_static)
         delta_meta["base_model"] = os.path.basename(fl2va_path)
@@ -683,7 +684,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     )
 
     # Build metadata: base __metadata__ + recipe static fields + provenance
-    base_meta = _read_base_metadata(fl2va_path)
+    base_meta = _read_base_metadata(fl2va_path, preserve_loader_metadata)
     meta: Dict[str, str] = dict(base_meta)
     meta.update(recipe.extra_meta_static)
     meta["base_model"] = os.path.basename(fl2va_path)
@@ -772,26 +773,30 @@ _INHERITED_HASH_METADATA_PREFIX = "civitai.hash."
 _INHERITED_HASH_METADATA_KEYS = {"modelspec.hash_sha256"}
 
 
-def _read_base_metadata(file_path: str) -> Dict[str, str]:
+def _read_base_metadata(file_path: str, preserve_loader_metadata: bool = True) -> Dict[str, str]:
     """Read __metadata__ from a safetensors file (header-only).
 
     Hash metadata is dropped: it describes the source checkpoint, not the
     merged output, and may be a stale/placeholder value from an upstream
     tool. Merge outputs never re-carry base hash keys.
+
+    With ``preserve_loader_metadata`` disabled, only the loader-critical
+    runtime keys (config/format/architecture) are inherited; everything else
+    stays with the source checkpoint.
     """
     with open(file_path, "rb") as f:
         (n8,) = struct.unpack("<Q", f.read(8))
         f.seek(8)
         header = json.loads(f.read(n8))
     md = header.get("__metadata__", {})
-    meta = {
-        str(k): str(v)
-        for k, v in md.items()
-        if not (
-            str(k).startswith(_INHERITED_HASH_METADATA_PREFIX)
-            or str(k) in _INHERITED_HASH_METADATA_KEYS
-        )
-    }
+    meta: Dict[str, str] = {}
+    for k, v in md.items():
+        k = str(k)
+        if k.startswith(_INHERITED_HASH_METADATA_PREFIX) or k in _INHERITED_HASH_METADATA_KEYS:
+            continue
+        if not preserve_loader_metadata and k not in _LOADER_CONFIG_KEYS:
+            continue
+        meta[k] = str(v)
     return meta
 
 

@@ -12,7 +12,7 @@ import torch
 from safetensors import safe_open
 
 from core.layer_config_builder import BAKED_VAE_PATTERNS, PRESERVE_PATTERNS
-from core.metadata_manager import calculate_civitai_hashes, inject_metadata, merge_custom_metadata
+from core.metadata_manager import calculate_civitai_hashes, inject_metadata, merge_custom_metadata, read_source_metadata
 from core.safetensors_engine import write_quant_recipe
 from utils.arch_detector import verify_architecture_match
 from utils.ltx23_layer_profiles import is_ltx23_preserved_key
@@ -108,7 +108,7 @@ def _header(specs: dict[str, dict[str, Any]], metadata: dict[str, str]) -> bytes
 
 def run_int4_convrot_conversion(output_dir: str, source_path: str, model_name: str,
                                  architecture: str, strategy: str, is_full_checkpoint: bool,
-                                 custom_metadata: dict | None = None):
+                                 custom_metadata: dict | None = None, preserve_loader_metadata=True):
     request_error = validate_int4_convrot_request(architecture, strategy)
     if request_error:
         yield request_error, "Aborted: unsupported INT4 ConvRot request"
@@ -160,7 +160,9 @@ def run_int4_convrot_conversion(output_dir: str, source_path: str, model_name: s
                     yield (f"INT4 ConvRot progress: {index}/{len(keys)} tensors "
                            f"({index * 100 // len(keys)}%), {quantized} quantized.\n"), "running"
         metadata = merge_custom_metadata(architecture, model_name, output_path, bits="INT4 ConvRot",
-                                         custom_meta=custom_metadata)
+                                         custom_meta=custom_metadata,
+                                         source_metadata=read_source_metadata(source_path),
+                                         preserve_loader_metadata=preserve_loader_metadata)
         metadata["_quantization_metadata"] = json.dumps({"format_version": "1.0", "layers": quant_layers})
         header = _header(specs, {str(k): str(v) for k, v in metadata.items()})
         with open(tmp_output, "wb") as output, open(spool_path, "rb") as spool:
@@ -175,7 +177,8 @@ def run_int4_convrot_conversion(output_dir: str, source_path: str, model_name: s
         injected, metadata_msg = inject_metadata(output_path, metadata)
         recipe = write_quant_recipe(output_path, source_path, model_name, architecture, "INT4 ConvRot",
                                     strategy, "n/a", False, False, is_full_checkpoint, f"{architecture} preserve policy",
-                                    ["comfy-kitchen", "TensorCoreConvRotW4A4Layout"], injected, metadata_msg, hashes)
+                                    ["comfy-kitchen", "TensorCoreConvRotW4A4Layout"], injected, metadata_msg, hashes,
+                                    preserve_loader_metadata=preserve_loader_metadata)
         yield (f"{arch_msg}\nINT4 ConvRot: {quantized} quantized / {preserved} preserved / {total} total tensors.\n"
                f"Output: {output_path}\nRecipe: {recipe}\n"), "INT4 ConvRot complete"
     except Exception as exc:

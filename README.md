@@ -38,7 +38,7 @@ Detailed reference material lives in the [doc/](doc/) folder — linked from eac
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
 | LoRA merge | Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2 with per-LoRA strength, global scaling, dry-run, strict matching, adaptive mode, `.diff` format support, and Krea 2 unchain |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
-| Metadata tools | Preview, read, inject modelspec metadata. SHA256/AutoV1/V2/V3/CRC32 hash calculation. In-place header rewrite (avoids GB-scale full rewrites). EC-based `modelspec.watermark` provenance (only-you-can-decode) |
+| Metadata tools | Preview, read, inject modelspec metadata. SHA256/AutoV1/V2/V3/CRC32 hash calculation. In-place header rewrite (avoids GB-scale full rewrites). EC-based `modelspec.watermark` provenance (only-you-can-decode). **Loader metadata preservation** — per-run checkbox (on by default) that keeps loader-critical `__metadata__` (config, architecture, implementation, runtime quant layout) from the source checkpoint through quantization, LoRA merge, and model merge; the generated layout always wins over stale source layout, and unsupported quantized merge sources fail closed |
 | Diagnostics | 5D tensor scanner, pattern audit, LoRA shape-mismatch detection with ratio analysis |
 | Hardware monitor | Real-time CPU%, RAM, GPU%, VRAM bars with 5-second polling |
 | Memory cleanup | One-button RAM/VRAM cache release (Go GC, Python GC, malloc_trim, PyTorch/CuPy cache) |
@@ -190,6 +190,7 @@ The architecture selection controls the `convert_to_quant` preset and, for verif
 - Settings persistence (remembers last choices across sessions via browser cookies)
 - Last-used checkpoint folder remembered between runs
 - Multi-select LoRA browser with drag-and-drop
+- "Preserve loader metadata" checkbox (on by default) in Quantize, LoRA Merge, and Model Merge — keeps the loader-critical metadata structure (config, architecture, runtime quant layout) from the source checkpoint in every output; unchecking restores a clean metadata set with only the loader-critical keys
 - Custom output directory selector
 - Quit button for clean server shutdown
 - Tab-aware keepalive (server stays alive while browser tab is open)

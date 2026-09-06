@@ -58,6 +58,7 @@ function saveSettings() {
     loraAdaptive: $("lora-adaptive").checked,
     loraStrict: $("lora-strict").checked,
     krea2Unchain: $("krea2-unchain").checked,
+    preserveLoaderMetadata: $("preserve-loader-metadata").checked,
     watermark: $("watermark").checked,
     mmOverlayPath: state.mmOverlayPath,
     mmRecipe: $("mm-recipe").value,
@@ -130,6 +131,7 @@ function loadSettings() {
       $("lora-strict").checked = s.loraStrict ?? true;
       $("krea2-unchain").checked = !!s.krea2Unchain;
       $("watermark").checked = s.watermark ?? true;
+      $("preserve-loader-metadata").checked = s.preserveLoaderMetadata ?? true;
       // Migrate old loraDryRun → mmDryRun (dry-run now lives in the Strategy panel,
       // shared between LoRA and Model Merge modes).
       state.mmOverlayPath = s.mmOverlayPath || "";
@@ -602,6 +604,7 @@ async function startModelMerge() {
         rank,
         strength,
         dry_run: dryRun,
+        preserve_loader_metadata: $("preserve-loader-metadata").checked,
         watermark: $("watermark").checked,
       }),
     });
@@ -756,6 +759,7 @@ function wireEvents() {
   $("full-checkpoint").addEventListener("change", () => { refreshMetadata(); saveSettings(); });
   $("low-vram").addEventListener("change", saveSettings);
   $("watermark").addEventListener("change", () => { refreshWatermarkStatus(); saveSettings(); });
+  $("preserve-loader-metadata").addEventListener("change", saveSettings);
 
   document.querySelectorAll("#strategy button").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1260,6 +1264,7 @@ async function startLoraMerge() {
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,
         krea2_unchain: $("krea2-unchain").checked,
+        preserve_loader_metadata: $("preserve-loader-metadata").checked,
         watermark: $("watermark").checked,
       }),
     });
@@ -1298,6 +1303,7 @@ async function startJob() {
         optimizer: "prodigy",
         low_vram: $("low-vram").checked,
         full_checkpoint: $("full-checkpoint").checked,
+        preserve_loader_metadata: $("preserve-loader-metadata").checked,
         watermark: $("watermark").checked,
       }),
     });
@@ -1591,6 +1597,8 @@ async function resolveRecipeModelPath(name, kind) {
 
 async function parseRecipeAndApply(recipeText, fileName) {
   var lines = recipeText.split("\n");
+  const preserveMatch = recipeText.match(/^Preserve loader metadata:\s*(yes|no)\s*$/m);
+  $("preserve-loader-metadata").checked = !preserveMatch || preserveMatch[1] === "yes";
 
   // Helper: read a "Key: value" line by searching for the label.
   var i = 0;
