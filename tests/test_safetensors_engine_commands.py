@@ -44,7 +44,6 @@ class SafetensorsEngineCommandTests(unittest.TestCase):
             with mock.patch("core.safetensors_engine.verify_architecture_match", return_value=(True, "ok")), \
                  mock.patch("core.safetensors_engine.subprocess.Popen", side_effect=fake_popen), \
                  mock.patch("core.safetensors_engine.inject_metadata", return_value=(True, "ok")), \
-                 mock.patch("core.safetensors_engine.calculate_civitai_hashes", return_value={}), \
                  mock.patch("core.safetensors_engine.save_log"):
                 list(run_safe_conversion(
                     tmpdir,

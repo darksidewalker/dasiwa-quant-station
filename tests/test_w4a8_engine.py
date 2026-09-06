@@ -116,7 +116,7 @@ class W4A8EngineTests(unittest.TestCase):
                     {"format": "asym_w4a8_int8", "group_size": 16, "convrot": True, "convrot_groupsize": 256},
                 )
                 self.assertNotIn("blocks.0.adaln_proj.linear", layers)
-                self.assertNotIn("HASH_WILL_BE_CALCULATED_ON_SAVE", handle.metadata().get("civitai.hash.SHA256", ""))
+                self.assertNotIn("civitai.hash.SHA256", handle.metadata())
 
     def test_lossy_source_is_rejected(self):
         from core.w4a8_engine import run_w4a8_conversion

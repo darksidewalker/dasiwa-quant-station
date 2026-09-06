@@ -8,8 +8,6 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from core.metadata_manager import (
-    calculate_civitai_hashes,
-    calculate_sha256,
     inject_metadata,
     merge_custom_metadata,
     normalize_quantization_bits,
@@ -19,36 +17,26 @@ from core.safetensors_engine import write_quant_recipe
 
 
 class QuantMetadataTests(unittest.TestCase):
-    def test_civitai_hashes_are_added_to_metadata(self):
+    def test_hash_keys_are_never_added_to_metadata(self):
+        """civitai.hash.* / modelspec.hash_sha256 describe the source
+        checkpoint and are not applicable after merging/quantization —
+        generated metadata must never carry them."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "model.safetensors"
             path.write_bytes(b"DaSiWa quant hash test")
 
-            hashes = calculate_civitai_hashes(str(path))
-            self.assertEqual(set(hashes), {"AutoV1", "AutoV2", "AutoV3", "SHA256", "CRC32"})
-            self.assertEqual(len(hashes["AutoV1"]), 8)
-            self.assertEqual(len(hashes["AutoV2"]), 10)
-            self.assertEqual(len(hashes["AutoV3"]), 12)
-            self.assertEqual(len(hashes["SHA256"]), 64)
-            self.assertEqual(len(hashes["CRC32"]), 8)
-
             meta = merge_custom_metadata("WAN 2.2", "hash-test", str(path), bits="FP8")
-            self.assertEqual(meta["civitai.hash.AutoV1"], hashes["AutoV1"])
-            self.assertEqual(meta["civitai.hash.AutoV2"], hashes["AutoV2"])
-            self.assertEqual(meta["civitai.hash.AutoV3"], hashes["AutoV3"])
-            self.assertEqual(meta["civitai.hash.SHA256"], hashes["SHA256"])
-            self.assertEqual(meta["civitai.hash.CRC32"], hashes["CRC32"])
+            for key in meta:
+                self.assertFalse(
+                    key.startswith("civitai.hash.") or key == "modelspec.hash_sha256",
+                    f"stale hash key {key!r} leaked into generated metadata",
+                )
 
-    def test_missing_file_omits_hash_keys_instead_of_placeholder(self):
+    def test_pre_write_metadata_carries_no_hash_keys(self):
         """No dead placeholders: a not-yet-existing target must not plant any
-        hash fields at all (old behavior baked in a marker string that then
-        survived the whole merge pipeline)."""
+        hash fields at all."""
         with tempfile.TemporaryDirectory() as tmp:
             missing = str(Path(tmp) / "does_not_exist_yet.safetensors")
-            self.assertIsNone(calculate_sha256(missing))
-            self.assertEqual(calculate_civitai_hashes(missing), {})
-            self.assertEqual(calculate_sha256("PREVIEW_MODE"), None)
-            self.assertEqual(calculate_civitai_hashes("PREVIEW_MODE"), {})
 
             meta = merge_custom_metadata("WAN 2.2", "pre-write", missing, bits="BF16")
             for key in list(meta):
@@ -82,7 +70,6 @@ class QuantMetadataTests(unittest.TestCase):
                 command=["convert_to_quant", "-i", "/models/source.safetensors"],
                 metadata_injected=True,
                 metadata_message="Header rewritten in place",
-                hashes={"SHA256": "A" * 64, "AutoV1": "B" * 8, "AutoV2": "C" * 10, "AutoV3": "D" * 12, "CRC32": "E" * 8},
             )
 
             text = Path(recipe).read_text()
@@ -90,7 +77,8 @@ class QuantMetadataTests(unittest.TestCase):
             self.assertIn("Output:            video_fp8.safetensors", text)
             self.assertIn("Format:            FP8", text)
             self.assertIn("Metadata injected: yes", text)
-            self.assertIn("AutoV3:            DDDDDDDDDDDD", text)
+            self.assertNotIn("Civitai/Common Hashes", text)
+            self.assertNotIn("AutoV3", text)
 
     def test_quantization_bits_labels_match_actual_quant_target(self):
         self.assertEqual(

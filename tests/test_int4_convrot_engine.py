@@ -98,8 +98,7 @@ class Int4ConvRotEngineTests(unittest.TestCase):
                 metadata = handle.metadata()
                 layers = __import__("json").loads(metadata["_quantization_metadata"])["layers"]
                 self.assertIn("model.diffusion_model.transformer_blocks.2.attn1.to_q", layers)
-                self.assertNotIn("HASH_WILL_BE_CALCULATED_ON_SAVE", metadata["civitai.hash.SHA256"])
-                self.assertEqual(len(metadata["civitai.hash.SHA256"]), 64)
+                self.assertEqual(metadata.get("civitai.hash.SHA256", ""), "")
                 self.assertEqual(handle.get_tensor("model.diffusion_model.transformer_blocks.2.attn1.to_q.weight").shape, (64, 128))
                 self.assertEqual(handle.get_tensor("model.diffusion_model.adaln_single.linear.weight").shape, (4, 4))
 

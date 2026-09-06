@@ -25,7 +25,7 @@ import torch
 from safetensors import safe_open
 
 from core.layer_config_builder import BAKED_VAE_PATTERNS, PRESERVE_PATTERNS
-from core.metadata_manager import calculate_civitai_hashes, inject_metadata, merge_custom_metadata, read_source_metadata
+from core.metadata_manager import inject_metadata, merge_custom_metadata, read_source_metadata
 from core.safetensors_engine import write_quant_recipe
 from utils.arch_detector import verify_architecture_match
 
@@ -217,15 +217,12 @@ def run_w4a8_conversion(output_dir: str, source_path: str, model_name: str,
             output.write(header)
             shutil.copyfileobj(spool, output, length=1024 * 1024)
         os.replace(tmp_output, output_path)
-        yield "W4A8: calculating output hashes and finalizing metadata.\n", "running"
-        hashes = calculate_civitai_hashes(output_path)
-        metadata.update({f"civitai.hash.{name}": value for name, value in hashes.items()})
-        metadata["modelspec.hash_sha256"] = f"0x{hashes['SHA256'].lower()}"
+        yield "W4A8: finalizing metadata.\n", "running"
         injected, metadata_msg = inject_metadata(output_path, metadata)
         recipe = write_quant_recipe(output_path, source_path, model_name, architecture, "W4A8",
                                    strategy, "n/a", False, False, is_full_checkpoint,
                                    f"{architecture} preserve policy",
-                                   ["comfy-kitchen", "AsymW4A8Int8Layout"], injected, metadata_msg, hashes,
+                                   ["comfy-kitchen", "AsymW4A8Int8Layout"], injected, metadata_msg,
                                    preserve_loader_metadata=preserve_loader_metadata)
         yield (f"{arch_msg}\nW4A8: {quantized} quantized / {preserved} preserved / {total} total tensors.\n"
                f"Output: {output_path}\nRecipe: {recipe}\n"), "W4A8 complete"

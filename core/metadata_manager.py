@@ -2,8 +2,6 @@ import os
 import json
 import struct
 import datetime
-import hashlib
-import zlib
 from core.metadata_configs import MODEL_METADATA_CONFIGS, COMMON_METADATA
 from core.watermark import watermark_for
 from safetensors.torch import load_file, save_file
@@ -50,56 +48,6 @@ def reject_quantized_merge_source(file_path):
                 key.endswith((".comfy_quant", ".weight_scale", ".weight_scale_2", ".weight_s_rel", ".weight_codebook")) or
                 (key.endswith(".weight") and info.get("dtype") not in {"BF16", "F16", "F32", "F64"})):
             raise ValueError(f"Unsupported quantized merge source ({key}): use BF16/FP16/FP32, merge first, then quantize.")
-
-def calculate_sha256(file_path):
-    """Calculates a clean 0x-prefixed SHA256 hash of the target file.
-
-    Returns None when the file does not exist yet (or in PREVIEW_MODE) so
-    callers can simply omit the hash field instead of planting a fake value
-    that would be mistaken for a real hash.
-    """
-    if not os.path.exists(file_path) or file_path == "PREVIEW_MODE":
-        return None
-
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        # Read in 64kb chunks for memory efficiency
-        for byte_block in iter(lambda: f.read(65536), b""):
-            sha256_hash.update(byte_block)
-    return f"0x{sha256_hash.hexdigest()}"
-
-
-def calculate_civitai_hashes(file_path):
-    """Calculate common Civitai file hash fields for metadata/recipes.
-
-    Returns an empty dict when the file does not exist yet (or in
-    PREVIEW_MODE) so the hash fields are simply omitted instead of
-    carrying a fake placeholder that survives the merge pipeline.
-    """
-    if not os.path.exists(file_path) or file_path == "PREVIEW_MODE":
-        return {}
-
-    sha256_hash = hashlib.sha256()
-    crc = 0
-    with open(file_path, "rb") as f:
-        for byte_block in iter(lambda: f.read(1024 * 1024), b""):
-            sha256_hash.update(byte_block)
-            crc = zlib.crc32(byte_block, crc)
-
-    sha = sha256_hash.hexdigest().upper()
-    return {
-        "AutoV1": sha[:8],
-        "AutoV2": sha[:10],
-        "AutoV3": sha[:12],
-        "SHA256": sha,
-        "CRC32": f"{crc & 0xFFFFFFFF:08X}",
-    }
-
-
-def _civitai_hash_metadata(file_path):
-    hashes = calculate_civitai_hashes(file_path)
-    return {f"civitai.hash.{name}": value for name, value in hashes.items()}
-
 
 def normalize_quantization_bits(bits):
     """Return the canonical metadata label for a selected quant target."""
@@ -176,11 +124,6 @@ def get_specialized_meta(architecture, model_name, final_file_path, bits="FP8", 
             
             # 2. OVERWRITE ONLY our specific UI/Session fields
             meta["modelspec.title"] = model_name 
-            # Omit the hash key entirely when the file does not exist yet
-            # (PREVIEW_MODE / pre-write build) so no fake hash is planted.
-            hash_sha256 = calculate_sha256(final_file_path)
-            if hash_sha256 is not None:
-                meta["modelspec.hash_sha256"] = hash_sha256
             meta["modelspec.date"] = datetime.datetime.now().strftime("%Y-%m-%d")
             meta["quantization.bits"] = bits
             meta["quantization.tool"] = "https://github.com/darksidewalker/dasiwa-quant-station"
@@ -246,7 +189,6 @@ def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
                 if k not in _PROTECTED_EXISTING_METADATA_KEYS | {"modelspec.watermark", "modelspec.hash_sha256", "__spacer"}
                 and not k.startswith(("quantization.", "civitai.hash."))}
     base.update(get_specialized_meta(architecture, model_name, file_path, bits, is_full=is_full))
-    base.update(_civitai_hash_metadata(file_path))
 
     if custom_meta:
         for k, v in custom_meta.items():
@@ -540,7 +482,7 @@ def write_gguf_meta(file_path, model_name, architecture, bits="FP8", is_full=Fal
     # The converter's typed GGUF fields are authoritative. Never transplant
     # source quant layout or replace native KV types with safetensors strings.
     for key in list(new_meta):
-        if key in reader.fields and not key.startswith(("modelspec.", "civitai.hash.", "quantization.")):
+        if key in reader.fields and not key.startswith(("modelspec.", "quantization.")):
             new_meta.pop(key)
     # Coerce non-string values to strings (the format we already use elsewhere).
     new_meta_strings = {
