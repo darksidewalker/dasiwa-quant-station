@@ -28,6 +28,8 @@ const state = {
   mmRecipe: "h3_hybrid",
   mmRank: 1024,
   mmStrength: 1,
+  extractMergedPath: "",
+  extractPrunedPath: "",
 };
 
 const JOB_PERSIST_KEY = "dasiwa_active_job";
@@ -505,6 +507,8 @@ function updateArchDependentUI() {
   if (unchainLabel) {
     unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
   }
+  if ($("compose-preset")) $("compose-preset").value = state.architecture === "MiniMax H3" ? "balanced" : "conservative";
+  if ($("lora-consensus-preset")) $("lora-consensus-preset").value = state.architecture === "MiniMax H3" ? "balanced" : "conservative";
   if (state.workflowMode === "model") refreshModelMergeHint();
 }
 
@@ -790,10 +794,18 @@ function wireEvents() {
   $("mm-rank").addEventListener("change", saveSettings);
   $("mm-strength").addEventListener("change", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
+  $("extract-pick-merged").addEventListener("click", () => openBrowser("extract-merged"));
+  $("extract-pick-pruned").addEventListener("click", () => openBrowser("extract-pruned"));
+  wireDropTarget($("extract-pick-merged"), "extract-merged");
+  wireDropTarget($("extract-pick-pruned"), "extract-pruned");
 
   $("start").addEventListener("click", () => {
     if (state.workflowMode === "lora") {
       startLoraMerge();
+    } else if (state.workflowMode === "compose") {
+      startLoraCompose();
+    } else if (state.workflowMode === "extract") {
+      startLoraExtract();
     } else if (state.workflowMode === "model") {
       startModelMerge();
     } else {
@@ -824,22 +836,27 @@ function setWorkflowMode(mode) {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
   document.querySelectorAll("[data-workflow-panel]").forEach((panel) => {
-    panel.classList.toggle("hidden", panel.dataset.workflowPanel !== mode);
+    const panelMode = panel.dataset.workflowPanel;
+    panel.classList.toggle("hidden", panelMode !== mode && !(mode === "compose" && panelMode === "lora"));
   });
+  const composing = mode === "compose";
+  $("compose-controls").style.display = composing ? "" : "none";
+  $("lora-bake-controls").style.display = composing ? "none" : "";
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
+  $("extract-side-panel").classList.toggle("hidden", mode !== "extract");
   updateDeltaOptionsVisibility();
   // Show the dry-run checkbox (under Strategy) for LoRA merge + Model Merge modes only
   // (the two merge workflows that support a plan-only, no-write run).
-  $("mm-dry-run-wrap").style.display = mode === "model" || mode === "lora" ? "" : "none";
+  $("mm-dry-run-wrap").style.display = mode === "model" || mode === "lora" || mode === "compose" || mode === "extract" ? "" : "none";
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
   startBtn.classList.remove("hidden");
-  startBtn.textContent = mode === "lora" ? "Start Merge" : mode === "model" ? "Start Model Merge" : "Start Batch";
+  startBtn.textContent = mode === "lora" ? "Start Merge" : mode === "compose" ? "Merge Adapters" : mode === "extract" ? "Start Extract" : mode === "model" ? "Start Model Merge" : "Start Batch";
   // Update checkpoint hint label per mode.
   const hint = $("source-label-hint");
   if (hint) {
-    hint.textContent = mode === "lora" ? "Base checkpoint" : mode === "model" ? "Checkpoint (base)" : "Checkpoint";
+    hint.textContent = mode === "lora" ? "Base checkpoint" : mode === "extract" ? "Full base checkpoint" : mode === "model" ? "Checkpoint (base)" : "Checkpoint";
   }
   // Show Model Merge hint only when arch is MiniMax H3.
   updateModelMergeVisibility();
@@ -972,6 +989,14 @@ function renderBrowserList() {
         selectSource(item.path);
       } else if (state.browserMode === "mm-overlay" && !item.is_dir) {
         selectModelMergeOverlay(item.path);
+      } else if (state.browserMode === "extract-merged" && !item.is_dir) {
+        state.extractMergedPath = item.path;
+        $("extract-merged-label").textContent = shortPath(item.path);
+        $("browser").close();
+      } else if (state.browserMode === "extract-pruned" && !item.is_dir) {
+        state.extractPrunedPath = item.path;
+        $("extract-pruned-label").textContent = shortPath(item.path);
+        $("browser").close();
       } else if (state.browserMode === "lora" && !item.is_dir) {
         // Toggle selection instead of immediately adding
         const cb = btn.querySelector('input[type="checkbox"]');
@@ -1235,6 +1260,8 @@ async function startLoraMerge() {
     return log(`${shortPath(unsafe.path)} effective strength is too high. Keep per-LoRA × global strength within ±${MAX_EFFECTIVE_LORA_STRENGTH}.\n`);
   }
   if (!dryRun && !$("model-name").value) return log("Enter a Display Name before writing a merged checkpoint.\n");
+  if ($("lora-merge-algorithm").value === "consensus" && selected.length < 2) return log("Consensus merge requires at least two LoRAs.\n");
+  if ($("lora-merge-algorithm").value === "consensus" && ($("lora-adaptive").checked || $("krea2-unchain").checked)) return log("Consensus merge cannot use adaptive scaling or Krea 2 unchain.\n");
 
   $("start").disabled = true;
   $("stop").disabled = false;
@@ -1260,6 +1287,8 @@ async function startLoraMerge() {
         merge_device: $("lora-merge-device").value,
         cuda_device: $("lora-cuda-device").value || "cuda:0",
         vram_headroom_mb: Number($("lora-vram-headroom").value) || 1024,
+        merge_algorithm: $("lora-merge-algorithm").value,
+        consensus_preset: $("lora-consensus-preset").value,
         adaptive: $("lora-adaptive").checked,
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,
@@ -1276,6 +1305,45 @@ async function startLoraMerge() {
     $("stop").disabled = true;
     setStatus("Error");
   }
+}
+
+async function startLoraCompose() {
+  const selected = state.loras.filter((lora) => lora.path && lora.enabled !== false);
+  if (selected.length < 2) return log("Select at least two LoRA/LoKr adapters.\n");
+  const dryRun = $("mm-dry-run").checked;
+  if (!dryRun && !$("model-name").value) return log("Enter a Display & Output Name.\n");
+  $("start").disabled = true; $("stop").disabled = false;
+  try {
+    const data = await api("/api/lora/compose", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+      models_dir: state.modelsDir, output_name: $("model-name").value,
+      loras: selected.map((lora) => ({path: lora.path, strength: Number(lora.strength) || 0, strategy: lora.strategy})),
+      architecture: state.architecture, global_strength: 1,
+      output_adapter: $("compose-output-adapter").value, output_rank: Number($("compose-output-rank").value) || 0,
+      frobenius_energy: Number($("compose-energy").value) || 0.99, consensus_preset: $("compose-preset").value,
+      mismatch_mode: $("compose-mismatch").value, merge_device: $("lora-merge-device").value,
+      cuda_device: $("lora-cuda-device").value || "cuda:0", vram_headroom_mb: Number($("lora-vram-headroom").value) || 1024,
+      dry_run: dryRun,
+    })});
+    state.jobId = data.job_id; attachEvents(data.job_id);
+  } catch (err) { log(`LoRA composition failed to start: ${err.message}\n`); $("start").disabled = false; $("stop").disabled = true; }
+}
+
+async function startLoraExtract() {
+  if (state.architecture !== "MiniMax H3") return log("LoRA Extract currently supports MiniMax H3 only.\n");
+  if (!state.sourcePath || !state.extractMergedPath) return log("Select the full base and full merged checkpoints.\n");
+  const outputMode = $("extract-mode").value;
+  if (outputMode === "pruned" && !state.extractPrunedPath) return log("Select the target pruned checkpoint for a pruned adapter.\n");
+  if (!$("model-name").value && !$("mm-dry-run").checked) return log("Enter a Display & Output Name.\n");
+  $("start").disabled = true; $("stop").disabled = false;
+  try {
+    const data = await api("/api/lora/extract", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+      base_path: state.sourcePath, merged_path: state.extractMergedPath, pruned_target_path: state.extractPrunedPath,
+      models_dir: state.modelsDir, output_name: $("model-name").value, architecture: "MiniMax H3", output_mode: outputMode,
+      frobenius_energy: Number($("extract-energy").value), min_rank: Number($("extract-min-rank").value),
+      max_rank: Number($("extract-max-rank").value), dry_run: $("mm-dry-run").checked,
+    })});
+    state.jobId = data.job_id; attachEvents(data.job_id);
+  } catch (err) { log(`LoRA extract failed to start: ${err.message}\n`); $("start").disabled = false; $("stop").disabled = true; }
 }
 
 async function startJob() {
@@ -1599,6 +1667,35 @@ async function parseRecipeAndApply(recipeText, fileName) {
   var lines = recipeText.split("\n");
   const preserveMatch = recipeText.match(/^Preserve loader metadata:\s*(yes|no)\s*$/m);
   $("preserve-loader-metadata").checked = !preserveMatch || preserveMatch[1] === "yes";
+
+  if (recipeText.includes("DaSiWa LoRA Compose Recipe")) {
+    const read = (label) => {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = recipeText.match(new RegExp("^" + escaped + ":\\s*(.*)$", "m"));
+      return match ? match[1].trim() : "";
+    };
+    const architecture = read("Architecture");
+    if (architecture) { state.architecture = architecture; $("architecture").value = architecture; }
+    $("compose-preset").value = read("Consensus preset") || (architecture === "MiniMax H3" ? "balanced" : "conservative");
+    $("compose-output-adapter").value = read("Output adapter") || "auto";
+    $("compose-output-rank").value = read("Output rank") || "0";
+    $("compose-energy").value = read("Frobenius energy") || "0.99";
+    const output = read("Output");
+    if (output) $("model-name").value = output.replace(/\.safetensors$/i, "");
+    state.loras = [];
+    const entry = /^\s*\d+\.\s+(.+)\n\s*Strength:\s*(.+)$/gm;
+    let match;
+    while ((match = entry.exec(recipeText)) !== null) {
+      const resolved = await resolveRecipeModelPath(match[1].trim(), "adapter");
+      const strength = Number(match[2]);
+      state.loras.push({path: resolved, strength: Number.isFinite(strength) ? strength : 1, strategy: defaultLoraStrategy(), enabled: true});
+    }
+    setWorkflowMode("compose");
+    renderLoras();
+    saveSettings();
+    log(`Loaded composition recipe "${fileName}": ${state.loras.length} adapter(s), arch=${state.architecture}\n`);
+    return;
+  }
 
   // Helper: read a "Key: value" line by searching for the label.
   var i = 0;

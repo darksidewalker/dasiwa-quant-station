@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -30,6 +33,28 @@ func TestUpdateStepsPullsLatestSourceBeforeSetupAndBuild(t *testing.T) {
 	}
 	if steps[2].name != "build" || steps[2].cmd.Args[1] != "build" {
 		t.Fatalf("third step should build the Go app, got %#v", steps[2].cmd)
+	}
+}
+
+func TestHandleLoraComposeValidation(t *testing.T) {
+	s := &Server{modelsDir: t.TempDir(), jobs: NewJobStore()}
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"needs two adapters", `{"loras":[{"path":"a.safetensors"}]}`},
+		{"rejects output kind", `{"loras":[{"path":"a"},{"path":"b"}],"output_adapter":"bad"}`},
+		{"rejects energy", `{"loras":[{"path":"a"},{"path":"b"}],"frobenius_energy":2}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/lora/compose", bytes.NewBufferString(tc.body))
+			res := httptest.NewRecorder()
+			s.handleLoraCompose(res, req)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", res.Code, res.Body.String())
+			}
+		})
 	}
 }
 

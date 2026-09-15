@@ -62,6 +62,16 @@
         </label>
       </section>
 
+      <section class="panel mm-side-panel hidden" id="extract-side-panel">
+        <h2>LoRA Extract</h2>
+        <label class="field"><span title="Extraction recipe">Recipe</span><select id="extract-mode" title="Pruned uses the selected target checkpoint's AdaLN coordinate gauge"><option value="pruned" selected>MiniMax H3 → pruned adapter</option><option value="full">MiniMax H3 → full LoRA</option></select></label>
+        <button id="extract-pick-merged" class="picker-button drop-target" type="button" title="Pick the full merged MiniMax H3 checkpoint"><span>Second checkpoint (full merged)</span><strong id="extract-merged-label">Pick…</strong></button>
+        <button id="extract-pick-pruned" class="picker-button drop-target" type="button" title="Pick the exact pruned checkpoint this adapter will target"><span>Target pruned checkpoint</span><strong id="extract-pruned-label">Pick…</strong></button>
+        <label class="field"><span title="Energy retained in each ordinary matrix LoRA extraction">Frobenius energy</span><input id="extract-energy" type="number" min="0.5" max="1" step="0.001" value="0.990"></label>
+        <label class="field"><span title="Smallest permitted LoRA rank">Min rank</span><input id="extract-min-rank" type="number" min="1" step="1" value="1"></label>
+        <label class="field"><span title="0 means no maximum rank cap">Max rank</span><input id="extract-max-rank" type="number" min="0" step="1" value="0"></label>
+      </section>
+
       <section class="panel mm-side-panel hidden" id="mm-side-panel">
         <h2>Model Merge</h2>
         <label class="field">
@@ -104,7 +114,9 @@
           <div class="mode-switch" id="workflow-mode">
             <span class="mode-label">Mode:</span>
             <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
-            <button data-mode="lora" type="button" title="Merge one or more LoRAs into a base checkpoint">LoRA Merge</button>
+            <button data-mode="lora" type="button" title="Bake one or more LoRAs into a checkpoint">LoRA Merge</button>
+            <button data-mode="compose" type="button" title="Consensus-merge adapters into a reusable LoRA or LoKr">Merge LoRAs</button>
+            <button data-mode="extract" type="button" title="Extract a MiniMax H3 LoRA from a full base and merged checkpoint">LoRA Extract</button>
             <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
           </div>
           <p id="status">Idle</p>
@@ -141,11 +153,21 @@
         <section class="lora-card hidden" data-workflow-panel="lora">
           <div class="section-title">
             <div>
-              <h3>LoRA Merge</h3>
-              <p>Select a base checkpoint in the sidebar, then assign a merge strategy per LoRA.</p>
+              <h3>LoRA Merge / Compose</h3>
+              <p>Bake adapters into a base checkpoint, or use Merge LoRAs to create a reusable adapter without a base.</p>
             </div>
           </div>
-          <div class="lora-controls">
+          <div class="lora-controls" id="compose-controls" style="display:none">
+            <label class="field compact"><span>Consensus preset</span><select id="compose-preset"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
+            <label class="field compact"><span>Output adapter</span><select id="compose-output-adapter"><option value="auto">Auto (LoKr when anchored)</option><option value="lora">LoRA</option><option value="lokr">Direct LoKr</option></select></label>
+            <label class="field compact"><span>Max rank (0 = auto)</span><input id="compose-output-rank" type="number" min="0" step="1" value="0"></label>
+            <label class="field compact"><span>Frobenius energy</span><input id="compose-energy" type="number" min="0.5" max="1" step="0.001" value="0.99"></label>
+            <label class="field compact"><span>Mismatch</span><select id="compose-mismatch"><option value="error">Error</option><option value="skip">Skip incompatible layers</option></select></label>
+            <p class="muted-note">Direct LoKr output needs a compatible direct-LoKr input to define factor shapes. Auto falls back to LoRA for unanchored layers.</p>
+          </div>
+          <div class="lora-controls" id="lora-bake-controls">
+            <label class="field compact"><span>Merge algorithm</span><select id="lora-merge-algorithm"><option value="additive">Additive</option><option value="consensus">Consensus</option></select></label>
+            <label class="field compact"><span>Consensus preset</span><select id="lora-consensus-preset"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
             <label class="field compact">
               <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
               <input id="lora-global-strength" type="number" min="-3" max="3" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (-3..3; 0=none, 1=full, negative subtracts)">
@@ -184,6 +206,10 @@
             <button id="add-lora" class="ghost drop-target" type="button" title="Add a LoRA to the merge list, or drop one or more LoRA files here">+ Add LoRA</button>
             <button id="load-recipe-btn" class="secondary ghost" type="button" title="Load a previously saved .txt recipe file into this form">⚙ Load Recipe</button>
           </div>
+        </section>
+
+        <section class="lora-card hidden" data-workflow-panel="extract">
+          <div class="section-title"><div><h3>LoRA Extract — MiniMax H3</h3><p>Full base comes from Source; select the full merged model in the sidebar. The pruned recipe rebases AdaLN against the selected target checkpoint's exact coordinate table.</p></div></div>
         </section>
 
         <section class="lora-card hidden" data-workflow-panel="model" id="model-merge-card">

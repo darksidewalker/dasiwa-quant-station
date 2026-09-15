@@ -77,6 +77,8 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/metadata/inject", s.handleMetadataInject)
 	mux.HandleFunc("POST /api/quantize", s.handleQuantize)
 	mux.HandleFunc("POST /api/lora/merge", s.handleLoraMerge)
+	mux.HandleFunc("POST /api/lora/compose", s.handleLoraCompose)
+	mux.HandleFunc("POST /api/lora/extract", s.handleLoraExtract)
 	mux.HandleFunc("POST /api/model-merge", s.handleModelMerge)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
@@ -162,9 +164,9 @@ func formatSupportedFor(format, architecture string) bool {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"version":    s.version,
-		"root_dir":   s.rootDir,
-		"models_dir": s.modelsDir,
+		"version":        s.version,
+		"root_dir":       s.rootDir,
+		"models_dir":     s.modelsDir,
 		"format_support": formatSupport,
 		"architectures": []string{
 			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3", "Hunyuan Video", "Flux.2",
@@ -433,18 +435,18 @@ func (s *Server) handleMetadataInject(w http.ResponseWriter, r *http.Request) {
 }
 
 type QuantizeRequest struct {
- PreserveLoaderMetadata *bool `json:"preserve_loader_metadata,omitempty"`
-	ModelsDir      string   `json:"models_dir"`
-	OutputDir      string   `json:"output_dir"`
-	SourcePath     string   `json:"source_path"`
-	ModelName      string   `json:"model_name"`
-	Formats        []string `json:"formats"`
-	Architecture   string   `json:"architecture"`
-	Strategy       string   `json:"strategy"`
-	Optimizer      string   `json:"optimizer"`
-	LowVRAM        bool     `json:"low_vram"`
-	FullCheckpoint bool     `json:"full_checkpoint"`
-	Watermark      bool     `json:"watermark"`
+	PreserveLoaderMetadata *bool    `json:"preserve_loader_metadata,omitempty"`
+	ModelsDir              string   `json:"models_dir"`
+	OutputDir              string   `json:"output_dir"`
+	SourcePath             string   `json:"source_path"`
+	ModelName              string   `json:"model_name"`
+	Formats                []string `json:"formats"`
+	Architecture           string   `json:"architecture"`
+	Strategy               string   `json:"strategy"`
+	Optimizer              string   `json:"optimizer"`
+	LowVRAM                bool     `json:"low_vram"`
+	FullCheckpoint         bool     `json:"full_checkpoint"`
+	Watermark              bool     `json:"watermark"`
 }
 
 type LoraSpec struct {
@@ -454,43 +456,79 @@ type LoraSpec struct {
 }
 
 type LoraMergeRequest struct {
- PreserveLoaderMetadata *bool `json:"preserve_loader_metadata,omitempty"`
-	BasePath       string     `json:"base_path"`
-	ModelsDir      string     `json:"models_dir"`
-	OutputDir      string     `json:"output_dir"`
-	OutputPath     string     `json:"output_path"`
-	OutputName     string     `json:"output_name"`
-	Loras          []LoraSpec `json:"loras"`
-	Strategy       string     `json:"strategy"`
-	Architecture   string     `json:"architecture"`
-	GlobalStrength float64    `json:"global_strength"`
-	Adaptive       bool       `json:"adaptive"`
-	DryRun         bool       `json:"dry_run"`
-	StrictMatching bool       `json:"strict_matching"`
-	Krea2Unchain   bool       `json:"krea2_unchain"`
-	MergeDevice    string     `json:"merge_device"`
-	CUDADevice     string     `json:"cuda_device"`
-	VRAMHeadroomMB int        `json:"vram_headroom_mb"`
-	Watermark      bool       `json:"watermark"`
+	PreserveLoaderMetadata *bool      `json:"preserve_loader_metadata,omitempty"`
+	BasePath               string     `json:"base_path"`
+	ModelsDir              string     `json:"models_dir"`
+	OutputDir              string     `json:"output_dir"`
+	OutputPath             string     `json:"output_path"`
+	OutputName             string     `json:"output_name"`
+	Loras                  []LoraSpec `json:"loras"`
+	Strategy               string     `json:"strategy"`
+	Architecture           string     `json:"architecture"`
+	GlobalStrength         float64    `json:"global_strength"`
+	MergeAlgorithm         string     `json:"merge_algorithm"`
+	ConsensusPreset        string     `json:"consensus_preset"`
+	Adaptive               bool       `json:"adaptive"`
+	DryRun                 bool       `json:"dry_run"`
+	StrictMatching         bool       `json:"strict_matching"`
+	Krea2Unchain           bool       `json:"krea2_unchain"`
+	MergeDevice            string     `json:"merge_device"`
+	CUDADevice             string     `json:"cuda_device"`
+	VRAMHeadroomMB         int        `json:"vram_headroom_mb"`
+	Watermark              bool       `json:"watermark"`
+}
+
+type LoraComposeRequest struct {
+	ModelsDir       string     `json:"models_dir"`
+	OutputPath      string     `json:"output_path"`
+	OutputName      string     `json:"output_name"`
+	Loras           []LoraSpec `json:"loras"`
+	Architecture    string     `json:"architecture"`
+	GlobalStrength  float64    `json:"global_strength"`
+	OutputAdapter   string     `json:"output_adapter"`
+	OutputRank      int        `json:"output_rank"`
+	FrobeniusEnergy float64    `json:"frobenius_energy"`
+	ConsensusPreset string     `json:"consensus_preset"`
+	MismatchMode    string     `json:"mismatch_mode"`
+	MergeDevice     string     `json:"merge_device"`
+	CUDADevice      string     `json:"cuda_device"`
+	VRAMHeadroomMB  int        `json:"vram_headroom_mb"`
+	DryRun          bool       `json:"dry_run"`
+}
+
+type LoraExtractRequest struct {
+	BasePath         string  `json:"base_path"`
+	MergedPath       string  `json:"merged_path"`
+	PrunedTargetPath string  `json:"pruned_target_path"`
+	ModelsDir        string  `json:"models_dir"`
+	OutputDir        string  `json:"output_dir"`
+	OutputPath       string  `json:"output_path"`
+	OutputName       string  `json:"output_name"`
+	Architecture     string  `json:"architecture"`
+	OutputMode       string  `json:"output_mode"`
+	FrobeniusEnergy  float64 `json:"frobenius_energy"`
+	MinRank          int     `json:"min_rank"`
+	MaxRank          int     `json:"max_rank"`
+	DryRun           bool    `json:"dry_run"`
 }
 
 type ModelMergeRequest struct {
- PreserveLoaderMetadata *bool `json:"preserve_loader_metadata,omitempty"`
-	BasePath     string `json:"base_path"`
-	OverlayPath  string `json:"overlay_path"`
-	ModelsDir    string `json:"models_dir"`
-	OutputDir    string `json:"output_dir"`
-	OutputPath   string `json:"output_path"`
-	OutputName   string `json:"output_name"`
-	Architecture string `json:"architecture"`
-	Recipe       string `json:"recipe"`
+	PreserveLoaderMetadata *bool  `json:"preserve_loader_metadata,omitempty"`
+	BasePath               string `json:"base_path"`
+	OverlayPath            string `json:"overlay_path"`
+	ModelsDir              string `json:"models_dir"`
+	OutputDir              string `json:"output_dir"`
+	OutputPath             string `json:"output_path"`
+	OutputName             string `json:"output_name"`
+	Architecture           string `json:"architecture"`
+	Recipe                 string `json:"recipe"`
 	// h3_delta recipe options (ignored by splice recipes):
 	// Rank 0 = exact delta; Rank N = SVD rank cap on SVD-eligible matrices.
 	// Strength scales the delta (0 → treated as 1.0).
-	Rank     int     `json:"rank"`
-	Strength float64 `json:"strength"`
-	DryRun   bool    `json:"dry_run"`
-	Watermark bool   `json:"watermark"`
+	Rank      int     `json:"rank"`
+	Strength  float64 `json:"strength"`
+	DryRun    bool    `json:"dry_run"`
+	Watermark bool    `json:"watermark"`
 }
 
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
@@ -604,8 +642,20 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 			req.Strategy = "Balanced"
 		}
 	}
-	if req.GlobalStrength == 0 {
-		req.GlobalStrength = 1
+	if req.MergeAlgorithm == "" {
+		req.MergeAlgorithm = "additive"
+	}
+	if req.MergeAlgorithm != "additive" && req.MergeAlgorithm != "consensus" {
+		writeError(w, http.StatusBadRequest, "merge_algorithm must be additive or consensus")
+		return
+	}
+	if req.MergeAlgorithm == "consensus" && len(req.Loras) < 2 {
+		writeError(w, http.StatusBadRequest, "consensus merge requires at least two LoRAs")
+		return
+	}
+	if req.MergeAlgorithm == "consensus" && (req.Adaptive || req.Krea2Unchain) {
+		writeError(w, http.StatusBadRequest, "consensus merge cannot use adaptive scaling or Krea 2 unchain")
+		return
 	}
 	if req.MergeDevice == "" {
 		req.MergeDevice = "auto"
@@ -622,9 +672,6 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range req.Loras {
 		req.Loras[i].Path = cleanPath(req.Loras[i].Path, s.modelsDir)
-		if req.Loras[i].Strength == 0 {
-			req.Loras[i].Strength = 1
-		}
 	}
 	id := newID()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -637,6 +684,125 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	s.jobs.Add(job)
 	go s.runLoraMergeJob(ctx, job, req)
+	writeJSON(w, map[string]string{"job_id": id})
+}
+
+func (s *Server) handleLoraCompose(w http.ResponseWriter, r *http.Request) {
+	var req LoraComposeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(req.Loras) < 2 {
+		writeError(w, http.StatusBadRequest, "at least two adapters are required")
+		return
+	}
+	if req.OutputAdapter == "" {
+		req.OutputAdapter = "auto"
+	}
+	if req.OutputAdapter != "auto" && req.OutputAdapter != "lora" && req.OutputAdapter != "lokr" {
+		writeError(w, http.StatusBadRequest, "output_adapter must be auto, lora, or lokr")
+		return
+	}
+	if req.FrobeniusEnergy == 0 {
+		req.FrobeniusEnergy = 0.99
+	}
+	if req.FrobeniusEnergy <= 0 || req.FrobeniusEnergy > 1 || req.OutputRank < 0 {
+		writeError(w, http.StatusBadRequest, "frobenius_energy must be (0, 1] and output_rank non-negative")
+		return
+	}
+	if req.MismatchMode == "" {
+		req.MismatchMode = "error"
+	}
+	if req.MismatchMode != "error" && req.MismatchMode != "skip" {
+		writeError(w, http.StatusBadRequest, "mismatch_mode must be error or skip")
+		return
+	}
+	if req.ModelsDir == "" {
+		req.ModelsDir = s.modelsDir
+	}
+	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
+	for i := range req.Loras {
+		req.Loras[i].Path = cleanPath(req.Loras[i].Path, s.modelsDir)
+	}
+	if req.OutputPath == "" && req.OutputName != "" {
+		req.OutputPath = filepath.Join(req.ModelsDir, req.OutputName+".safetensors")
+	}
+	if req.OutputPath == "" && !req.DryRun {
+		writeError(w, http.StatusBadRequest, "output_path or output_name is required")
+		return
+	}
+	if req.OutputPath != "" {
+		req.OutputPath = cleanPath(req.OutputPath, req.ModelsDir)
+	}
+	if req.MergeDevice == "" {
+		req.MergeDevice = "auto"
+	}
+	if req.CUDADevice == "" {
+		req.CUDADevice = "cuda:0"
+	}
+	if req.VRAMHeadroomMB <= 0 {
+		req.VRAMHeadroomMB = 1024
+	}
+	id := newID()
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &Job{ID: id, CreatedAt: time.Now(), Events: make(chan Event, 512), cancel: cancel, Status: "starting lora composition"}
+	s.jobs.Add(job)
+	go s.runLoraComposeJob(ctx, job, req)
+	writeJSON(w, map[string]string{"job_id": id})
+}
+
+func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
+	var req LoraExtractRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.BasePath == "" || req.MergedPath == "" {
+		writeError(w, http.StatusBadRequest, "full base checkpoint and full merged checkpoint are required")
+		return
+	}
+	if req.Architecture != "MiniMax H3" {
+		writeError(w, http.StatusBadRequest, "LoRA Extract currently supports only MiniMax H3")
+		return
+	}
+	if req.OutputMode == "" {
+		req.OutputMode = "pruned"
+	}
+	if req.OutputMode != "full" && req.OutputMode != "pruned" {
+		writeError(w, http.StatusBadRequest, "output_mode must be full or pruned")
+		return
+	}
+	if req.OutputMode == "pruned" && req.PrunedTargetPath == "" {
+		writeError(w, http.StatusBadRequest, "a target pruned MiniMax H3 checkpoint is required for pruned extraction")
+		return
+	}
+	if req.ModelsDir == "" {
+		req.ModelsDir = s.modelsDir
+	}
+	req.BasePath = cleanPath(req.BasePath, s.modelsDir)
+	req.MergedPath = cleanPath(req.MergedPath, s.modelsDir)
+	req.PrunedTargetPath = cleanPath(req.PrunedTargetPath, s.modelsDir)
+	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
+	if req.OutputDir == "" {
+		req.OutputDir = filepath.Dir(req.MergedPath)
+	}
+	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.MergedPath))
+	if req.OutputPath != "" {
+		req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
+	}
+	if req.FrobeniusEnergy == 0 {
+		req.FrobeniusEnergy = 0.99
+	}
+	if req.FrobeniusEnergy <= 0 || req.FrobeniusEnergy > 1 || req.MinRank < 0 || req.MaxRank < 0 {
+		writeError(w, http.StatusBadRequest, "frobenius_energy must be (0, 1] and ranks must be non-negative")
+		return
+	}
+	id := newID()
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &Job{ID: id, CreatedAt: time.Now(), Events: make(chan Event, 512), cancel: cancel, Status: "starting lora extract"}
+	s.jobs.Add(job)
+	go s.runLoraExtractJob(ctx, job, req)
 	writeJSON(w, map[string]string{"job_id": id})
 }
 
@@ -755,6 +921,26 @@ func (s *Server) runModelMergeJob(ctx context.Context, job *Job, req ModelMergeR
 	job.setStatus("model merge finished")
 }
 
+func (s *Server) runLoraComposeJob(ctx context.Context, job *Job, req LoraComposeRequest) {
+	defer close(job.Events)
+	payload, _ := json.Marshal(req)
+	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "lora-compose", "--json", string(payload))
+	cmd.Dir = s.rootDir
+	cmd.Env = s.commandEnv()
+	if err := streamCommand(ctx, cmd, job); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			job.setStatus("lora composition stopped")
+			job.Emit(Event{Type: "done", Status: "lora composition stopped"})
+			return
+		}
+		job.setStatus("lora composition failed")
+		job.Emit(Event{Type: "error", Text: err.Error()})
+		job.Emit(Event{Type: "done", Status: "lora composition failed"})
+		return
+	}
+	job.setStatus("lora composition finished")
+}
+
 func (s *Server) runLoraMergeJob(ctx context.Context, job *Job, req LoraMergeRequest) {
 	defer close(job.Events)
 	payload, _ := json.Marshal(req)
@@ -799,6 +985,26 @@ func updateSteps(ctx context.Context, rootDir string) []updateStep {
 		steps[i].cmd.Dir = rootDir
 	}
 	return steps
+}
+
+func (s *Server) runLoraExtractJob(ctx context.Context, job *Job, req LoraExtractRequest) {
+	defer close(job.Events)
+	payload, _ := json.Marshal(req)
+	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "lora-extract", "--json", string(payload))
+	cmd.Dir = s.rootDir
+	cmd.Env = s.commandEnv()
+	if err := streamCommand(ctx, cmd, job); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			job.setStatus("lora extract stopped")
+			job.Emit(Event{Type: "done", Status: "lora extract stopped"})
+			return
+		}
+		job.setStatus("lora extract failed")
+		job.Emit(Event{Type: "error", Text: err.Error()})
+		job.Emit(Event{Type: "done", Status: "lora extract failed"})
+		return
+	}
+	job.setStatus("lora extract finished")
 }
 
 func (s *Server) runUpdateJob(ctx context.Context, job *Job) {

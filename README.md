@@ -36,7 +36,7 @@ Detailed reference material lives in the [doc/](doc/) folder — linked from eac
 |------|-------------|
 | Safetensors quantization | FP8, NVFP4, **NVFP4 HQ** (H3 per-block mixed profile), MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot** and **W4A8 (asym_w4a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
-| LoRA merge | Architecture-aware merging for WAN 2.2, LTX-2.3, and Krea 2 with per-LoRA strength, global scaling, dry-run, strict matching, adaptive mode, `.diff` format support, and Krea 2 unchain |
+| LoRA merge | Architecture-aware additive or consensus checkpoint baking plus base-free LoRA-to-LoRA composition with standard LoRA or direct LoKr output; MiniMax H3, LTX-2.3, WAN 2.2, and Krea 2 profiles, per-adapter strength, dry-run, and strict matching |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
 | Metadata tools | Preview, read, inject modelspec metadata. In-place header rewrite (avoids GB-scale full rewrites). EC-based `modelspec.watermark` provenance (only-you-can-decode). Stale source hashes (`civitai.hash.*`, `modelspec.hash_sha256`) are dropped from generated outputs — they describe the source checkpoint, not the quant/merge result. **Loader metadata preservation** — per-run checkbox (on by default) that keeps loader-critical `__metadata__` (config, architecture, implementation, runtime quant layout) from the source checkpoint through quantization, LoRA merge, and model merge; the generated layout always wins over stale source layout, and unsupported quantized merge sources fail closed |
 | Diagnostics | 5D tensor scanner, pattern audit, LoRA shape-mismatch detection with ratio analysis |
@@ -156,7 +156,11 @@ The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp
 7. Shape-mismatch diagnostics automatically detect LoRAs trained on different hidden dimensions and warn before merge
 8. The **Display & Output Name** field in the Source panel sets the merged output filename (shared across all merge modes). Start the merge from the sidebar **Start Merge** button
 
-Per-architecture strategy presets (LTX-2.3 All/Video/Audio, WAN 2.2 Balanced/Motion/Visuals, Krea 2 Balanced/Style/Content/Detail), supported LoRA formats, and recipe reload are documented in [doc/lora-merge-strategies.md](doc/lora-merge-strategies.md).
+Per-architecture strategy presets (LTX-2.3 All/Video/Audio, WAN 2.2 Balanced/Motion/Visuals, Krea 2 Balanced/Style/Content/Detail, MiniMax H3 Balanced/Motion/Visuals), supported LoRA formats, consensus presets, and recipe reload are documented in [doc/lora-merge-strategies.md](doc/lora-merge-strategies.md).
+
+### Merge LoRAs into a reusable adapter
+
+Switch to **Merge LoRAs**, add at least two LoRA, direct-LoKr, or `.diff` adapters, choose a consensus preset and output type, then run a dry-run before writing. This mode does not require a base checkpoint. Standard LoRA output uses SVD with an optional rank cap and retained-energy target. Direct LoKr output uses the factor layout of a compatible direct-LoKr input and reports approximation error; Auto emits LoKr for anchored layers and LoRA otherwise.
 
 ---
 

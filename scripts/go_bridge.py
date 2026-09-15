@@ -26,6 +26,8 @@ from core.metadata_manager import (
     update_metadata_preview,
 )
 from core.lora_merge_engine import run_lora_merge
+from core.lora_compose_engine import run_lora_compose
+from core.lora_extract_engine import run_lora_extract
 from core.int4_convrot_engine import run_int4_convrot_conversion
 from core.w4a8_engine import run_w4a8_conversion
 from core.safetensors_engine import run_safe_conversion
@@ -307,6 +309,20 @@ def cmd_lora_merge(args):
         _emit(event)
 
 
+def cmd_lora_compose(args):
+    ensure_dirs()
+    payload = _load_payload(args)
+    for event in run_lora_compose(payload):
+        _emit(event)
+
+
+def cmd_lora_extract(args):
+    ensure_dirs()
+    payload = _load_payload(args)
+    for event in run_lora_extract(payload):
+        _emit(event)
+
+
 def cmd_model_merge(args):
     ensure_dirs()
     payload = _load_payload(args)
@@ -389,6 +405,14 @@ def main():
     p = sub.add_parser("lora-merge")
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_merge)
+
+    p = sub.add_parser("lora-compose", help="Consensus-merge adapters into one reusable LoRA/LoKr file.")
+    p.add_argument("--json")
+    p.set_defaults(func=cmd_lora_compose)
+
+    p = sub.add_parser("lora-extract", help="Extract a MiniMax H3 full or curve-pruned adapter from full base/merged checkpoints.")
+    p.add_argument("--json")
+    p.set_defaults(func=cmd_lora_extract)
 
     p = sub.add_parser("model-merge", help="Model-level merge (not LoRA): e.g. MiniMax H3 fl2va/ref2va hybrid.")
     p.add_argument("--json")

@@ -11,6 +11,7 @@ from safetensors.torch import save_file
 
 from utils.lora_inspector import discover_lora_pairs, discover_diff_patches, read_safetensors_manifest
 from core.metadata_manager import merge_custom_metadata, read_source_metadata, reject_quantized_merge_source
+from core.consensus_merge import ConsensusStats, merge_consensus_rows, resolve_consensus_preset
 
 
 MAX_EFFECTIVE_LORA_STRENGTH = 3.0
@@ -18,6 +19,13 @@ MAX_EFFECTIVE_LORA_STRENGTH = 3.0
 
 def _get_profile(arch: str):
     """Return (is_preserved, classify, strategy_mult) for *arch*."""
+    if arch == "MiniMax H3":
+        from utils.minimax_h3_layer_profiles import (
+            classify_minimax_h3_key as classify,
+            is_minimax_h3_preserved_key as is_preserved,
+            strategy_multiplier as strat_mult,
+        )
+        return is_preserved, classify, strat_mult
     if arch == "Krea 2":
         from utils.krea2_layer_profiles import (
             classify_krea2_key as classify,
@@ -48,7 +56,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     architecture = payload.get("architecture") or "LTX-2.3"
     default_strategy = "All" if architecture == "LTX-2.3" else "Balanced"
     strategy = payload.get("strategy") or default_strategy
-    global_strength = float(payload.get("global_strength", 1.0))
+    global_strength = float(1.0 if payload.get("global_strength") is None else payload["global_strength"])
     # Default to ComfyUI parity: live LoRA application does not renormalize
     # deltas by target/base tensor norms. Adaptive scaling is still available
     # as an explicit creative/experimental option, but it must not silently
@@ -60,12 +68,20 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     cuda_device = payload.get("cuda_device") or "cuda:0"
     vram_headroom_mb = int(payload.get("vram_headroom_mb") or 1024)
     krea2_unchain = bool(payload.get("krea2_unchain", False))
+    merge_algorithm = _normalize_merge_algorithm(payload.get("merge_algorithm"))
+    consensus_settings = resolve_consensus_preset(payload.get("consensus_preset"), architecture)
+    if merge_algorithm == "consensus" and len(loras) < 2:
+        raise ValueError("consensus merge requires at least two LoRAs")
+    if merge_algorithm == "consensus" and adaptive:
+        raise ValueError("adaptive scaling cannot be combined with consensus merge")
+    if merge_algorithm == "consensus" and krea2_unchain:
+        raise ValueError("Krea 2 unchain cannot be combined with consensus merge")
 
     _validate_lora_strengths(loras, global_strength)
 
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
 
-    yield _log(f"LoRA merge init\nBase: {base_path}\nArchitecture: {architecture}\nStrategy: {strategy}\nAdaptive: {'yes' if adaptive else 'no'}\nDry run: {'yes' if dry_run else 'no'}\nMerge device: requested={merge_device} cuda_device={cuda_device} headroom={vram_headroom_mb}MB\n")
+    yield _log(f"LoRA merge init\nBase: {base_path}\nArchitecture: {architecture}\nStrategy: {strategy}\nAlgorithm: {merge_algorithm}\nConsensus preset: {consensus_settings.name}\nAdaptive: {'yes' if adaptive else 'no'}\nDry run: {'yes' if dry_run else 'no'}\nMerge device: requested={merge_device} cuda_device={cuda_device} headroom={vram_headroom_mb}MB\n")
     reject_quantized_merge_source(base_path)
     base_metadata = read_source_metadata(base_path)
     base_manifest = read_safetensors_manifest(base_path)
@@ -315,7 +331,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     del base
                     continue
                 tensor, used_device, fallback_reason = _merge_target_with_policy(
-                    base, ops, lora_handles, adaptive, merge_device, cuda_device, vram_headroom_mb
+                    base, ops, lora_handles, adaptive, merge_device, cuda_device, vram_headroom_mb,
+                    merge_algorithm, consensus_settings,
                 )
                 merge_summary["applied_ops"] += len(ops)
                 if _tensor_was_altered(base, tensor):
@@ -467,6 +484,13 @@ def _write_tensor_bytes(out_f: Any, tensor: torch.Tensor) -> None:
 
 def _tensor_was_altered(before: torch.Tensor, after: torch.Tensor) -> bool:
     return not torch.equal(before.detach().cpu(), after.detach().cpu())
+
+
+def _normalize_merge_algorithm(value: str | None) -> str:
+    algorithm = (value or "additive").strip().lower()
+    if algorithm not in {"additive", "consensus"}:
+        raise ValueError(f"merge_algorithm must be additive or consensus; got {value!r}")
+    return algorithm
 
 
 def _normalize_merge_device(value: str | None) -> str:
@@ -624,29 +648,62 @@ def _merge_target_cuda(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handl
         return result
 
 
-def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handles: Dict[str, Any], adaptive: bool, policy: str, device: str, headroom_mb: int) -> Tuple[torch.Tensor, str, str | None]:
+def _materialize_effective_delta(op: Dict[str, Any], lora_handles: Dict[str, Any], target_shape: Tuple[int, ...], device: str) -> torch.Tensor:
+    if op.get("is_diff"):
+        lf = lora_handles[op["lora_path"]]
+        return lf.get_tensor(op["diff_key"]).to(device=device, dtype=torch.float32) * op["scale"]
+    lf = lora_handles[op["lora_path"]]
+    down = lf.get_tensor(op["down_key"]).to(device=device, dtype=torch.float32)
+    up = lf.get_tensor(op["up_key"]).to(device=device, dtype=torch.float32)
+    kind = op.get("kind", "lora")
+    delta = _compute_delta(down, up, target_shape, kind)
+    return delta * op["scale"] * _alpha_scale(lf, op["alpha_key"], op["rank"], kind)
+
+
+def _merge_target_consensus(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handles: Dict[str, Any], settings: Any, device: str) -> torch.Tensor:
+    original_dtype = base.dtype
+    shape = tuple(base.shape)
+    deltas = [_materialize_effective_delta(op, lora_handles, shape, device) for op in ops]
+    if len(deltas) == 1:
+        merged_delta = deltas[0]
+    else:
+        stacked = torch.stack([delta.reshape(shape[0], -1) for delta in deltas])
+        merged_delta = merge_consensus_rows(stacked, settings).reshape(shape)
+    return (base.to(device=device, dtype=torch.float32) + merged_delta).to(device="cpu", dtype=original_dtype)
+
+
+def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handles: Dict[str, Any], adaptive: bool, policy: str, device: str, headroom_mb: int, algorithm: str = "additive", consensus_settings: Any = None) -> Tuple[torch.Tensor, str, str | None]:
+    def merge_on(target_device: str) -> torch.Tensor:
+        if algorithm == "consensus":
+            return _merge_target_consensus(base, ops, lora_handles, consensus_settings, target_device)
+        if target_device == "cpu":
+            return _merge_target_cpu(base, ops, lora_handles, adaptive)
+        return _merge_target_cuda(base, ops, lora_handles, adaptive, target_device)
+
     if policy == "cpu":
-        return _merge_target_cpu(base, ops, lora_handles, adaptive), "cpu", None
+        return merge_on("cpu"), "cpu", None
     if not _cuda_available(device):
-        return _merge_target_cpu(base, ops, lora_handles, adaptive), "cpu", "cuda_unavailable"
+        return merge_on("cpu"), "cpu", "cuda_unavailable"
 
     estimated = 0
     for op in ops:
         if op.get("is_diff"):
-            # Diff patches are tiny direct deltas — negligible VRAM
+            diff_bytes = base.numel() * 4
+            estimated = estimated + diff_bytes if algorithm == "consensus" else max(estimated, diff_bytes)
             continue
         lf = lora_handles[op["lora_path"]]
         down_shape = tuple(lf.get_slice(op["down_key"]).get_shape())
         up_shape = tuple(lf.get_slice(op["up_key"]).get_shape())
-        estimated = max(estimated, _estimate_lora_merge_peak_bytes(tuple(base.shape), down_shape, up_shape))
+        estimate = _estimate_lora_merge_peak_bytes(tuple(base.shape), down_shape, up_shape)
+        estimated = estimated + estimate if algorithm == "consensus" else max(estimated, estimate)
     if not _has_cuda_headroom(device, estimated, headroom_mb):
-        return _merge_target_cpu(base, ops, lora_handles, adaptive), "cpu", "insufficient_vram"
+        return merge_on("cpu"), "cpu", "insufficient_vram"
 
     try:
-        return _merge_target_cuda(base, ops, lora_handles, adaptive, device), "cuda", None
+        return merge_on(device), "cuda", None
     except torch.cuda.OutOfMemoryError:
         torch.cuda.empty_cache()
-        return _merge_target_cpu(base, ops, lora_handles, adaptive), "cpu", "cuda_oom"
+        return merge_on("cpu"), "cpu", "cuda_oom"
 
 
 def _alpha_scale(lf: safe_open, alpha_key: str | None, rank: int, kind: str = "lora") -> float:
@@ -708,6 +765,8 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         f"Base checkpoint:   {base_path}",
         f"Architecture:      {architecture}",
         f"Default strategy:  {strategy}",
+        f"Merge algorithm:   {_normalize_merge_algorithm(payload.get('merge_algorithm'))}",
+        f"Consensus preset:  {resolve_consensus_preset(payload.get('consensus_preset'), architecture).name}",
         f"Global strength:   {global_strength}",
         f"Adaptive scaling:  {'yes' if adaptive else 'no'}",
         f"Dry run first:     {'yes' if dry_run else 'no'}",
