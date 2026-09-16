@@ -12,108 +12,148 @@ echo "📂 Project Root: $PROJECT_DIR"
 echo "🧭 Launch Mode: $MODE"
 
 # --- 1.5 MULTI-DISTRO DEPENDENCIES ---
-if [ -f /etc/os-release ]; then
+# Prebuilt Python wheels mean Quant Station no longer needs to compile
+# comfy-kitchen locally. Only install missing launcher/build commands; the
+# in-app update path must not repeatedly invoke the system package manager.
+MISSING_COMMANDS=()
+for cmd in curl unzip go; do
+    command -v "$cmd" &> /dev/null || MISSING_COMMANDS+=("$cmd")
+done
+
+if [ "${#MISSING_COMMANDS[@]}" -gt 0 ] && [ -f /etc/os-release ]; then
     . /etc/os-release
     echo "🔍 Detected System: $NAME"
-
-    # 1. Install System Build Tools
+    echo "📦 Missing required commands: ${MISSING_COMMANDS[*]}"
     case "$ID" in
         arch|manjaro)
-            echo "📦 Installing for Arch-based system..."
-            sudo pacman -S --needed --noconfirm base-devel cmake cuda curl unzip go
+            sudo pacman -S --needed --noconfirm curl unzip go
             ;;
         ubuntu|debian|mint)
-            echo "📦 Installing for Debian-based system..."
             sudo apt update
-            sudo apt install -y build-essential cmake nvidia-cuda-toolkit curl unzip golang-go
+            sudo apt install -y curl unzip golang-go
             ;;
         *)
-            echo "⚠️ Unrecognized distribution ($ID). Ensure build-essential, cmake, and cuda are manualy installed."
+            echo "❌ Unsupported distribution ($ID). Install curl, unzip, and Go, then retry."
+            exit 1
             ;;
     esac
-
-    # 2. Install 'uv' (Python Package Manager)
-    if ! command -v uv &> /dev/null; then
-        echo "⚙️ uv not found. Installing via official script..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        # Source the cargo env to make uv immediately available in this session
-        source $HOME/.cargo/env
-    else
-        echo "✅ uv is already installed."
-    fi
+elif [ "${#MISSING_COMMANDS[@]}" -gt 0 ]; then
+    echo "❌ Missing required commands: ${MISSING_COMMANDS[*]}"
+    exit 1
 else
-    echo "❌ Could not detect OS via /etc/os-release. Skipping system package install."
+    echo "✅ System prerequisites are already installed."
+fi
+
+if ! command -v uv &> /dev/null; then
+    echo "⚙️ uv not found. Installing via official script..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+else
+    echo "✅ uv is already installed."
+fi
+
+# The official standalone install can update itself. Distribution-packaged uv
+# builds reject this operation; keep those under the OS package manager instead.
+echo "📦 Checking uv for updates..."
+if ! uv self update; then
+    echo "⚠️ uv self-update unavailable; keeping the package-manager version."
 fi
 
 # --- 2. GGUF ENGINE SETUP ---
 
-# --- 2.5 DOWNLOAD GGUFY BINARY ---
+# --- 2.5 UPDATE GGUFY BINARY ---
 GGUFY_BIN="$PROJECT_DIR/bin/ggufy"
+GGUFY_VERSION_FILE="$PROJECT_DIR/bin/ggufy.version"
+GGUFY_STAGE="$PROJECT_DIR/bin/.ggufy-update"
 
-# Safety check: remove invalid binary if it's far too small or not a valid ELF
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64) GGUFY_ASSET="ggufy-linux-x86_64" ;;
+    aarch64) GGUFY_ASSET="ggufy-linux-arm64" ;;
+    *)
+        echo "❌ GGUFY has no configured Linux asset for architecture: $ARCH"
+        exit 1
+        ;;
+esac
+
+GGUFY_RELEASE_URL=$(curl -LsS --fail -o /dev/null -w '%{url_effective}' \
+    "https://github.com/qskousen/ggufy/releases/latest")
+GGUFY_LATEST_VERSION="${GGUFY_RELEASE_URL##*/}"
+GGUFY_INSTALLED_VERSION=""
+[ -f "$GGUFY_VERSION_FILE" ] && GGUFY_INSTALLED_VERSION=$(<"$GGUFY_VERSION_FILE")
+
+GGUFY_VALID=false
 if [ -f "$GGUFY_BIN" ]; then
     FILE_SIZE=$(stat -c%s "$GGUFY_BIN" 2>/dev/null || echo 0)
-    if [ "$FILE_SIZE" -lt 500000 ] || ! head -c 4 "$GGUFY_BIN" | grep -q $'\x7fELF' 2>/dev/null; then
-        echo "⚠️  Detected corrupted, tiny, or non-ELF GGUFY binary ($FILE_SIZE bytes). Removing for re-download..."
-        rm -f "$GGUFY_BIN"
+    if [ "$FILE_SIZE" -ge 500000 ] && head -c 4 "$GGUFY_BIN" | grep -q $'\x7fELF' 2>/dev/null; then
+        GGUFY_VALID=true
     fi
 fi
 
-if [ ! -f "$GGUFY_BIN" ]; then
-    echo "📥 GGUFY binary not found. Downloading latest release..."
-    mkdir -p "$PROJECT_DIR/bin"
-    
-    # Detect architecture and select correct asset
-    ARCH=$(uname -m)
-    GGUFY_ASSET="ggufy-linux-x86_64"
-    [ "$ARCH" = "aarch64" ] && GGUFY_ASSET="ggufy-linux-arm64"
+if [ "$GGUFY_VALID" != true ] || [ "$GGUFY_INSTALLED_VERSION" != "$GGUFY_LATEST_VERSION" ]; then
+    echo "📥 Updating GGUFY ${GGUFY_INSTALLED_VERSION:-unknown} → $GGUFY_LATEST_VERSION..."
+    rm -rf "$GGUFY_STAGE"
+    mkdir -p "$GGUFY_STAGE"
+    GGUFY_ARCHIVE="$GGUFY_STAGE/${GGUFY_ASSET}.zip"
 
-    echo "📥 Downloading GGUFY archive..."
-    if curl -L --fail --retry 3 --retry-delay 2 -o "$PROJECT_DIR/bin/ggufy.zip" "https://github.com/qskousen/ggufy/releases/latest/download/${GGUFY_ASSET}.zip"; then
-        echo "📦 Extracting binary (handles nested folders)..."
-        unzip -q -o "$PROJECT_DIR/bin/ggufy.zip" -d "$PROJECT_DIR/bin/extracted"
-        find "$PROJECT_DIR/bin/extracted" -type f \( -name "ggufy" -o -name "$GGUFY_ASSET" \) -exec mv {} "$GGUFY_BIN" \;
-        
-        if [ -f "$GGUFY_BIN" ]; then
-            chmod +x "$GGUFY_BIN"
-            rm -rf "$PROJECT_DIR/bin/ggufy.zip" "$PROJECT_DIR/bin/extracted"
-            echo "✅ GGUFY installed successfully."
-        else
-            echo "❌ Extraction failed: binary not found in zip."
-            exit 1
-        fi
-    else
-        echo "❌ Failed to download GGUFY binary. Check your connection or GitHub access."
+    curl -L --fail --retry 3 --retry-delay 2 -o "$GGUFY_ARCHIVE" \
+        "https://github.com/qskousen/ggufy/releases/download/${GGUFY_LATEST_VERSION}/${GGUFY_ASSET}.zip"
+    unzip -q -o "$GGUFY_ARCHIVE" -d "$GGUFY_STAGE/extracted"
+    GGUFY_CANDIDATE=$(find "$GGUFY_STAGE/extracted" -type f \
+        \( -name "ggufy" -o -name "$GGUFY_ASSET" \) -print -quit)
+
+    if [ -z "$GGUFY_CANDIDATE" ]; then
+        echo "❌ GGUFY extraction failed: binary not found in archive."
+        rm -rf "$GGUFY_STAGE"
         exit 1
     fi
+
+    FILE_SIZE=$(stat -c%s "$GGUFY_CANDIDATE" 2>/dev/null || echo 0)
+    if [ "$FILE_SIZE" -lt 500000 ] || ! head -c 4 "$GGUFY_CANDIDATE" | grep -q $'\x7fELF' 2>/dev/null; then
+        echo "❌ Downloaded GGUFY binary failed validation."
+        rm -rf "$GGUFY_STAGE"
+        exit 1
+    fi
+
+    chmod +x "$GGUFY_CANDIDATE"
+    mkdir -p "$PROJECT_DIR/bin"
+    mv -f "$GGUFY_CANDIDATE" "$GGUFY_BIN"
+    printf '%s\n' "$GGUFY_LATEST_VERSION" > "$GGUFY_VERSION_FILE"
+    rm -rf "$GGUFY_STAGE"
+    echo "✅ GGUFY $GGUFY_LATEST_VERSION installed."
+else
+    echo "✅ GGUFY $GGUFY_INSTALLED_VERSION is current."
 fi
 
 # --- 3. LOCAL VENV SETUP ---
-if [ ! -d "$VENV_PATH" ]; then
-    echo "⚙️ Creating local virtual environment..."
-    uv venv "$VENV_PATH"
+if [ ! -x "$VENV_PATH/bin/python" ]; then
+    echo "⚙️ Creating local Python 3.12 environment..."
+    uv venv --python 3.12 "$VENV_PATH"
 fi
 
-echo "📦 Syncing Python dependencies..."
-uv pip install --refresh -r requirements.txt
+# Resolve the complete environment once. uv.lock records the compatible set;
+# --upgrade refreshes every direct and transitive package before syncing it.
+# Keeping comfy-kitchen on its published wheel avoids a local CUDA/CMake build,
+# and omitting its cublas extra lets Torch own the compatible cuBLAS version.
+export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-120}"
+export UV_RETRY_COUNT="${UV_RETRY_COUNT:-5}"
+export UV_MAX_CONCURRENT_DOWNLOADS="${UV_MAX_CONCURRENT_DOWNLOADS:-2}"
 
-echo "💎 Installing FP Quantization Tools..."
-uv pip install --refresh git+https://github.com/silveroxides/convert_to_quant.git@main#egg=convert_to_quant --no-deps --force-reinstall
-
-echo "🍳 Installing Comfy Kitchen [CUBLAS + INT4 ConvRot + W4A8]..."
-# Track the default branch HEAD (user chose latest-over-pinned so the install
-# always carries the newest layouts, incl. AsymW4A8Int8Layout from PR #90).
-# Both layout exports must import after the install — without the guard a
-# broken upstream commit would silently degrade quant features instead of
-# failing setup loudly.
-uv pip install --python "$VENV_PATH/bin/python" --refresh --upgrade \
-    "comfy-kitchen[cublas] @ git+https://github.com/Comfy-Org/comfy-kitchen.git"
+echo "📦 Upgrading and syncing the Python environment..."
+uv sync --upgrade --no-dev --python "$VENV_PATH/bin/python"
+uv pip check --python "$VENV_PATH/bin/python"
 
 "$VENV_PATH/bin/python" - <<'PY'
-from comfy_kitchen.tensor import TensorCoreConvRotW4A4Layout
-print("✅ Comfy Kitchen INT4 ConvRot layout available:", TensorCoreConvRotW4A4Layout.__name__)
-from comfy_kitchen.tensor import AsymW4A8Int8Layout
-print("✅ Comfy Kitchen W4A8 (asym_w4a8_int8) layout available:", AsymW4A8Int8Layout.__name__)
+from importlib.metadata import version
+
+import torch
+from comfy_kitchen.tensor import AsymW4A8Int8Layout, TensorCoreConvRotW4A4Layout
+import convert_to_quant
+
+print(f"✅ Torch {torch.__version__} (CUDA {torch.version.cuda or 'not available'})")
+print(f"✅ convert-to-quant {version('convert-to-quant')}")
+print(f"✅ comfy-kitchen {version('comfy-kitchen')}")
+print("✅ INT4/W4A8 layouts:", TensorCoreConvRotW4A4Layout.__name__, AsymW4A8Int8Layout.__name__)
 PY
 
 # --- 4. LAUNCH ---

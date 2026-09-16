@@ -1,8 +1,9 @@
-"""Extract MiniMax H3 LoRAs from a full base/merged checkpoint pair.
+"""Extract standard LoRAs from a base/modified checkpoint pair.
 
-For a full H3 adapter targeting a Comfy-Org curve-pruned H3 checkpoint, ordinary
-matrix deltas are SVD-factorized as LoRA pairs. AdaLN deltas are rebased onto the
-exact coordinate gauge stored by the selected pruned target:
+The generic recipe needs exactly two shape-compatible checkpoints and SVD-factorizes
+changed 2-D tensors into standard LoRA pairs. MiniMax H3 additionally supports a
+curve-pruned recipe. For that recipe, AdaLN deltas are rebased onto the exact
+coordinate gauge stored by the selected pruned target:
 
     full(t) = delta_W @ (c + V @ q(t)) + delta_b
             = (delta_W @ V) @ q(t) + (delta_b + delta_W @ c)
@@ -122,13 +123,26 @@ def _svd_factors(delta: torch.Tensor, energy: float, min_rank: int, max_rank: in
     return down, up, rank, actual
 
 
+def _adapter_module(key: str) -> str:
+    """Return a portable adapter module name accepted by the merge loader."""
+    module = key[:-len(".weight")] if key.endswith(".weight") else key
+    if module.startswith("model.diffusion_model."):
+        return module[len("model."):]
+    if module.startswith("diffusion_model."):
+        return module
+    return "diffusion_model." + module
+
+
 def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, summary: Dict[str, Any]) -> str:
     recipe_path = output_path + ".txt"
+    recipe = payload.get("recipe") or ("h3_pruned" if payload.get("output_mode", "pruned") == "pruned" else "h3_full")
     lines = [
         "DaSiWa Quant Station LoRA Extract Recipe",
         "",
-        f"Full base: {payload['base_path']}",
-        f"Full merged: {payload['merged_path']}",
+        f"Recipe: {recipe}",
+        f"Architecture: {payload.get('architecture', 'Not set')}",
+        f"Base checkpoint: {payload['base_path']}",
+        f"Modified checkpoint: {payload['merged_path']}",
         f"Pruned target: {payload.get('pruned_target_path') or 'none'}",
         f"Output mode: {payload.get('output_mode', 'pruned')}",
         f"Frobenius energy: {float(payload.get('frobenius_energy', 0.99)):.6f}",
@@ -146,15 +160,25 @@ def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, su
 
 
 def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
-    """Extract an H3 full or curve-pruned adapter from a full base/merged pair."""
-    if payload.get("architecture") != "MiniMax H3":
-        raise ValueError("LoRA Extract currently supports only MiniMax H3")
-    base_path = _require_file(payload["base_path"], "Full base checkpoint")
-    merged_path = _require_file(payload["merged_path"], "Full merged checkpoint")
-    output_mode = payload.get("output_mode") or "pruned"
-    if output_mode not in {"full", "pruned"}:
-        raise ValueError("output_mode must be 'full' or 'pruned'")
-    output_path = _resolve(payload.get("output_path") or os.path.join(payload.get("output_dir") or os.path.dirname(merged_path), payload.get("output_name") or "minimax_h3_extracted_lora.safetensors"))
+    """Extract a standard or H3 curve-pruned adapter from two checkpoints."""
+    architecture = payload.get("architecture") or "Not set"
+    recipe = payload.get("recipe")
+    if not recipe:
+        legacy_mode = payload.get("output_mode") or "pruned"
+        recipe = "h3_pruned" if legacy_mode == "pruned" else "h3_full"
+    if recipe not in {"generic", "h3_full", "h3_pruned"}:
+        raise ValueError("recipe must be 'generic', 'h3_full', or 'h3_pruned'")
+    if recipe.startswith("h3_") and architecture != "MiniMax H3":
+        raise ValueError("MiniMax H3 extraction recipes require the MiniMax H3 architecture")
+
+    base_path = _require_file(payload["base_path"], "Base checkpoint")
+    merged_path = _require_file(payload["merged_path"], "Modified checkpoint")
+    output_mode = "pruned" if recipe == "h3_pruned" else "full"
+    payload = dict(payload)
+    payload["recipe"] = recipe
+    payload["output_mode"] = output_mode
+    default_name = "minimax_h3_extracted_lora.safetensors" if recipe.startswith("h3_") else "checkpoint_delta_lora.safetensors"
+    output_path = _resolve(payload.get("output_path") or os.path.join(payload.get("output_dir") or os.path.dirname(merged_path), payload.get("output_name") or default_name))
     if not output_path.endswith(".safetensors"):
         output_path += ".safetensors"
     if os.path.exists(output_path):
@@ -168,13 +192,13 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if min_rank < 1 or max_rank < 0:
         raise ValueError("min_rank must be >= 1 and max_rank must be >= 0")
 
-    ok, message = verify_architecture_match(base_path, "MiniMax H3")
+    ok, message = verify_architecture_match(base_path, architecture)
     if not ok:
         raise ValueError(message)
-    ok, message = verify_architecture_match(merged_path, "MiniMax H3")
+    ok, message = verify_architecture_match(merged_path, architecture)
     if not ok:
         raise ValueError(message)
-    yield _event("log", f"LoRA Extract: MiniMax H3 ({output_mode})\nFull base: {base_path}\nFull merged: {merged_path}\nFrobenius energy: {energy:.4f}\n")
+    yield _event("log", f"LoRA Extract: {architecture} ({recipe})\nBase: {base_path}\nModified: {merged_path}\nFrobenius energy: {energy:.4f}\n")
 
     base_manifest = read_safetensors_manifest(base_path)
     merged_manifest = read_safetensors_manifest(merged_path)
@@ -185,10 +209,12 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     shape_mismatches = [key for key in base_manifest if base_manifest[key].shape != merged_manifest[key].shape]
     if shape_mismatches:
         raise ValueError(f"Full base and merged checkpoints have shape mismatches: {shape_mismatches[:3]}")
-    base_prefix = _h3_prefix(base_manifest, require_full=True)
-    merged_prefix = _h3_prefix(merged_manifest, require_full=True)
-    if base_prefix != merged_prefix:
-        raise ValueError(f"Full base and merged prefixes differ: {base_prefix!r} vs {merged_prefix!r}")
+    base_prefix = ""
+    if recipe == "h3_pruned":
+        base_prefix = _h3_prefix(base_manifest, require_full=True)
+        merged_prefix = _h3_prefix(merged_manifest, require_full=True)
+        if base_prefix != merged_prefix:
+            raise ValueError(f"Full base and merged prefixes differ: {base_prefix!r} vs {merged_prefix!r}")
 
     pruned_path = ""
     table_hash = ""
@@ -217,14 +243,18 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 continue
             base = base_handle.get_tensor(key)
             merged = merged_handle.get_tensor(key)
-            if base.dtype not in (torch.float16, torch.bfloat16, torch.float32) or base.ndim != 2:
+            if (
+                base.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+                or base.ndim != 2
+                or (recipe == "generic" and not key.endswith(".weight"))
+            ):
                 summary["unsupported"] += 1
                 continue
             delta = (merged.to(dtype=torch.float32) - base.to(dtype=torch.float32))
             if not torch.any(delta):
                 summary["unchanged"] += 1
                 continue
-            module = key[:-len(".weight")] if key.endswith(".weight") else key
+            module = _adapter_module(key)
             if output_mode == "pruned" and key.endswith(_ADALN_WEIGHT_SUFFIX):
                 bias_key = key[:-len("weight")] + "bias"
                 if bias_key not in base_manifest:
@@ -232,17 +262,19 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 delta_b = merged_handle.get_tensor(bias_key).to(dtype=torch.float64) - base_handle.get_tensor(bias_key).to(dtype=torch.float64)
                 rebased_w = (delta.to(dtype=torch.float64) @ basis).to(dtype=torch.float32).contiguous()
                 rebased_b = (delta_b + delta.to(dtype=torch.float64) @ center).to(dtype=torch.float32).contiguous()
-                output[f"diffusion_model.{module}.diff"] = rebased_w
-                output[f"diffusion_model.{module}.diff_b"] = rebased_b
+                if not dry_run:
+                    output[f"{module}.diff"] = rebased_w
+                    output[f"{module}.diff_b"] = rebased_b
                 summary["adaln"] += 1
             else:
                 down, up, rank, actual = _svd_factors(delta, energy, min_rank, max_rank)
                 if rank == 0:
                     summary["unchanged"] += 1
                     continue
-                output[f"diffusion_model.{module}.lora_A.weight"] = down
-                output[f"diffusion_model.{module}.lora_B.weight"] = up
-                output[f"diffusion_model.{module}.alpha"] = torch.tensor(float(rank), dtype=torch.float32)
+                if not dry_run:
+                    output[f"{module}.lora_A.weight"] = down
+                    output[f"{module}.lora_B.weight"] = up
+                    output[f"{module}.alpha"] = torch.tensor(float(rank), dtype=torch.float32)
                 summary["pairs"] += 1
                 ranks.append(rank)
             if index % 10 == 0 or index == total:
@@ -258,8 +290,9 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     metadata = {
-        "format": "dasiwa_minimax_h3_extracted_lora",
-        "architecture": "MiniMax H3",
+        "format": "dasiwa_checkpoint_delta_lora" if recipe == "generic" else "dasiwa_minimax_h3_extracted_lora",
+        "architecture": architecture,
+        "recipe": recipe,
         "output_mode": output_mode,
         "source_base": os.path.basename(base_path),
         "source_merged": os.path.basename(merged_path),

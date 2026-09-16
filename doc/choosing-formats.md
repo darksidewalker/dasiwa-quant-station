@@ -24,8 +24,9 @@ Ten format families are available. The safetensors formats run through
   ConvRot row-wise INT8 only works correctly when the runtime implements the
   matching activation rotation.
 - INT4 ConvRot and W4A8 require Simple strategy, BF16/FP16 source, and
-  comfy-kitchen[cublas] (W4A8 needs the AsymW4A8Int8Layout build, installed via
-  the unpinned default-branch `comfy-kitchen`).
+  `comfy-kitchen`. Quant Station installs its published CUDA wheel through the
+  shared `uv` lock; a local CUDA/CMake build and the separate `cublas` extra are
+  not required.
 - MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada
   compatibility.
 - W4A8 and NVFP4 HQ are MiniMax H3 only. NVFP4 HQ is a quality variant of

@@ -1,0 +1,35 @@
+[project]
+name = "dasiwa-quant-station"
+version = "0.0.0"
+description = "Python runtime dependencies for DaSiWa Quant Station"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "comfy-kitchen",
+    "convert-to-quant",
+    "cryptography",
+    "gguf",
+    # comfy-kitchen 0.2.34 imports packaging at runtime but does not declare it.
+    "packaging",
+    "psutil",
+    "safetensors",
+    "scipy",
+    "torch",
+    "tqdm",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

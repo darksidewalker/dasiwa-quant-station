@@ -59,7 +59,7 @@ Then open:
 http://127.0.0.1:7878
 ```
 
-The startup script handles everything: it installs/refreshes build tools, Python dependencies (`uv` + `.venv/`), `convert_to_quant`, `comfy-kitchen[cublas]` (required for INT4 ConvRot and W4A8), and the `bin/ggufy` binary, then builds and starts the Go UI.
+The startup script handles setup and upgrades through one `uv` resolution: `pyproject.toml` declares the environment, a local `uv.lock` records the resolved compatible package set, and `uv sync --upgrade` updates direct and transitive dependencies together. The local lock is intentionally ignored by Git so dependency refreshes from the Update button do not dirty the source checkout or block the next `git pull`. The same update run self-updates standalone `uv` installations and refreshes `ggufy` when GitHub publishes a newer release. Published `comfy-kitchen` CUDA wheels provide INT4 ConvRot and W4A8, so normal setup no longer compiles it locally or installs a separate cuBLAS version. Torch supplies the compatible CUDA 13.0 runtime libraries. The script then builds and starts the Go UI.
 
 ### Launch Modes
 
@@ -157,6 +157,10 @@ The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp
 8. The **Display & Output Name** field in the Source panel sets the merged output filename (shared across all merge modes). Start the merge from the sidebar **Start Merge** button
 
 Per-architecture strategy presets (LTX-2.3 All/Video/Audio, WAN 2.2 Balanced/Motion/Visuals, Krea 2 Balanced/Style/Content/Detail, MiniMax H3 Balanced/Motion/Visuals), supported LoRA formats, consensus presets, and recipe reload are documented in [doc/lora-merge-strategies.md](doc/lora-merge-strategies.md).
+
+### Extract a LoRA from two checkpoints
+
+Switch to **LoRA Extract**, select the original checkpoint as Source and the compatible fine-tuned or modified checkpoint as the second checkpoint. The default **Any architecture — checkpoint difference** recipe subtracts matching 2-D weights and SVD-factorizes each nonzero delta into a standard LoRA. The selected architecture is verified against both headers. Both checkpoints must have identical tensor keys and shapes; biases and other non-matrix tensors cannot be represented by standard LoRA and are reported as unsupported. Frobenius energy controls retained signal, while Min/Max Rank bound each matrix factorization. MiniMax H3 retains its additional full and curve-pruned recipes; the pruned recipe requires a third target checkpoint for its AdaLN coordinate gauge.
 
 ### Merge LoRAs into a reusable adapter
 

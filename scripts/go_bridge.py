@@ -410,7 +410,7 @@ def main():
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_compose)
 
-    p = sub.add_parser("lora-extract", help="Extract a MiniMax H3 full or curve-pruned adapter from full base/merged checkpoints.")
+    p = sub.add_parser("lora-extract", help="Extract a standard LoRA from two checkpoints, with specialized MiniMax H3 recipes.")
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_extract)
 

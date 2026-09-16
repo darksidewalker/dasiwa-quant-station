@@ -36,6 +36,20 @@ func TestUpdateStepsPullsLatestSourceBeforeSetupAndBuild(t *testing.T) {
 	}
 }
 
+func TestHandleLoraExtractAcceptsGenericTwoCheckpointRecipe(t *testing.T) {
+	s := &Server{modelsDir: t.TempDir(), rootDir: t.TempDir(), python: "false", jobs: NewJobStore()}
+	req := httptest.NewRequest(http.MethodPost, "/api/lora/extract", bytes.NewBufferString(
+		`{"base_path":"base.safetensors","merged_path":"modified.safetensors","architecture":"WAN 2.2","recipe":"generic","frobenius_energy":0.99}`,
+	))
+	res := httptest.NewRecorder()
+
+	s.handleLoraExtract(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestHandleLoraComposeValidation(t *testing.T) {
 	s := &Server{modelsDir: t.TempDir(), jobs: NewJobStore()}
 	cases := []struct {

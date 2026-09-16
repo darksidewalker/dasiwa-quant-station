@@ -67,6 +67,10 @@ function saveSettings() {
     mmRank: $("mm-rank").value,
     mmStrength: $("mm-strength").value,
     mmDryRun: $("mm-dry-run").checked,
+    extractRecipe: $("extract-mode").value,
+    extractEnergy: $("extract-energy").value,
+    extractMinRank: $("extract-min-rank").value,
+    extractMaxRank: $("extract-max-rank").value,
     lastFileDir: state.lastFileDir,
     lastLoraDir: state.lastLoraDir,
     lastOverlayDir: state.lastOverlayDir,
@@ -143,6 +147,11 @@ function loadSettings() {
       if (s.mmStrength != null) $("mm-strength").value = s.mmStrength;
       updateDeltaOptionsVisibility();
       $("mm-dry-run").checked = s.mmDryRun ?? (s.loraDryRun ?? true);
+      if (["generic", "h3_full", "h3_pruned"].includes(s.extractRecipe)) $("extract-mode").value = s.extractRecipe;
+      if (s.extractEnergy != null) $("extract-energy").value = s.extractEnergy;
+      if (s.extractMinRank != null) $("extract-min-rank").value = s.extractMinRank;
+      if (s.extractMaxRank != null) $("extract-max-rank").value = s.extractMaxRank;
+      updateExtractRecipeVisibility();
       if (Array.isArray(s.loras)) {
         state.loras = s.loras.map((l) => ({
           path: l.path || "",
@@ -568,6 +577,11 @@ function updateModelMergeVisibility() {
   refreshModelMergeHint();
 }
 
+function updateExtractRecipeVisibility() {
+  const pruned = $("extract-mode").value === "h3_pruned";
+  $("extract-pick-pruned").style.display = pruned ? "" : "none";
+}
+
 async function startModelMerge() {
   const base = state.sourcePath;
   const overlay = state.mmOverlayPath;
@@ -794,6 +808,11 @@ function wireEvents() {
   $("mm-rank").addEventListener("change", saveSettings);
   $("mm-strength").addEventListener("change", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
+  $("extract-mode").addEventListener("change", () => {
+    updateExtractRecipeVisibility();
+    saveSettings();
+  });
+  ["extract-energy", "extract-min-rank", "extract-max-rank"].forEach((id) => $(id).addEventListener("change", saveSettings));
   $("extract-pick-merged").addEventListener("click", () => openBrowser("extract-merged"));
   $("extract-pick-pruned").addEventListener("click", () => openBrowser("extract-pruned"));
   wireDropTarget($("extract-pick-merged"), "extract-merged");
@@ -845,6 +864,7 @@ function setWorkflowMode(mode) {
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
   $("extract-side-panel").classList.toggle("hidden", mode !== "extract");
+  updateExtractRecipeVisibility();
   updateDeltaOptionsVisibility();
   // Show the dry-run checkbox (under Strategy) for LoRA merge + Model Merge modes only
   // (the two merge workflows that support a plan-only, no-write run).
@@ -1329,16 +1349,16 @@ async function startLoraCompose() {
 }
 
 async function startLoraExtract() {
-  if (state.architecture !== "MiniMax H3") return log("LoRA Extract currently supports MiniMax H3 only.\n");
-  if (!state.sourcePath || !state.extractMergedPath) return log("Select the full base and full merged checkpoints.\n");
-  const outputMode = $("extract-mode").value;
-  if (outputMode === "pruned" && !state.extractPrunedPath) return log("Select the target pruned checkpoint for a pruned adapter.\n");
+  const recipe = $("extract-mode").value;
+  if (recipe !== "generic" && state.architecture !== "MiniMax H3") return log("MiniMax H3 extraction recipes require the MiniMax H3 architecture.\n");
+  if (!state.sourcePath || !state.extractMergedPath) return log("Select the base and modified checkpoints.\n");
+  if (recipe === "h3_pruned" && !state.extractPrunedPath) return log("Select the target pruned checkpoint for the MiniMax H3 pruned recipe.\n");
   if (!$("model-name").value && !$("mm-dry-run").checked) return log("Enter a Display & Output Name.\n");
   $("start").disabled = true; $("stop").disabled = false;
   try {
     const data = await api("/api/lora/extract", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
       base_path: state.sourcePath, merged_path: state.extractMergedPath, pruned_target_path: state.extractPrunedPath,
-      models_dir: state.modelsDir, output_name: $("model-name").value, architecture: "MiniMax H3", output_mode: outputMode,
+      models_dir: state.modelsDir, output_name: $("model-name").value, architecture: state.architecture, recipe: recipe,
       frobenius_energy: Number($("extract-energy").value), min_rank: Number($("extract-min-rank").value),
       max_rank: Number($("extract-max-rank").value), dry_run: $("mm-dry-run").checked,
     })});

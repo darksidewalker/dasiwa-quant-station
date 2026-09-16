@@ -505,7 +505,8 @@ type LoraExtractRequest struct {
 	OutputPath       string  `json:"output_path"`
 	OutputName       string  `json:"output_name"`
 	Architecture     string  `json:"architecture"`
-	OutputMode       string  `json:"output_mode"`
+	Recipe           string  `json:"recipe"`
+	OutputMode       string  `json:"output_mode"` // Legacy alias for h3_full/h3_pruned.
 	FrobeniusEnergy  float64 `json:"frobenius_energy"`
 	MinRank          int     `json:"min_rank"`
 	MaxRank          int     `json:"max_rank"`
@@ -759,21 +760,30 @@ func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.BasePath == "" || req.MergedPath == "" {
-		writeError(w, http.StatusBadRequest, "full base checkpoint and full merged checkpoint are required")
+		writeError(w, http.StatusBadRequest, "base checkpoint and modified checkpoint are required")
 		return
 	}
-	if req.Architecture != "MiniMax H3" {
-		writeError(w, http.StatusBadRequest, "LoRA Extract currently supports only MiniMax H3")
+	if req.Recipe == "" {
+		if req.OutputMode == "full" {
+			req.Recipe = "h3_full"
+		} else {
+			req.Recipe = "h3_pruned"
+		}
+	}
+	if req.Recipe != "generic" && req.Recipe != "h3_full" && req.Recipe != "h3_pruned" {
+		writeError(w, http.StatusBadRequest, "recipe must be generic, h3_full, or h3_pruned")
 		return
 	}
-	if req.OutputMode == "" {
+	if req.Recipe != "generic" && req.Architecture != "MiniMax H3" {
+		writeError(w, http.StatusBadRequest, "MiniMax H3 extraction recipes require the MiniMax H3 architecture")
+		return
+	}
+	if req.Recipe == "h3_pruned" {
 		req.OutputMode = "pruned"
+	} else {
+		req.OutputMode = "full"
 	}
-	if req.OutputMode != "full" && req.OutputMode != "pruned" {
-		writeError(w, http.StatusBadRequest, "output_mode must be full or pruned")
-		return
-	}
-	if req.OutputMode == "pruned" && req.PrunedTargetPath == "" {
+	if req.Recipe == "h3_pruned" && req.PrunedTargetPath == "" {
 		writeError(w, http.StatusBadRequest, "a target pruned MiniMax H3 checkpoint is required for pruned extraction")
 		return
 	}
@@ -782,7 +792,11 @@ func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
 	}
 	req.BasePath = cleanPath(req.BasePath, s.modelsDir)
 	req.MergedPath = cleanPath(req.MergedPath, s.modelsDir)
-	req.PrunedTargetPath = cleanPath(req.PrunedTargetPath, s.modelsDir)
+	if req.Recipe == "h3_pruned" {
+		req.PrunedTargetPath = cleanPath(req.PrunedTargetPath, s.modelsDir)
+	} else {
+		req.PrunedTargetPath = ""
+	}
 	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
 	if req.OutputDir == "" {
 		req.OutputDir = filepath.Dir(req.MergedPath)
@@ -794,8 +808,11 @@ func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
 	if req.FrobeniusEnergy == 0 {
 		req.FrobeniusEnergy = 0.99
 	}
-	if req.FrobeniusEnergy <= 0 || req.FrobeniusEnergy > 1 || req.MinRank < 0 || req.MaxRank < 0 {
-		writeError(w, http.StatusBadRequest, "frobenius_energy must be (0, 1] and ranks must be non-negative")
+	if req.MinRank == 0 {
+		req.MinRank = 1
+	}
+	if req.FrobeniusEnergy <= 0 || req.FrobeniusEnergy > 1 || req.MinRank < 1 || req.MaxRank < 0 {
+		writeError(w, http.StatusBadRequest, "frobenius_energy must be (0, 1], min_rank must be positive, and max_rank must be non-negative")
 		return
 	}
 	id := newID()

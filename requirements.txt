@@ -1,12 +1,2 @@
---extra-index-url https://download.pytorch.org/whl/cu130
-torch
-torchvision
-torchaudio
-psutil
-gguf
-sentencepiece
-safetensors
-numpy
-tqdm
-scipy
-cryptography
+# Compatibility pointer only. Runtime dependencies are resolved together from
+# pyproject.toml and uv.lock via `uv sync`; do not install this file directly.

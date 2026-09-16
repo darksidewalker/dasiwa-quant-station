@@ -64,9 +64,9 @@
 
       <section class="panel mm-side-panel hidden" id="extract-side-panel">
         <h2>LoRA Extract</h2>
-        <label class="field"><span title="Extraction recipe">Recipe</span><select id="extract-mode" title="Pruned uses the selected target checkpoint's AdaLN coordinate gauge"><option value="pruned" selected>MiniMax H3 → pruned adapter</option><option value="full">MiniMax H3 → full LoRA</option></select></label>
-        <button id="extract-pick-merged" class="picker-button drop-target" type="button" title="Pick the full merged MiniMax H3 checkpoint"><span>Second checkpoint (full merged)</span><strong id="extract-merged-label">Pick…</strong></button>
-        <button id="extract-pick-pruned" class="picker-button drop-target" type="button" title="Pick the exact pruned checkpoint this adapter will target"><span>Target pruned checkpoint</span><strong id="extract-pruned-label">Pick…</strong></button>
+        <label class="field"><span title="Extraction recipe">Recipe</span><select id="extract-mode" title="Generic factorizes the difference between two matching checkpoints; the H3 pruned recipe additionally rebases AdaLN"><option value="generic" selected>Any architecture — checkpoint difference</option><option value="h3_full">MiniMax H3 — full LoRA</option><option value="h3_pruned">MiniMax H3 — pruned adapter</option></select></label>
+        <button id="extract-pick-merged" class="picker-button drop-target" type="button" title="Pick the modified or fine-tuned checkpoint"><span>Second checkpoint (modified)</span><strong id="extract-merged-label">Pick…</strong></button>
+        <button id="extract-pick-pruned" class="picker-button drop-target" type="button" title="Pick the exact pruned checkpoint this H3 adapter will target"><span>Target pruned checkpoint</span><strong id="extract-pruned-label">Pick…</strong></button>
         <label class="field"><span title="Energy retained in each ordinary matrix LoRA extraction">Frobenius energy</span><input id="extract-energy" type="number" min="0.5" max="1" step="0.001" value="0.990"></label>
         <label class="field"><span title="Smallest permitted LoRA rank">Min rank</span><input id="extract-min-rank" type="number" min="1" step="1" value="1"></label>
         <label class="field"><span title="0 means no maximum rank cap">Max rank</span><input id="extract-max-rank" type="number" min="0" step="1" value="0"></label>
@@ -116,7 +116,7 @@
             <button class="active" data-mode="quantize" type="button" title="Quantize a checkpoint to GGUF or safetensors formats">Quantize</button>
             <button data-mode="lora" type="button" title="Bake one or more LoRAs into a checkpoint">LoRA Merge</button>
             <button data-mode="compose" type="button" title="Consensus-merge adapters into a reusable LoRA or LoKr">Merge LoRAs</button>
-            <button data-mode="extract" type="button" title="Extract a MiniMax H3 LoRA from a full base and merged checkpoint">LoRA Extract</button>
+            <button data-mode="extract" type="button" title="Extract a LoRA from the difference between two matching checkpoints">LoRA Extract</button>
             <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
           </div>
           <p id="status">Idle</p>
@@ -209,7 +209,7 @@
         </section>
 
         <section class="lora-card hidden" data-workflow-panel="extract">
-          <div class="section-title"><div><h3>LoRA Extract — MiniMax H3</h3><p>Full base comes from Source; select the full merged model in the sidebar. The pruned recipe rebases AdaLN against the selected target checkpoint's exact coordinate table.</p></div></div>
+          <div class="section-title"><div><h3>LoRA Extract</h3><p>Select a base checkpoint and a compatible modified checkpoint. The generic recipe SVD-factorizes their changed 2-D weights into a standard LoRA; MiniMax H3 also offers its specialized pruned AdaLN recipe.</p></div></div>
         </section>
 
         <section class="lora-card hidden" data-workflow-panel="model" id="model-merge-card">

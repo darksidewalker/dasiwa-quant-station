@@ -10,6 +10,41 @@ from safetensors.torch import save_file
 from core.lora_extract_engine import run_lora_extract
 
 
+class TestGenericCheckpointLoraExtract(unittest.TestCase):
+    @mock.patch("core.lora_extract_engine.verify_architecture_match", return_value=(True, "ok"))
+    def test_generic_recipe_extracts_two_checkpoint_delta_as_standard_lora(self, _verify):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "base.safetensors"
+            modified = root / "modified.safetensors"
+            output = root / "adapter.safetensors"
+            base_weight = torch.zeros((3, 4), dtype=torch.float32)
+            delta = torch.tensor(
+                [[1.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0], [0.0, 0.0, 3.0, 0.0]],
+                dtype=torch.float32,
+            )
+            save_file({"blocks.0.self_attn.q.weight": base_weight}, str(base))
+            save_file({"blocks.0.self_attn.q.weight": base_weight + delta}, str(modified))
+
+            events = list(run_lora_extract({
+                "recipe": "generic",
+                "architecture": "WAN 2.2",
+                "base_path": str(base),
+                "merged_path": str(modified),
+                "output_path": str(output),
+                "frobenius_energy": 1.0,
+            }))
+
+            self.assertEqual(events[-1]["status"], "finished")
+            with safe_open(str(output), framework="pt", device="cpu") as handle:
+                down = handle.get_tensor("diffusion_model.blocks.0.self_attn.q.lora_A.weight")
+                up = handle.get_tensor("diffusion_model.blocks.0.self_attn.q.lora_B.weight")
+                torch.testing.assert_close((up @ down).float(), delta, rtol=0.01, atol=0.01)
+                self.assertEqual(handle.metadata()["format"], "dasiwa_checkpoint_delta_lora")
+                self.assertEqual(handle.metadata()["architecture"], "WAN 2.2")
+                self.assertEqual(handle.metadata()["recipe"], "generic")
+
+
 class TestMiniMaxH3LoraExtract(unittest.TestCase):
     def _full(self, path: Path, changed: bool = False):
         tensors = {
