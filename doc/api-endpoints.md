@@ -7,10 +7,10 @@ streams.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/config` | Architectures, formats, root/models directories, output_dir |
+| GET | `/api/config` | Architectures, formats, `quant_capabilities` (format → architectures/strategies), root/models directories, output_dir |
 | GET | `/api/system` | CPU%, RAM, GPU%, VRAM metrics |
-| GET | `/api/browse` | Directory browser (models) |
-| GET | `/api/search` | Recursive file search (models) |
+| GET | `/api/browse` | Directory browser (models); items include `size` and `modified_at` for sorting |
+| GET | `/api/search` | Recursive file search (models); results include `size` and `modified_at` |
 | GET | `/api/files` | Recursive model file listing |
 | GET | `/api/inspect` | Header-only architecture detection |
 | GET | `/api/metadata-preview` | Generate modelspec metadata preview |

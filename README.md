@@ -42,7 +42,7 @@ Detailed reference material lives in the [doc/](doc/) folder — linked from eac
 | Diagnostics | 5D tensor scanner, pattern audit, LoRA shape-mismatch detection with ratio analysis |
 | Hardware monitor | Real-time CPU%, RAM, GPU%, VRAM bars with 5-second polling |
 | Memory cleanup | One-button RAM/VRAM cache release (Go GC, Python GC, malloc_trim, PyTorch/CuPy cache) |
-| Convenience | User-selectable output folder, file browser search, settings persistence, recipe reload, backend status indicator, Quit button |
+| Convenience | User-selectable output folder, file browser search (sortable by name/date/size), settings + per-selector folder persistence, recipe reload, backend status indicator, Quit button |
 
 ---
 
@@ -193,10 +193,11 @@ The architecture selection controls the `convert_to_quant` preset and, for verif
 
 - Dark theme, responsive layout, no heavy frameworks
 - Backend status indicator showing service health
-- File browser with recursive search
+- File browser with recursive search, sortable by name / date / size (each row shows its modification date and file size)
 - Hover tooltips on format chips explaining each quantization type
-- Settings persistence (remembers last choices across sessions via browser cookies)
-- Last-used checkpoint folder remembered between runs
+- Capability-aware controls: formats and strategies that don't apply to the selected architecture are disabled in the UI and rejected by the server (`quant_capabilities` matrix), with a live compatibility note under the format list
+- Settings persistence via `localStorage` (survives app rebuilds; no cookie expiry)
+- Every file selector independently remembers its last folder across sessions
 - Multi-select LoRA browser with drag-and-drop
 - "Preserve loader metadata" checkbox (on by default) in Quantize, LoRA Merge, and Model Merge — keeps the loader-critical metadata structure (config, architecture, runtime quant layout) from the source checkpoint in every output; unchecking restores a clean metadata set with only the loader-critical keys
 - Custom output directory selector

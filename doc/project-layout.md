@@ -7,6 +7,7 @@ cmd/quantstation/main.go       Go entry point - web server at :7878
 internal/app/server.go         Go HTTP server, API routes, SSE job manager
 internal/pathbrowser/          Pure Go directory browser
 web/                           Frontend (HTML/CSS/JS, dark theme)
+  ui_helpers.js                Pure UI logic: capability policy, sorting, persistence (node:test covered)
 scripts/go_bridge.py           Bridge from Go API to Python engines
 core/                          Quantization, metadata, and LoRA merge engines
   gguf_engine.py               GGUF conversion + sensitivity maps

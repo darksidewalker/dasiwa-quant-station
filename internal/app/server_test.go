@@ -3,11 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestUpdateStepsPullsLatestSourceBeforeSetupAndBuild(t *testing.T) {
@@ -84,16 +87,127 @@ func TestFormatSupportedFor(t *testing.T) {
 		{"NVFP4 HQ", "MiniMax H3", true},
 		{"NVFP4 HQ", "LTX-2.3", false},
 		{"NVFP4 HQ", "WAN 2.2", false},
-		{"NVFP4", "LTX-2.3", true}, // plain NVFP4 stays unrestricted
+		{"NVFP4", "LTX-2.3", true},
 		{"INT4 ConvRot Runtime", "Krea 2", true},
 		{"INT4 ConvRot Runtime", "Flux.2", false},
 		{"INT4 ConvRot Runtime", "Not set", false},
-		{"FP8", "Any Arch", true}, // unrestricted format
+		{"FP8", "Any Arch", true},
 		{"GGUF_Q4_K", "Any Arch", true},
 	}
 	for _, c := range cases {
 		if got := formatSupportedFor(c.format, c.arch); got != c.want {
 			t.Errorf("formatSupportedFor(%q, %q) = %v, want %v", c.format, c.arch, got, c.want)
 		}
+	}
+}
+
+func TestQuantCapabilityAllows(t *testing.T) {
+	cases := []struct {
+		format, architecture, strategy string
+		want                           bool
+	}{
+		{"FP8", "LTX-2.3", "Optimizer-driven", true},
+		{"FP8", "LTX-2.3", "Simple", true},
+		{"W4A8", "MiniMax H3", "Simple", true},
+		{"W4A8", "MiniMax H3", "Optimizer-driven", false},
+		{"W4A8", "WAN 2.2", "Simple", false},
+		{"NVFP4 HQ", "MiniMax H3", "Optimizer-driven", true},
+		{"NVFP4 HQ", "Krea 2", "Optimizer-driven", false},
+		{"INT4 ConvRot Runtime", "Krea 2", "Simple", true},
+		{"INT4 ConvRot Runtime", "Flux.2", "Simple", false},
+		{"unknown", "MiniMax H3", "Simple", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.format+"/"+tc.architecture+"/"+tc.strategy, func(t *testing.T) {
+			if got := quantCapabilityAllows(tc.format, tc.architecture, tc.strategy); got != tc.want {
+				t.Fatalf("quantCapabilityAllows() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleConfigIncludesQuantCapabilities(t *testing.T) {
+	s := &Server{rootDir: t.TempDir(), modelsDir: t.TempDir(), version: "test"}
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	res := httptest.NewRecorder()
+
+	s.handleConfig(res, req)
+
+	var body struct {
+		QuantCapabilities map[string]quantCapability `json:"quant_capabilities"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	w4a8 := body.QuantCapabilities["W4A8"]
+	if !reflect.DeepEqual(w4a8.Architectures, []string{"MiniMax H3"}) {
+		t.Fatalf("W4A8 architectures = %v", w4a8.Architectures)
+	}
+	if !reflect.DeepEqual(w4a8.Strategies, []string{"Simple"}) {
+		t.Fatalf("W4A8 strategies = %v", w4a8.Strategies)
+	}
+}
+
+type browserResponse struct {
+	Items []struct {
+		Name       string `json:"name"`
+		Path       string `json:"path"`
+		IsDir      bool   `json:"is_dir"`
+		Size       int64  `json:"size"`
+		ModifiedAt string `json:"modified_at"`
+	} `json:"items"`
+}
+
+func TestHandleBrowseIncludesMetadata(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "model.safetensors")
+	if err := os.WriteFile(filePath, bytes.Repeat([]byte{'x'}, 1536), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modified := time.Date(2026, 9, 16, 5, 30, 0, 0, time.UTC)
+	if err := os.Chtimes(filePath, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "models"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{modelsDir: dir}
+	res := httptest.NewRecorder()
+	s.handleBrowse(res, httptest.NewRequest(http.MethodGet, "/api/browse?path="+dir, nil))
+
+	var body browserResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(body.Items))
+	}
+	file := body.Items[1]
+	if file.Size != 1536 || file.ModifiedAt != modified.Format(time.RFC3339) {
+		t.Fatalf("file metadata = size %d, modified %q", file.Size, file.ModifiedAt)
+	}
+	if body.Items[0].Size != 0 || body.Items[0].ModifiedAt == "" {
+		t.Fatalf("directory metadata = %#v", body.Items[0])
+	}
+}
+
+func TestHandleSearchIncludesMetadata(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "wanted.gguf")
+	if err := os.WriteFile(filePath, bytes.Repeat([]byte{'x'}, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{modelsDir: dir}
+	res := httptest.NewRecorder()
+	s.handleSearch(res, httptest.NewRequest(http.MethodGet, "/api/search?path="+dir+"&q=wanted", nil))
+
+	var body browserResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 1 || body.Items[0].Size != 2048 || body.Items[0].ModifiedAt == "" {
+		t.Fatalf("search items = %#v", body.Items)
 	}
 }

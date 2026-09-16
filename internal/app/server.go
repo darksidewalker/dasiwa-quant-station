@@ -136,38 +136,79 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
-// formatSupport lists which architectures each quant format is valid for.
-// Formats without an entry are unrestricted (supported by every diffusion
-// architecture). The UI uses this map to filter the format chips by the
-// selected/auto-detected architecture; handleQuantize re-checks it as a
-// server-side guard for direct API clients.
-var formatSupport = map[string][]string{
-	"INT4 ConvRot Runtime": {"WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3"},
-	"W4A8":                 {"MiniMax H3"},
-	// Mixed-profile NVFP4: per-block source-precision preserves, only
-	// defined for MiniMax H3 (layer config + audit plan).
-	"NVFP4 HQ": {"MiniMax H3"},
+// quantCapability is the single source of truth for architecture and strategy
+// compatibility. An empty architecture list means the format is architecture-agnostic.
+type quantCapability struct {
+	Architectures []string `json:"architectures,omitempty"`
+	Strategies    []string `json:"strategies"`
 }
 
-func formatSupportedFor(format, architecture string) bool {
-	supported, ok := formatSupport[format]
-	if !ok {
-		return true
-	}
-	for _, arch := range supported {
-		if arch == architecture {
+var quantCapabilities = map[string]quantCapability{
+	"FP8":                           {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"NVFP4":                         {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"NVFP4 HQ":                      {Architectures: []string{"MiniMax H3"}, Strategies: []string{"Optimizer-driven", "Simple"}},
+	"MXFP8":                         {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"Hybrid MXFP8":                  {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"INT8 Tensor-wise":              {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"INT8 Row-wise ConvRot Runtime": {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"INT4 ConvRot Runtime":          {Architectures: []string{"WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3"}, Strategies: []string{"Simple"}},
+	"W4A8":                          {Architectures: []string{"MiniMax H3"}, Strategies: []string{"Simple"}},
+	"GGUF_F32":                      {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_BF16":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_F16":                      {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_Q8_0":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_Q6_K":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_Q5_K":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_Q4_K":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_Q3_K":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+	"GGUF_Q2_K":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
 			return true
 		}
 	}
 	return false
 }
 
+func formatSupportedFor(format, architecture string) bool {
+	capability, ok := quantCapabilities[format]
+	if !ok {
+		return false
+	}
+	if len(capability.Architectures) == 0 {
+		return true
+	}
+	return containsString(capability.Architectures, architecture)
+}
+
+func quantCapabilityAllows(format, architecture, strategy string) bool {
+	capability, ok := quantCapabilities[format]
+	if !ok || !containsString(capability.Strategies, strategy) {
+		return false
+	}
+	return formatSupportedFor(format, architecture)
+}
+
+func legacyFormatSupport() map[string][]string {
+	support := make(map[string][]string)
+	for format, capability := range quantCapabilities {
+		if len(capability.Architectures) > 0 {
+			support[format] = capability.Architectures
+		}
+	}
+	return support
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"version":        s.version,
-		"root_dir":       s.rootDir,
-		"models_dir":     s.modelsDir,
-		"format_support": formatSupport,
+		"version":            s.version,
+		"root_dir":           s.rootDir,
+		"models_dir":         s.modelsDir,
+		"format_support":     legacyFormatSupport(),
+		"quant_capabilities": quantCapabilities,
 		"architectures": []string{
 			"Not set", "WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3", "Hunyuan Video", "Flux.2",
 			"Qwen Image", "Z-Image", "Z-Image Refiner", "Anima", "Radiance",
@@ -197,6 +238,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type browserItem struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	IsDir      bool   `json:"is_dir"`
+	Size       int64  `json:"size"`
+	ModifiedAt string `json:"modified_at"`
+}
+
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	path := cleanPath(r.URL.Query().Get("path"), s.modelsDir)
 	entries, err := os.ReadDir(path)
@@ -204,12 +253,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	type item struct {
-		Name  string `json:"name"`
-		Path  string `json:"path"`
-		IsDir bool   `json:"is_dir"`
-	}
-	items := make([]item, 0, len(entries))
+	items := make([]browserItem, 0, len(entries))
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
@@ -221,10 +265,12 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		if !info.IsDir() && !isModelFile(e.Name()) {
 			continue
 		}
-		items = append(items, item{
-			Name:  e.Name(),
-			Path:  filepath.Join(path, e.Name()),
-			IsDir: info.IsDir(),
+		items = append(items, browserItem{
+			Name:       e.Name(),
+			Path:       filepath.Join(path, e.Name()),
+			IsDir:      info.IsDir(),
+			Size:       fileSize(info),
+			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -237,19 +283,22 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"path": path, "parent": parent, "items": items})
 }
 
-func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	type itemSearch struct {
-		Name string `json:"name"`
-		Path string `json:"path"`
+func fileSize(info os.FileInfo) int64 {
+	if info.IsDir() {
+		return 0
 	}
+	return info.Size()
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	path := cleanPath(r.URL.Query().Get("path"), s.modelsDir)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
-		writeJSON(w, map[string]any{"path": path, "query": "", "items": []itemSearch{}})
+		writeJSON(w, map[string]any{"path": path, "query": "", "items": []browserItem{}})
 		return
 	}
 	queryLower := strings.ToLower(query)
-	var results []itemSearch
+	var results []browserItem
 	err := filepath.WalkDir(path, func(fp string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip inaccessible dirs
@@ -268,7 +317,16 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			return nil // files only in search results
 		}
 		if strings.Contains(strings.ToLower(name), queryLower) {
-			results = append(results, itemSearch{Name: name, Path: fp})
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return nil
+			}
+			results = append(results, browserItem{
+				Name:       name,
+				Path:       fp,
+				Size:       info.Size(),
+				ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
+			})
 		}
 		return nil
 	})
@@ -546,12 +604,9 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, format := range req.Formats {
-		if (format == "INT4 ConvRot Runtime" || format == "W4A8") && req.Strategy != "Simple" {
-			writeError(w, http.StatusBadRequest, format+" requires the Simple strategy")
-			return
-		}
-		if req.Architecture != "" && req.Architecture != "Not set" && !formatSupportedFor(format, req.Architecture) {
-			writeError(w, http.StatusBadRequest, format+" is not supported for architecture "+req.Architecture)
+		if !quantCapabilityAllows(format, req.Architecture, req.Strategy) {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("%s is not available for %s with %s strategy", format, req.Architecture, req.Strategy))
 			return
 		}
 	}

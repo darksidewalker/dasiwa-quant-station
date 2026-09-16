@@ -203,6 +203,49 @@ input, select, textarea {
 .primary:disabled, .danger:disabled, .secondary:disabled { opacity: .45; cursor: not-allowed; }
 .ghost { padding: 7px 10px; color: var(--muted); }
 
+/* Dense run group: primary action row + compact utility row */
+.run-actions { display: grid; gap: 6px; }
+.run-primary { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.run-primary .primary, .run-primary .danger { width: auto; margin-top: 0; padding: 9px 14px; }
+.run-utilities { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.run-utilities .secondary { width: auto; margin-top: 0; padding: 7px 8px; font-size: 12px; text-align: center; }
+
+/* Compact density for sidebar controls */
+.source-panel .field, .source-panel .checkline { margin-bottom: 8px; }
+.checkline { margin-bottom: 4px; }
+input, select, textarea { padding: 8px 10px; }
+.panel { padding: 12px; margin-bottom: 10px; }
+
+/* Capability rail under the format chips */
+.compatibility-rail {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+/* Sortable browser rows: name + date + size columns */
+.browser-sort { display: flex; align-items: center; gap: 5px; margin-left: 8px; }
+.browser-sort label { font-size: 12px; color: var(--muted); }
+.browser-sort select { width: auto; padding: 6px 8px; font-size: 12px; }
+.browser-sort button { padding: 6px 9px; font-size: 13px; }
+.browser-item .browser-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-item .browser-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  margin-left: 8px;
+}
+.browser-item .browser-date { min-width: 132px; text-align: right; }
+.browser-item .browser-size { min-width: 64px; text-align: right; }
+
 .main {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);

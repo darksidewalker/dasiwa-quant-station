@@ -4,7 +4,7 @@ const state = {
   sourcePath: "",
   architecture: "WAN 2.2",
   allFormats: [],
-  formatSupport: {},
+  quantCapabilities: {},
   strategy: "Optimizer-driven",
   workflowMode: "quantize",
   formats: new Set(),
@@ -20,9 +20,8 @@ const state = {
   logBuffer: "",
   logFlushPending: false,
   selectedLoraPaths: new Set(),
-  lastLoraDir: "",
-  lastFileDir: "",
-  lastOverlayDir: "",
+  pickerDirectories: {...QuantStationUI.EMPTY_PICKER_DIRECTORIES},
+  browserSort: {key: "name", direction: "asc"},
   appVersion: "",
   mmOverlayPath: "",
   mmRecipe: "h3_hybrid",
@@ -37,138 +36,192 @@ let consoleLogPersisted = "";
 const LOG_PERSIST_KEY = "dasiwa_console_log";
 
 const SETTINGS_COOKIE = "dasiwa_settings";
-const SETTINGS_MAX_AGE_DAYS = 90;
+const SETTINGS_STORAGE_KEY = "dasiwa_settings_v2";
+const PICKER_ROLE = Object.freeze({
+  file: "source",
+  lora: "lora",
+  "mm-overlay": "model-overlay",
+  "extract-merged": "extract-modified",
+  "extract-pruned": "extract-pruned",
+});
 const PING_INTERVAL_MS = 30000;
 const MAX_EFFECTIVE_LORA_STRENGTH = 3;
 
 let pingTimer = null;
 
-function saveSettings() {
-  const settings = {
-    v: state.appVersion,
+function currentSettings() {
+  return {
+    schema: 2,
     mode: state.workflowMode,
-    arch: state.architecture,
+    architecture: state.architecture,
     strategy: state.strategy,
     formats: [...state.formats],
+    sourcePath: state.sourcePath,
     modelName: $("model-name").value,
     fullCheckpoint: $("full-checkpoint").checked,
     lowVram: $("low-vram").checked,
-    loraGlobalStrength: $("lora-global-strength").value,
-    loraMergeDevice: $("lora-merge-device").value,
-    loraCudaDevice: $("lora-cuda-device").value,
-    loraVramHeadroom: $("lora-vram-headroom").value,
-    loraAdaptive: $("lora-adaptive").checked,
-    loraStrict: $("lora-strict").checked,
-    krea2Unchain: $("krea2-unchain").checked,
-    preserveLoaderMetadata: $("preserve-loader-metadata").checked,
     watermark: $("watermark").checked,
-    mmOverlayPath: state.mmOverlayPath,
-    mmRecipe: $("mm-recipe").value,
-    mmRank: $("mm-rank").value,
-    mmStrength: $("mm-strength").value,
-    mmDryRun: $("mm-dry-run").checked,
-    extractRecipe: $("extract-mode").value,
-    extractEnergy: $("extract-energy").value,
-    extractMinRank: $("extract-min-rank").value,
-    extractMaxRank: $("extract-max-rank").value,
-    lastFileDir: state.lastFileDir,
-    lastLoraDir: state.lastLoraDir,
-    lastOverlayDir: state.lastOverlayDir,
-    loras: state.loras.map((l) => ({
-      path: l.path,
-      strength: l.strength,
-      strategy: l.strategy,
-      enabled: l.enabled,
-    })),
+    preserveLoaderMetadata: $("preserve-loader-metadata").checked,
+    dryRun: $("mm-dry-run").checked,
+    lora: {
+      globalStrength: $("lora-global-strength").value,
+      mergeDevice: $("lora-merge-device").value,
+      cudaDevice: $("lora-cuda-device").value,
+      vramHeadroom: $("lora-vram-headroom").value,
+      mergeAlgorithm: $("lora-merge-algorithm").value,
+      consensusPreset: $("lora-consensus-preset").value,
+      adaptive: $("lora-adaptive").checked,
+      strict: $("lora-strict").checked,
+      krea2Unchain: $("krea2-unchain").checked,
+      rows: state.loras.map((lora) => ({...lora})),
+    },
+    compose: {
+      preset: $("compose-preset").value,
+      outputAdapter: $("compose-output-adapter").value,
+      outputRank: $("compose-output-rank").value,
+      energy: $("compose-energy").value,
+      mismatch: $("compose-mismatch").value,
+    },
+    modelMerge: {
+      overlayPath: state.mmOverlayPath,
+      recipe: $("mm-recipe").value,
+      rank: $("mm-rank").value,
+      strength: $("mm-strength").value,
+    },
+    extract: {
+      modifiedPath: state.extractMergedPath,
+      prunedPath: state.extractPrunedPath,
+      recipe: $("extract-mode").value,
+      energy: $("extract-energy").value,
+      minRank: $("extract-min-rank").value,
+      maxRank: $("extract-max-rank").value,
+    },
+    pickerDirectories: state.pickerDirectories,
+    browserSort: state.browserSort,
   };
+}
+
+function saveSettings() {
   try {
-    const json = JSON.stringify(settings);
-    // Browser cookie limit is ~4096 bytes. URL encoding expands it further.
-    // Encode first so we check the real size that hits the wire.
-    const encoded = encodeURIComponent(json);
-    if (encoded.length > 3800) {
-      // Cookie too large — drop LoRA paths (keep other settings) and retry
-      const slim = {...settings, loras: settings.loras.map((l) => ({
-        path: shortPath(l.path),
-        strength: l.strength,
-        strategy: l.strategy,
-        enabled: l.enabled,
-      }))};
-      const slimJson = JSON.stringify(slim);
-      const slimEncoded = encodeURIComponent(slimJson);
-      if (slimEncoded.length > 3800) return; // Still too large, skip entirely
-      const expires = new Date(Date.now() + SETTINGS_MAX_AGE_DAYS * 864e5).toUTCString();
-      document.cookie = `${SETTINGS_COOKIE}=${slimEncoded};expires=${expires};path=/;SameSite=Lax`;
-      return;
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(currentSettings()));
+  } catch {}
+}
+
+function readLegacySettingsCookie() {
+  const prefix = `${SETTINGS_COOKIE}=`;
+  for (const cookie of document.cookie.split(";")) {
+    const value = cookie.trim();
+    if (!value.startsWith(prefix)) continue;
+    try {
+      return JSON.parse(decodeURIComponent(value.slice(prefix.length)));
+    } catch {
+      return null;
     }
-    const expires = new Date(Date.now() + SETTINGS_MAX_AGE_DAYS * 864e5).toUTCString();
-    document.cookie = `${SETTINGS_COOKIE}=${encoded};expires=${expires};path=/;SameSite=Lax`;
-  } catch {
-    // Cookie full or blocked — silently skip
   }
+  return null;
 }
 
 function loadSettings() {
-  const name = `${SETTINGS_COOKIE}=`;
-  const cookies = document.cookie.split(";");
-  for (const c of cookies) {
-    const trimmed = c.trim();
-    if (!trimmed.startsWith(name)) continue;
-    try {
-      const json = decodeURIComponent(trimmed.substring(name.length));
-      const s = JSON.parse(json);
-      state.lastFileDir = s.lastFileDir || "";
-      state.lastLoraDir = s.lastLoraDir || "";
-      state.lastOverlayDir = s.lastOverlayDir || "";
-      // Only restore if version matches (prevents stale settings after updates)
-      if (s.v !== state.appVersion) return false;
-      state.workflowMode = s.mode || "quantize";
-      state.architecture = s.arch || "WAN 2.2";
-      state.strategy = s.strategy || "Optimizer-driven";
-      state.formats = new Set(s.formats || []);
-      if (s.modelName) $("model-name").value = s.modelName;
-      $("full-checkpoint").checked = !!s.fullCheckpoint;
-      $("low-vram").checked = !!s.lowVram;
-      if (s.loraGlobalStrength != null) $("lora-global-strength").value = s.loraGlobalStrength;
-      if (s.loraMergeDevice) $("lora-merge-device").value = s.loraMergeDevice;
-      if (s.loraCudaDevice) $("lora-cuda-device").value = s.loraCudaDevice;
-      if (s.loraVramHeadroom != null) $("lora-vram-headroom").value = s.loraVramHeadroom;
-      $("lora-adaptive").checked = s.loraAdaptive ?? false;
-      $("lora-strict").checked = s.loraStrict ?? true;
-      $("krea2-unchain").checked = !!s.krea2Unchain;
-      $("watermark").checked = s.watermark ?? true;
-      $("preserve-loader-metadata").checked = s.preserveLoaderMetadata ?? true;
-      // Migrate old loraDryRun → mmDryRun (dry-run now lives in the Strategy panel,
-      // shared between LoRA and Model Merge modes).
-      state.mmOverlayPath = s.mmOverlayPath || "";
-      $("mm-overlay-label").textContent = state.mmOverlayPath ? shortPath(state.mmOverlayPath) : "Pick…";
-      if (s.mmRecipe) $("mm-recipe").value = s.mmRecipe;
-      if (s.mmRank != null) $("mm-rank").value = s.mmRank;
-      if (s.mmStrength != null) $("mm-strength").value = s.mmStrength;
-      updateDeltaOptionsVisibility();
-      $("mm-dry-run").checked = s.mmDryRun ?? (s.loraDryRun ?? true);
-      if (["generic", "h3_full", "h3_pruned"].includes(s.extractRecipe)) $("extract-mode").value = s.extractRecipe;
-      if (s.extractEnergy != null) $("extract-energy").value = s.extractEnergy;
-      if (s.extractMinRank != null) $("extract-min-rank").value = s.extractMinRank;
-      if (s.extractMaxRank != null) $("extract-max-rank").value = s.extractMaxRank;
-      updateExtractRecipeVisibility();
-      if (Array.isArray(s.loras)) {
-        state.loras = s.loras.map((l) => ({
-          path: l.path || "",
-          strength: l.strength ?? 0.65,
-          strategy: l.strategy || defaultLoraStrategy(s.arch || "WAN 2.2"),
-          enabled: l.enabled ?? true,
-        }));
-      }
-      return true;
-    } catch {
-      return false;
-    }
+  let stored = null;
+  try { stored = QuantStationUI.decodeStoredSettings(localStorage.getItem(SETTINGS_STORAGE_KEY)); } catch {}
+  const legacy = !stored ? readLegacySettingsCookie() : null;
+  const s = QuantStationUI.migrateSettings(stored || legacy);
+  if (!stored && !legacy) return false;
+
+  state.workflowMode = s.mode || "quantize";
+  state.architecture = s.architecture || s.arch || "WAN 2.2";
+  state.strategy = s.strategy || "Optimizer-driven";
+  state.formats = new Set(s.formats || []);
+  state.sourcePath = s.sourcePath || "";
+  state.pickerDirectories = {...QuantStationUI.EMPTY_PICKER_DIRECTORIES, ...(s.pickerDirectories || {})};
+  state.browserSort = {...state.browserSort, ...(s.browserSort || {})};
+
+  $("model-name").value = s.modelName || "";
+  $("full-checkpoint").checked = !!s.fullCheckpoint;
+  $("low-vram").checked = !!s.lowVram;
+  $("watermark").checked = s.watermark ?? true;
+  $("preserve-loader-metadata").checked = s.preserveLoaderMetadata ?? true;
+  $("mm-dry-run").checked = s.dryRun ?? s.mmDryRun ?? s.loraDryRun ?? true;
+
+  const lora = s.lora || {};
+  $("lora-global-strength").value = lora.globalStrength ?? s.loraGlobalStrength ?? 1;
+  $("lora-merge-device").value = lora.mergeDevice || s.loraMergeDevice || "auto";
+  $("lora-cuda-device").value = lora.cudaDevice || s.loraCudaDevice || "cuda:0";
+  $("lora-vram-headroom").value = lora.vramHeadroom ?? s.loraVramHeadroom ?? 1024;
+  $("lora-merge-algorithm").value = lora.mergeAlgorithm || "additive";
+  $("lora-consensus-preset").value = lora.consensusPreset || "balanced";
+  $("lora-adaptive").checked = lora.adaptive ?? s.loraAdaptive ?? false;
+  $("lora-strict").checked = lora.strict ?? s.loraStrict ?? true;
+  $("krea2-unchain").checked = lora.krea2Unchain ?? s.krea2Unchain ?? false;
+  const rows = lora.rows || s.loras;
+  if (Array.isArray(rows)) {
+    state.loras = rows.map((row) => ({
+      path: row.path || "",
+      strength: row.strength ?? 0.65,
+      strategy: row.strategy || defaultLoraStrategy(state.architecture),
+      enabled: row.enabled ?? true,
+    }));
   }
-  return false;
+
+  const compose = s.compose || {};
+  $("compose-preset").value = compose.preset || "balanced";
+  $("compose-output-adapter").value = compose.outputAdapter || "auto";
+  $("compose-output-rank").value = compose.outputRank ?? 0;
+  $("compose-energy").value = compose.energy ?? 0.99;
+  $("compose-mismatch").value = compose.mismatch || "error";
+
+  const modelMerge = s.modelMerge || {};
+  state.mmOverlayPath = modelMerge.overlayPath || s.mmOverlayPath || "";
+  $("mm-recipe").value = modelMerge.recipe || s.mmRecipe || "h3_hybrid";
+  $("mm-rank").value = modelMerge.rank ?? s.mmRank ?? 1024;
+  $("mm-strength").value = modelMerge.strength ?? s.mmStrength ?? 1;
+
+  const extract = s.extract || {};
+  state.extractMergedPath = extract.modifiedPath || "";
+  state.extractPrunedPath = extract.prunedPath || "";
+  $("extract-mode").value = extract.recipe || s.extractRecipe || "generic";
+  $("extract-energy").value = extract.energy ?? s.extractEnergy ?? 0.99;
+  $("extract-min-rank").value = extract.minRank ?? s.extractMinRank ?? 1;
+  $("extract-max-rank").value = extract.maxRank ?? s.extractMaxRank ?? 0;
+
+  setPathLabel("source-label", state.sourcePath, "Choose file");
+  setPathLabel("mm-overlay-label", state.mmOverlayPath);
+  setPathLabel("extract-merged-label", state.extractMergedPath);
+  setPathLabel("extract-pruned-label", state.extractPrunedPath);
+  updateDeltaOptionsVisibility();
+  updateExtractRecipeVisibility();
+
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(currentSettings()));
+    if (legacy) document.cookie = `${SETTINGS_COOKIE}=;max-age=0;path=/;SameSite=Lax`;
+  } catch {}
+  return true;
 }
 
 const $ = (id) => document.getElementById(id);
+
+function setPathLabel(id, path, emptyText = "Pick…") {
+  const element = $(id);
+  element.textContent = path ? shortPath(path) : emptyText;
+  element.title = path || emptyText;
+}
+
+function rememberPickerDirectory(mode, path) {
+  const role = PICKER_ROLE[mode];
+  const slash = path.lastIndexOf("/");
+  if (!role || slash < 1) return;
+  state.pickerDirectories = QuantStationUI.rememberDirectory(
+    state.pickerDirectories, role, path.slice(0, slash));
+}
+
+// Remember an absolute directory (the folder the picker is currently showing)
+// for its role, so each selector reopens where it last was.
+function rememberPickerPath(mode, dir) {
+  const role = PICKER_ROLE[mode];
+  if (!role || !dir) return;
+  state.pickerDirectories = QuantStationUI.rememberDirectory(
+    state.pickerDirectories, role, dir);
+}
 
 // --- Job persistence helpers ---------------------------------------------------
 function saveActiveJob() {
@@ -309,7 +362,7 @@ async function init() {
   state.appVersion = cfg.version || "unknown";
 
   const arch = $("architecture");
-  state.formatSupport = cfg.format_support || {};
+  state.quantCapabilities = cfg.quant_capabilities || {};
   cfg.architectures.forEach((name) => {
     const opt = document.createElement("option");
     opt.value = name;
@@ -388,26 +441,21 @@ function renderFormats(formats) {
   renderFormatsForArch(state.allFormats, state.architecture);
 }
 
-// Re-render the format chips, showing only formats the selected
-// architecture supports (per the server's format_support map). Selected
-// formats that are no longer supported are dropped from state with a log
-// line. "Not set" / unknown architectures show every format.
 function renderFormatsForArch(formats, architecture) {
-  const arch = architecture && architecture !== "Not set" ? architecture : null;
-  const supported = (fmt) => {
-    if (!arch) return true;
-    const list = state.formatSupport[fmt.value];
-    return !list || list.includes(arch);
-  };
+  const normalized = QuantStationUI.normalizeQuantSelection({
+    formats: [...state.formats], architecture, strategy: state.strategy,
+  }, state.quantCapabilities);
+  const dropped = state.formats.size - normalized.formats.length;
+  state.formats = new Set(normalized.formats);
+  state.strategy = normalized.strategy || "Simple";
+
   const root = $("formats");
   root.textContent = "";
   const groups = [
-    {title: "Safetensors", items: formats.filter(supported).filter((fmt) => !fmt.value.startsWith("GGUF_"))},
-    {title: "GGUF", items: formats.filter(supported).filter((fmt) => fmt.value.startsWith("GGUF_"))},
+    {title: "Safetensors", items: formats.filter((fmt) => !fmt.value.startsWith("GGUF_"))},
+    {title: "GGUF", items: formats.filter((fmt) => fmt.value.startsWith("GGUF_"))},
   ];
-  const visible = new Set();
   groups.forEach((group) => {
-    if (group.items.length === 0) return;
     const section = document.createElement("section");
     section.className = "format-group";
     const title = document.createElement("h4");
@@ -415,24 +463,22 @@ function renderFormatsForArch(formats, architecture) {
     const list = document.createElement("div");
     list.className = "format-list";
     group.items.forEach((fmt) => {
-      visible.add(fmt.value);
+      const allowed = QuantStationUI.formatAllowed(fmt.value, architecture, state.quantCapabilities);
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "chip";
       btn.textContent = compactFormatLabel(fmt.label);
       btn.dataset.value = fmt.value;
-      const tip = formatTitle(fmt.value);
-      if (tip) btn.title = tip;
+      btn.disabled = !allowed;
+      btn.setAttribute("aria-disabled", String(!allowed));
+      btn.title = allowed
+        ? (formatTitle(fmt.value) || "")
+        : `${fmt.label} is not available for ${architecture}.`;
       btn.classList.toggle("active", state.formats.has(fmt.value));
       btn.addEventListener("click", () => {
-        if (state.formats.has(fmt.value)) {
-          state.formats.delete(fmt.value);
-          btn.classList.remove("active");
-        } else {
-          state.formats.add(fmt.value);
-          btn.classList.add("active");
-        }
-        enforceInt4ConvRotStrategy();
+        if (state.formats.has(fmt.value)) state.formats.delete(fmt.value);
+        else state.formats.add(fmt.value);
+        renderFormatsForArch(state.allFormats, state.architecture);
         saveSettings();
       });
       list.appendChild(btn);
@@ -441,19 +487,32 @@ function renderFormatsForArch(formats, architecture) {
     section.appendChild(list);
     root.appendChild(section);
   });
-  // Drop selected formats that are no longer offered for this architecture.
-  let dropped = 0;
-  state.formats.forEach((fmt) => {
-    if (!visible.has(fmt)) {
-      state.formats.delete(fmt);
-      dropped += 1;
-    }
-  });
+  updateQuantStrategyUI();
   if (dropped) {
-    log(`Architecture "${arch}" dropped ${dropped} unsupported format selection(s).\n`);
+    log(`Architecture "${architecture}" dropped ${dropped} unsupported format selection(s).\n`);
     saveSettings();
   }
-  return visible;
+}
+
+function updateQuantStrategyUI() {
+  const selected = [...state.formats];
+  const allowed = QuantStationUI.allowedStrategies(selected, state.quantCapabilities);
+  if (!allowed.includes(state.strategy)) state.strategy = allowed[0] || "Simple";
+  document.querySelectorAll("#strategy button").forEach((button) => {
+    const enabled = allowed.includes(button.dataset.value);
+    button.disabled = !enabled;
+    button.classList.toggle("active", button.dataset.value === state.strategy);
+    button.title = enabled
+      ? button.dataset.description
+      : `${button.dataset.value} is unavailable for the selected format combination.`;
+  });
+  const rail = $("compatibility-rail");
+  if (!rail) return;
+  const formatText = selected.length === 0
+    ? "No format selected"
+    : selected.length === 1 ? selected[0] : `${selected.length} formats selected`;
+  const strategyText = allowed.length === 1 ? `${allowed[0]} required` : "Optimizer or Simple";
+  rail.textContent = `${state.architecture} · ${formatText} · ${strategyText}`;
 }
 
 function applyArchFormatFilter() {
@@ -498,18 +557,6 @@ function formatTitle(value) {
   return FORMAT_TITLES[value] || null;
 }
 
-function enforceInt4ConvRotStrategy() {
-  const simpleOnly =
-    (state.formats.has("INT4 ConvRot Runtime") || state.formats.has("W4A8"))
-      && state.strategy !== "Simple";
-  if (!simpleOnly) return;
-  state.strategy = "Simple";
-  document.querySelectorAll("#strategy button").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.value === "Simple");
-  });
-  log("INT4 ConvRot / W4A8 requires Simple strategy; switched from Optimizer.\n");
-}
-
 function updateArchDependentUI() {
   applyArchFormatFilter();
   const unchainLabel = $("krea2-unchain-label");
@@ -525,9 +572,8 @@ function updateArchDependentUI() {
 
 function selectModelMergeOverlay(path) {
   state.mmOverlayPath = path;
-  const dir = path.substring(0, path.lastIndexOf("/"));
-  if (dir) state.lastOverlayDir = dir;
-  $("mm-overlay-label").textContent = shortPath(path);
+  rememberPickerDirectory("mm-overlay", path);
+  setPathLabel("mm-overlay-label", path);
   $("browser").close();
   saveSettings();
   refreshModelMergeHint();
@@ -673,6 +719,17 @@ function wireEvents() {
     $("browser").close();
   });
   $("browser-up").addEventListener("click", () => browse($("browser").dataset.parent || state.browserPath));
+  $("browser-sort-key").addEventListener("change", () => {
+    state.browserSort.key = $("browser-sort-key").value;
+    renderBrowserList();
+    saveSettings();
+  });
+  $("browser-sort-direction").addEventListener("click", () => {
+    state.browserSort.direction = state.browserSort.direction === "asc" ? "desc" : "asc";
+    updateSortDirectionButton();
+    renderBrowserList();
+    saveSettings();
+  });
 
   $("browser-add-all").addEventListener("click", () => {
     const paths = state.browserItems.filter((item) => !item.is_dir).map((item) => item.path);
@@ -713,7 +770,15 @@ function wireEvents() {
   });
   $("browser-clear-search").addEventListener("click", clearSearch);
 
-  $("refresh-files").addEventListener("click", () => browse(state.modelsDir));
+  $("refresh-files").addEventListener("click", async () => {
+    try {
+      const cfg = await api("/api/config");
+      renderFormats(cfg.formats);
+      log("Format list refreshed.\n");
+    } catch (err) {
+      log(`Refresh failed: ${err.message}\n`);
+    }
+  });
   $("clear-console").addEventListener("click", () => {
     const currentJobId = state.jobId;
     state.logBuffer = "";
@@ -793,6 +858,8 @@ function wireEvents() {
   $("lora-merge-device").addEventListener("change", saveSettings);
   $("lora-cuda-device").addEventListener("input", saveSettings);
   $("lora-vram-headroom").addEventListener("input", saveSettings);
+  $("lora-merge-algorithm").addEventListener("change", saveSettings);
+  $("lora-consensus-preset").addEventListener("change", saveSettings);
   $("lora-adaptive").addEventListener("change", saveSettings);
   $("lora-strict").addEventListener("change", saveSettings);
   $("krea2-unchain").addEventListener("change", saveSettings);
@@ -808,6 +875,8 @@ function wireEvents() {
   $("mm-rank").addEventListener("change", saveSettings);
   $("mm-strength").addEventListener("change", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
+  ["compose-preset", "compose-output-adapter", "compose-output-rank", "compose-energy", "compose-mismatch"]
+    .forEach((id) => $(id).addEventListener("change", saveSettings));
   $("extract-mode").addEventListener("change", () => {
     updateExtractRecipeVisibility();
     saveSettings();
@@ -849,6 +918,13 @@ async function shutdownServer() {
   }
 }
 
+function applyControlVisibility(mode) {
+  const applicable = QuantStationUI.applicableControls(mode);
+  document.querySelectorAll("[data-control]").forEach((element) => {
+    element.classList.toggle("hidden", !applicable.has(element.dataset.control));
+  });
+}
+
 function setWorkflowMode(mode) {
   state.workflowMode = mode;
   document.querySelectorAll("#workflow-mode button").forEach((btn) => {
@@ -866,9 +942,7 @@ function setWorkflowMode(mode) {
   $("extract-side-panel").classList.toggle("hidden", mode !== "extract");
   updateExtractRecipeVisibility();
   updateDeltaOptionsVisibility();
-  // Show the dry-run checkbox (under Strategy) for LoRA merge + Model Merge modes only
-  // (the two merge workflows that support a plan-only, no-write run).
-  $("mm-dry-run-wrap").style.display = mode === "model" || mode === "lora" || mode === "compose" || mode === "extract" ? "" : "none";
+  applyControlVisibility(mode);
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
   startBtn.classList.remove("hidden");
@@ -897,11 +971,11 @@ async function openBrowser(mode) {
   state.browserSearchRecursive = false;
   $("browser-search-input").value = "";
 
-  let startPath;
-  if (mode === "lora" && state.lastLoraDir) startPath = state.lastLoraDir;
-  else if (mode === "file" && state.lastFileDir) startPath = state.lastFileDir;
-  else if (mode === "mm-overlay" && state.lastOverlayDir) startPath = state.lastOverlayDir;
-  else startPath = state.modelsDir || state.rootDir;
+  const role = PICKER_ROLE[mode];
+  const startPath = QuantStationUI.directoryForMode(
+    state.pickerDirectories, role, state.modelsDir || state.rootDir);
+  $("browser-sort-key").value = state.browserSort.key;
+  updateSortDirectionButton();
 
   await browse(startPath);
   $("browser").showModal();
@@ -911,6 +985,8 @@ async function browse(path) {
   try {
     const data = await api(`/api/browse?path=${encodeURIComponent(path || state.modelsDir)}`);
     state.browserPath = data.path;
+    rememberPickerPath(state.browserMode, data.path);
+    saveSettings();
     $("browser").dataset.parent = data.parent;
     $("browser-path").textContent = data.path;
     state.browserItems = data.items;
@@ -937,12 +1013,22 @@ async function searchFiles(query, path) {
         : item.name,
       path: item.path,
       is_dir: false,
+      size: item.size,
+      modified_at: item.modified_at,
     }));
     state.browserSearchRecursive = true;
     renderBrowserList();
   } catch (err) {
     log(`Search error: ${err.message}\n`);
   }
+}
+
+function updateSortDirectionButton() {
+  const button = $("browser-sort-direction");
+  const ascending = state.browserSort.direction === "asc";
+  button.textContent = ascending ? "↑" : "↓";
+  button.setAttribute("aria-label", ascending ? "Sort ascending" : "Sort descending");
+  button.title = ascending ? "Currently ascending; click for descending" : "Currently descending; click for ascending";
 }
 
 // Render the browser list from state.browserItems, optionally filtered by search query
@@ -953,9 +1039,9 @@ function renderBrowserList() {
 
   let items = state.browserItems;
   if (query && !state.browserSearchRecursive) {
-    // Client-side filter of current directory
     items = items.filter((item) => item.name.toLowerCase().includes(query));
   }
+  items = QuantStationUI.sortBrowserItems(items, state.browserSort.key, state.browserSort.direction);
 
   if (!items.length && query) {
     const empty = document.createElement("p");
@@ -994,8 +1080,20 @@ function renderBrowserList() {
     }
 
     const nameSpan = document.createElement("span");
+    nameSpan.className = "browser-name";
     nameSpan.textContent = item.name;
+    nameSpan.title = item.path;
     btn.appendChild(nameSpan);
+
+    const dateSpan = document.createElement("span");
+    dateSpan.className = "browser-meta browser-date";
+    dateSpan.textContent = QuantStationUI.formatDate(item.modified_at);
+    btn.appendChild(dateSpan);
+
+    const sizeSpan = document.createElement("span");
+    sizeSpan.className = "browser-meta browser-size";
+    sizeSpan.textContent = QuantStationUI.formatBytes(item.size, item.is_dir);
+    btn.appendChild(sizeSpan);
 
     const kindSpan = document.createElement("span");
     kindSpan.className = "kind";
@@ -1011,11 +1109,15 @@ function renderBrowserList() {
         selectModelMergeOverlay(item.path);
       } else if (state.browserMode === "extract-merged" && !item.is_dir) {
         state.extractMergedPath = item.path;
-        $("extract-merged-label").textContent = shortPath(item.path);
+        rememberPickerDirectory("extract-merged", item.path);
+        setPathLabel("extract-merged-label", item.path);
+        saveSettings();
         $("browser").close();
       } else if (state.browserMode === "extract-pruned" && !item.is_dir) {
         state.extractPrunedPath = item.path;
-        $("extract-pruned-label").textContent = shortPath(item.path);
+        rememberPickerDirectory("extract-pruned", item.path);
+        setPathLabel("extract-pruned-label", item.path);
+        saveSettings();
         $("browser").close();
       } else if (state.browserMode === "lora" && !item.is_dir) {
         // Toggle selection instead of immediately adding
@@ -1123,8 +1225,7 @@ function defaultLoraStrategy(architecture = state.architecture) {
 }
 
 function selectLora(path) {
-  const dir = path.substring(0, path.lastIndexOf("/"));
-  if (dir) state.lastLoraDir = dir;
+  rememberPickerDirectory("lora", path);
   if (state.pendingLoraSlot >= 0 && state.loras[state.pendingLoraSlot]) {
     state.loras[state.pendingLoraSlot].path = path;
   } else {
@@ -1142,8 +1243,7 @@ function addLoraPaths(paths) {
   paths.forEach((path) => {
     if (!path || existing.has(path)) return;
     state.loras.push({path, strength: 0.65, strategy: defaultLoraStrategy(), enabled: true});
-    const dir = path.substring(0, path.lastIndexOf("/"));
-    if (dir) state.lastLoraDir = dir;
+    rememberPickerDirectory("lora", path);
     existing.add(path);
     added.push(path);
   });
@@ -1228,10 +1328,9 @@ function renderLoras() {
 }
 
 async function selectSource(path) {
-  const dir = path.substring(0, path.lastIndexOf("/"));
-  if (dir) state.lastFileDir = dir;
+  rememberPickerDirectory("file", path);
   state.sourcePath = path;
-  $("source-label").textContent = shortPath(path);
+  setPathLabel("source-label", path, "Choose file");
   $("browser").close();
   saveSettings();
   if (!$("model-name").value) {
