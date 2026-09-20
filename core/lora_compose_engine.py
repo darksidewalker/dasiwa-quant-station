@@ -177,9 +177,11 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     )
     device = _device(payload, estimated_bytes)
 
+    actual_kinds = sorted({actual for _, _, actual, _ in plans})
     yield _log(
         f"LoRA composition init\nArchitecture: {architecture}\nPreset: {settings.name}\n"
-        f"Output adapter: {output_kind}\nLayers: {len(plans)} skipped={len(invalid)}\nDevice: {device}\n"
+        f"Output adapter request: {output_kind}\nWill write: {', '.join(actual_kinds)}\n"
+        f"Layers: {len(plans)} skipped={len(invalid)}\nDevice: {device}\n"
     )
     if dry_run:
         yield _log(json.dumps({"layers": len(plans), "skipped": invalid, "output_adapter": output_kind,
@@ -192,7 +194,9 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     reports = []
     with ExitStack() as stack:
         handles = {path: stack.enter_context(safe_open(path, framework="pt", device="cpu")) for path in manifests}
-        for logical, contributors, actual, anchor in plans:
+        total_layers = len(plans)
+        progress_every = max(1, total_layers // 100)
+        for index, (logical, contributors, actual, anchor) in enumerate(plans, 1):
             try:
                 deltas = [_full_delta(handles[item["path"]], item, device) for item in contributors]
             except torch.cuda.OutOfMemoryError:
@@ -216,6 +220,8 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                             "rank": report.rank, "retained_energy": report.retained_energy,
                             "relative_error": report.relative_error, "rejected": stats.rejected_contributors})
             del deltas, rows, merged
+            if index % progress_every == 0 or index == total_layers:
+                yield {"type": "progress", "text": f"Merge adapters: {index}/{total_layers} layers ({index * 100 // total_layers}%) · writing {actual.upper()}"}
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     tmp_path = output_path + ".tmp"

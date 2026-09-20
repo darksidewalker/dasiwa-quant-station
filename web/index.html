@@ -166,7 +166,8 @@
           </div>
           <div class="lora-controls" id="compose-controls" style="display:none">
             <label class="field compact"><span>Consensus preset</span><select id="compose-preset"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
-            <label class="field compact"><span>Output adapter</span><select id="compose-output-adapter"><option value="auto">Auto (LoKr when anchored)</option><option value="lora">LoRA</option><option value="lokr">Direct LoKr</option></select></label>
+            <label class="field compact"><span>Output adapter</span><select id="compose-output-adapter" title="Select the adapter representation to write"><option value="auto">Auto</option><option value="lora">LoRA</option><option value="lokr">Direct LoKr</option></select></label>
+            <p id="compose-output-indicator" class="adapter-output-indicator" role="status" aria-live="polite"></p>
             <label class="field compact"><span>Max rank (0 = auto)</span><input id="compose-output-rank" type="number" min="0" step="1" value="0"></label>
             <label class="field compact"><span>Frobenius energy</span><input id="compose-energy" type="number" min="0.5" max="1" step="0.001" value="0.99"></label>
             <label class="field compact"><span>Mismatch</span><select id="compose-mismatch"><option value="error">Error</option><option value="skip">Skip incompatible layers</option></select></label>

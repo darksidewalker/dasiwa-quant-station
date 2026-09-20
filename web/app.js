@@ -709,6 +709,11 @@ function wireEvents() {
     btn.addEventListener("click", () => setWorkflowMode(btn.dataset.mode));
   });
   $("add-lora").addEventListener("click", () => openBrowser("lora"));
+  $("compose-output-adapter").addEventListener("change", () => {
+    updateComposeOutputIndicator();
+    saveSettings();
+  });
+  updateComposeOutputIndicator();
   $("load-recipe-btn").addEventListener("click", loadRecipe);
 
   renderLoras();
@@ -925,6 +930,18 @@ function applyControlVisibility(mode) {
   });
 }
 
+function updateComposeOutputIndicator() {
+  const indicator = $("compose-output-indicator");
+  if (!indicator) return;
+  const output = $("compose-output-adapter").value;
+  const messages = {
+    lora: "Output: LoRA adapter",
+    lokr: "Output: direct LoKr adapter",
+    auto: "Output: Auto — LoKr for layers with a compatible direct-LoKr anchor; LoRA for the rest.",
+  };
+  indicator.textContent = messages[output] || "Output: adapter type not selected";
+}
+
 function setWorkflowMode(mode) {
   state.workflowMode = mode;
   document.querySelectorAll("#workflow-mode button").forEach((btn) => {
@@ -937,6 +954,7 @@ function setWorkflowMode(mode) {
   const composing = mode === "compose";
   $("compose-controls").style.display = composing ? "" : "none";
   $("lora-bake-controls").style.display = composing ? "none" : "";
+  updateComposeOutputIndicator();
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
   $("extract-side-panel").classList.toggle("hidden", mode !== "extract");

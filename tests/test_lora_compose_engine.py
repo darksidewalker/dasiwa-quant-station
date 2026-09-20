@@ -39,6 +39,8 @@ class LoraComposeEngineTests(unittest.TestCase):
             self.assertEqual(tuple((up @ down).shape), (2, 2))
             self.assertTrue(torch.isfinite(up @ down).all())
             self.assertEqual(events[-1]["status"], "finished")
+            progress = [event for event in events if event.get("type") == "progress"]
+            self.assertEqual(progress[-1]["text"], "Merge adapters: 1/1 layers (100%) · writing LORA")
             self.assertTrue(out.with_suffix(".txt").exists())
 
     def test_direct_lokr_output_has_no_alpha(self):

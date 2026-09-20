@@ -314,6 +314,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
     )
     tmp_output_path = output_path + ".tmp"
+    total_tensors = len(base_manifest)
+    progress_every = max(1, total_tensors // 100)
     with open(tmp_output_path, "wb") as out_f, ExitStack() as stack:
         header = _build_safetensors_header(base_manifest, meta)
         out_f.write(struct.pack("<Q", len(header)))
@@ -323,12 +325,18 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             for path in sorted({op["lora_path"] for op in matched_ops if op["lora_path"] != "__builtin_unchain__"})
         }
         with safe_open(base_path, framework="pt", device="cpu") as bf:
-            for key in bf.keys():
+            for index, key in enumerate(bf.keys(), 1):
                 base = bf.get_tensor(key)
                 ops = ops_by_target.get(key)
                 if not ops:
                     _write_tensor_bytes(out_f, base)
                     del base
+                    if index % progress_every == 0 or index == total_tensors:
+                        yield _progress(
+                            f"LoRA merge: {index}/{total_tensors} tensors "
+                            f"({index * 100 // total_tensors}%) · {merge_summary['altered_targets']}/"
+                            f"{merge_summary['target_tensors']} targets altered"
+                        )
                     continue
                 tensor, used_device, fallback_reason = _merge_target_with_policy(
                     base, ops, lora_handles, adaptive, merge_device, cuda_device, vram_headroom_mb,
@@ -347,6 +355,12 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     device_summary["cpu_tensors"] += 1
                 if fallback_reason:
                     device_summary[fallback_reason] += 1
+                if index % progress_every == 0 or index == total_tensors:
+                    yield _progress(
+                        f"LoRA merge: {index}/{total_tensors} tensors "
+                        f"({index * 100 // total_tensors}%) · {merge_summary['altered_targets']}/"
+                        f"{merge_summary['target_tensors']} targets altered"
+                    )
     os.replace(tmp_output_path, output_path)
 
     yield _log(
@@ -401,6 +415,10 @@ def _log(text: str) -> Dict[str, str]:
 
 def _status(status: str) -> Dict[str, str]:
     return {"type": "status", "status": status}
+
+
+def _progress(text: str) -> Dict[str, str]:
+    return {"type": "progress", "text": text}
 
 
 def _report(base_name: str, target_key: str | None, status: str, lora_path: str, **extra: Any) -> Dict[str, Any]:

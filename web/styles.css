@@ -494,6 +494,13 @@ input, select, textarea { padding: 8px 10px; }
 .lora-actions {
   margin-top: 14px;
 }
+.adapter-output-indicator {
+  grid-column: 1 / -1;
+  margin: -2px 0 2px;
+  color: #7dffb2;
+  font-size: 12px;
+}
+
 .muted-note {
   margin: 0;
   color: var(--muted);

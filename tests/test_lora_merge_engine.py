@@ -68,6 +68,29 @@ class LoraMergeEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exceeds safe limit"):
             lora_merge_engine._validate_lora_strengths([lora], global_strength=1.0)
 
+    def test_merge_streams_tensor_progress_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base = tmp / "base.safetensors"
+            lora = tmp / "lora.safetensors"
+            out = tmp / "merged.safetensors"
+            save_file({"blocks.0.attn.wq.weight": torch.zeros(3, 4)}, str(base))
+            save_file({
+                "lora_unet_blocks_0_attn_wq.lora_down.weight": torch.ones(2, 4),
+                "lora_unet_blocks_0_attn_wq.lora_up.weight": torch.ones(3, 2),
+            }, str(lora))
+
+            events = list(run_lora_merge({
+                "base_path": str(base), "loras": [{"path": str(lora)}],
+                "output_path": str(out), "architecture": "Krea 2", "strategy": "Balanced",
+                "global_strength": 1.0, "dry_run": False, "strict_matching": True,
+                "merge_device": "cpu",
+            }))
+
+            progress = [event for event in events if event.get("type") == "progress"]
+            self.assertEqual(progress[-1]["text"], "LoRA merge: 1/1 tensors (100%) · 1/1 targets altered")
+            self.assertFalse(any(event.get("status") for event in progress))
+
     def test_cuda_oom_falls_back_to_cpu_and_writes_correct_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
