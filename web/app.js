@@ -24,11 +24,16 @@ const state = {
   browserSort: {key: "name", direction: "asc"},
   appVersion: "",
   mmOverlayPath: "",
+  mmSelectedBlocks: new Set(Array.from({length: 20}, (_, index) => index + 30)),
   mmRecipe: "h3_hybrid",
   mmRank: 1024,
   mmStrength: 1,
   extractMergedPath: "",
   extractPrunedPath: "",
+  extractBlocks: [],
+  extractSelectedBlocks: new Set(),
+  extractScannedPath: "",
+  extractSelectionSaved: false,
 };
 
 const JOB_PERSIST_KEY = "dasiwa_active_job";
@@ -87,6 +92,16 @@ function currentSettings() {
       recipe: $("mm-recipe").value,
       rank: $("mm-rank").value,
       strength: $("mm-strength").value,
+      blockRangeStart: $("mm-block-start").value,
+      blockRangeEnd: $("mm-block-end").value,
+      blockSelection: $("mm-block-selection").value,
+      overlayBlocks: [...state.mmSelectedBlocks].sort((a, b) => a - b),
+      finalAdalnFromOverlay: $("mm-final-adaln").checked,
+      modalityMode: $("mm-modality-mode").value,
+      audioBlocks: $("mm-audio-blocks").value,
+      textBlocks: $("mm-text-blocks").value,
+      audioOutFromOverlay: $("mm-audio-out").checked,
+      blendMode: $("mm-blend-mode").value,
     },
     extract: {
       modifiedPath: state.extractMergedPath,
@@ -95,6 +110,9 @@ function currentSettings() {
       energy: $("extract-energy").value,
       minRank: $("extract-min-rank").value,
       maxRank: $("extract-max-rank").value,
+      blockFilter: $("extract-block-filter").checked,
+      blockBase: state.sourcePath,
+      selectedBlocks: [...state.extractSelectedBlocks],
     },
     pickerDirectories: state.pickerDirectories,
     browserSort: state.browserSort,
@@ -175,6 +193,23 @@ function loadSettings() {
   $("mm-recipe").value = modelMerge.recipe || s.mmRecipe || "h3_hybrid";
   $("mm-rank").value = modelMerge.rank ?? s.mmRank ?? 1024;
   $("mm-strength").value = modelMerge.strength ?? s.mmStrength ?? 1;
+  $("mm-block-start").value = modelMerge.blockRangeStart ?? 30;
+  $("mm-block-end").value = modelMerge.blockRangeEnd ?? 49;
+  $("mm-block-selection").value = modelMerge.blockSelection === "custom" ? "custom" : "range";
+  if (Array.isArray(modelMerge.overlayBlocks) && modelMerge.overlayBlocks.every(
+    (block) => Number.isInteger(block) && block >= 0 && block < 50
+  )) {
+    state.mmSelectedBlocks = new Set(modelMerge.overlayBlocks);
+  }
+  renderModelMergeBlockGrid();
+  updateModelMergeBlockSelection();
+  $("mm-final-adaln").checked = !!modelMerge.finalAdalnFromOverlay;
+  $("mm-modality-mode").value = modelMerge.modalityMode === "split" ? "split" : "whole";
+  $("mm-audio-blocks").value = ["all", "selected", "base"].includes(modelMerge.audioBlocks) ? modelMerge.audioBlocks : "all";
+  $("mm-text-blocks").value = ["all", "selected", "base"].includes(modelMerge.textBlocks) ? modelMerge.textBlocks : "all";
+  $("mm-audio-out").checked = !!modelMerge.audioOutFromOverlay;
+  updateModelMergeModalityVisibility();
+  $("mm-blend-mode").value = "binary";
 
   const extract = s.extract || {};
   state.extractMergedPath = extract.modifiedPath || "";
@@ -183,6 +218,12 @@ function loadSettings() {
   $("extract-energy").value = extract.energy ?? s.extractEnergy ?? 0.99;
   $("extract-min-rank").value = extract.minRank ?? s.extractMinRank ?? 1;
   $("extract-max-rank").value = extract.maxRank ?? s.extractMaxRank ?? 0;
+  $("extract-block-filter").checked = !!extract.blockFilter;
+  if (extract.blockBase === state.sourcePath && Array.isArray(extract.selectedBlocks)) {
+    state.extractSelectedBlocks = new Set(extract.selectedBlocks);
+    state.extractSelectionSaved = true;
+  }
+  updateExtractBlockVisibility();
 
   setPathLabel("source-label", state.sourcePath, "Choose file");
   setPathLabel("mm-overlay-label", state.mmOverlayPath);
@@ -372,6 +413,11 @@ async function init() {
 
   // Try to restore settings from cookie (version-gated)
   const restored = loadSettings();
+  if (!restored) {
+    renderModelMergeBlockGrid();
+    updateModelMergeBlockSelection();
+    updateModelMergeModalityVisibility();
+  }
 
   arch.value = state.architecture;
 
@@ -606,17 +652,71 @@ function refreshModelMergeHint() {
         : `(SVD rank ${rank} — trunk deltas compressed, norms/biases/timestep exact).`) +
       " Works on pruned and full key sets (auto-detected).";
   } else {
-    text = "Base = Source-panel checkpoint, overlay = ref2va. Role auto-detection by filename; " +
-      "only blocks.{25..49} adaln_proj tensors come from the overlay.";
+    const split = $("mm-modality-mode").value === "split";
+    text = split
+      ? "Experimental modality split: grid/range chooses Ref2VA video AdaLN rows; audio and text rows have independent policies. Compare every output against full Ref2VA for audio and visual references."
+      : "Binary hybrid: selected blocks use exact Ref2VA AdaLN tensors; others use FL2VA. This does not guarantee full reference-audio fidelity.";
   }
   hint.textContent = text;
   hint.classList.toggle("warn", warn);
 }
 
+function renderModelMergeBlockGrid() {
+  const grid = $("mm-block-grid");
+  const fragment = document.createDocumentFragment();
+  for (let block = 0; block < 50; block++) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = String(block).padStart(2, "0");
+    button.dataset.block = String(block);
+    button.title = `Block ${block}: ${state.mmSelectedBlocks.has(block) ? "ref2va" : "fl2va"} AdaLN`;
+    button.setAttribute("aria-label", `Block ${block}: ${state.mmSelectedBlocks.has(block) ? "ref2va" : "fl2va"}`);
+    button.setAttribute("aria-pressed", String(state.mmSelectedBlocks.has(block)));
+    button.classList.toggle("selected", state.mmSelectedBlocks.has(block));
+    fragment.appendChild(button);
+  }
+  grid.replaceChildren(fragment);
+  $("mm-block-count").textContent = `${state.mmSelectedBlocks.size} / 50 blocks from ref2va`;
+}
+
+function updateModelMergeModalityVisibility() {
+  const split = $("mm-modality-mode").value === "split";
+  $("mm-modality-options").style.display = split ? "" : "none";
+  const hint = document.querySelector("#mm-custom-controls .hint");
+  hint.textContent = split
+    ? "Selected = ref2va video rows; audio/text rows use their own controls. Experimental, not proven audio-preserving."
+    : "Selected = ref2va AdaLN; unselected = fl2va. Sparse selections are experimental and may affect audio/reference fidelity.";
+  $("mm-block-grid").setAttribute("aria-label", split ? "Ref2VA video AdaLN blocks 0 through 49" : "Ref2VA AdaLN overlay blocks 0 through 49");
+}
+
+function updateModelMergeBlockSelection() {
+  const custom = $("mm-block-selection").value === "custom";
+  $("mm-range-controls").style.display = custom ? "none" : "";
+  $("mm-custom-controls").style.display = custom ? "" : "none";
+}
+
+function applyModelMergeBlockPreset(preset) {
+  const start = Number($("mm-block-start").value);
+  const end = Number($("mm-block-end").value);
+  if (preset === "range" && (!Number.isInteger(start) || !Number.isInteger(end)
+      || start < 0 || end > 49 || end < start)) {
+    return log("Select a valid block range before applying the Range grid preset.\n");
+  }
+  state.mmSelectedBlocks = new Set(Array.from({length: 50}, (_, block) => block).filter((block) => {
+    if (preset === "range") return block >= start && block <= end;
+    if (preset === "even") return block % 2 === 0;
+    if (preset === "odd") return block % 2 === 1;
+    return preset === "all";
+  }));
+  renderModelMergeBlockGrid();
+  saveSettings();
+}
+
 function updateDeltaOptionsVisibility() {
-  const wrap = $("mm-delta-options");
-  if (!wrap) return;
-  wrap.style.display = $("mm-recipe").value === "h3_delta" ? "" : "none";
+  const hybridWrap = $("mm-hybrid-options");
+  const deltaWrap = $("mm-delta-options");
+  if (hybridWrap) hybridWrap.style.display = $("mm-recipe").value === "h3_hybrid" ? "" : "none";
+  if (deltaWrap) deltaWrap.style.display = $("mm-recipe").value === "h3_delta" ? "" : "none";
 }
 
 function updateModelMergeVisibility() {
@@ -626,6 +726,74 @@ function updateModelMergeVisibility() {
 function updateExtractRecipeVisibility() {
   const pruned = $("extract-mode").value === "h3_pruned";
   $("extract-pick-pruned").style.display = pruned ? "" : "none";
+}
+
+function updateExtractBlockVisibility() {
+  $("extract-block-controls").style.display = $("extract-block-filter").checked ? "" : "none";
+}
+
+function renderExtractBlocks() {
+  const fragment = document.createDocumentFragment();
+  let family = "";
+  let row;
+  for (const block of state.extractBlocks) {
+    const dot = block.lastIndexOf(".");
+    const blockFamily = block.slice(0, dot);
+    if (blockFamily !== family) {
+      family = blockFamily;
+      const heading = document.createElement("p");
+      heading.className = "hint";
+      heading.textContent = family;
+      fragment.appendChild(heading);
+      row = document.createElement("div");
+      row.className = "mm-block-grid";
+      fragment.appendChild(row);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.block = block;
+    button.textContent = block.slice(dot + 1).padStart(2, "0");
+    button.title = `Extract ${block}`;
+    button.setAttribute("aria-label", `Extract ${block}`);
+    button.setAttribute("aria-pressed", String(state.extractSelectedBlocks.has(block)));
+    button.classList.toggle("selected", state.extractSelectedBlocks.has(block));
+    row.appendChild(button);
+  }
+  $("extract-block-grid").replaceChildren(fragment);
+  $("extract-block-count").textContent = state.extractBlocks.length
+    ? `${state.extractSelectedBlocks.size} / ${state.extractBlocks.length} blocks selected (non-block tensors excluded)`
+    : "No blocks found in base checkpoint.";
+}
+
+async function scanExtractBlocks() {
+  const path = state.sourcePath;
+  if (!path || !path.toLowerCase().endsWith(".safetensors")) {
+    state.extractScannedPath = "";
+    state.extractBlocks = [];
+    $("extract-block-grid").replaceChildren();
+    $("extract-block-count").textContent = "Pick a safetensors base checkpoint to scan blocks.";
+    return;
+  }
+  state.extractScannedPath = "";
+  $("extract-block-count").textContent = "Scanning base checkpoint…";
+  try {
+    const data = await api(`/api/lora/extract/blocks?path=${encodeURIComponent(path)}`);
+    if (state.sourcePath !== path) return;
+    const selection = state.extractSelectedBlocks;
+    state.extractBlocks = data.blocks;
+    state.extractSelectedBlocks = state.extractSelectionSaved
+      ? new Set(data.blocks.filter((block) => selection.has(block)))
+      : new Set(data.blocks);
+    state.extractSelectionSaved = true;
+    state.extractScannedPath = path;
+    renderExtractBlocks();
+    saveSettings();
+  } catch (err) {
+    if (state.sourcePath !== path) return;
+    state.extractBlocks = [];
+    $("extract-block-grid").replaceChildren();
+    $("extract-block-count").textContent = `Block scan failed: ${err.message}`;
+  }
 }
 
 async function startModelMerge() {
@@ -642,11 +810,37 @@ async function startModelMerge() {
   const recipe = $("mm-recipe").value;
   let rank = 0;
   let strength = 1.0;
+  let blockRangeStart = 30;
+  let blockRangeEnd = 49;
+  let finalAdalnFromOverlay = false;
+  let blendMode = "binary";
+  let overlayBlocks;
+  let modalityMode = "whole";
+  let audioBlocks = "all";
+  let textBlocks = "all";
+  let audioOutFromOverlay = false;
   if (recipe === "h3_delta") {
     const r = parseInt($("mm-rank").value, 10);
     rank = Number.isFinite(r) && r >= 0 ? r : 0;
     const s = parseFloat($("mm-strength").value);
     strength = Number.isFinite(s) && s > 0 ? s : 1.0;
+  } else if (recipe === "h3_hybrid") {
+    const bs = parseInt($("mm-block-start").value, 10);
+    blockRangeStart = Number.isFinite(bs) && bs >= 0 ? bs : 30;
+    const be = parseInt($("mm-block-end").value, 10);
+    blockRangeEnd = Number.isFinite(be) && be >= blockRangeStart ? be : 49;
+    finalAdalnFromOverlay = $("mm-final-adaln").checked;
+    modalityMode = $("mm-modality-mode").value;
+    if (modalityMode === "split") {
+      audioBlocks = $("mm-audio-blocks").value;
+      textBlocks = $("mm-text-blocks").value;
+      audioOutFromOverlay = $("mm-audio-out").checked;
+    }
+    blendMode = "binary";
+    if ($("mm-block-selection").value === "custom") {
+      overlayBlocks = [...state.mmSelectedBlocks].sort((a, b) => a - b);
+      if (!overlayBlocks.length) return log("Select at least one ref2va block in the grid before merging.\n");
+    }
   }
 
   $("start").disabled = true;
@@ -667,6 +861,15 @@ async function startModelMerge() {
         recipe,
         rank,
         strength,
+        block_range_start: blockRangeStart,
+        block_range_end: blockRangeEnd,
+        ...(overlayBlocks !== undefined ? {overlay_blocks: overlayBlocks} : {}),
+        final_adaln_from_overlay: finalAdalnFromOverlay,
+        modality_mode: modalityMode,
+        audio_blocks: audioBlocks,
+        text_blocks: textBlocks,
+        audio_out_from_overlay: audioOutFromOverlay,
+        blend_mode: blendMode,
         dry_run: dryRun,
         preserve_loader_metadata: $("preserve-loader-metadata").checked,
         watermark: $("watermark").checked,
@@ -877,6 +1080,33 @@ function wireEvents() {
     refreshModelMergeHint();
     saveSettings();
   });
+  $("mm-block-selection").addEventListener("change", () => {
+    updateModelMergeBlockSelection();
+    saveSettings();
+  });
+  $("mm-block-grid").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-block]");
+    if (!button) return;
+    const block = Number(button.dataset.block);
+    if (state.mmSelectedBlocks.has(block)) state.mmSelectedBlocks.delete(block);
+    else state.mmSelectedBlocks.add(block);
+    renderModelMergeBlockGrid();
+    saveSettings();
+  });
+  document.querySelectorAll("[data-mm-preset]").forEach((button) => {
+    button.addEventListener("click", () => applyModelMergeBlockPreset(button.dataset.mmPreset));
+  });
+  $("mm-modality-mode").addEventListener("change", () => {
+    updateModelMergeModalityVisibility();
+    refreshModelMergeHint();
+    saveSettings();
+  });
+  ["mm-audio-blocks", "mm-text-blocks", "mm-audio-out"].forEach((id) => {
+    $(id).addEventListener("change", saveSettings);
+  });
+  ["mm-block-start", "mm-block-end", "mm-final-adaln"].forEach((id) => {
+    $(id).addEventListener("change", saveSettings);
+  });
   $("mm-rank").addEventListener("change", saveSettings);
   $("mm-strength").addEventListener("change", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
@@ -886,6 +1116,25 @@ function wireEvents() {
     updateExtractRecipeVisibility();
     saveSettings();
   });
+  $("extract-block-filter").addEventListener("change", () => {
+    updateExtractBlockVisibility();
+    if ($("extract-block-filter").checked && state.extractScannedPath !== state.sourcePath) scanExtractBlocks();
+    saveSettings();
+  });
+  $("extract-block-grid").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-block]");
+    if (!button) return;
+    const block = button.dataset.block;
+    if (state.extractSelectedBlocks.has(block)) state.extractSelectedBlocks.delete(block);
+    else state.extractSelectedBlocks.add(block);
+    renderExtractBlocks();
+    saveSettings();
+  });
+  document.querySelectorAll("[data-extract-preset]").forEach((button) => button.addEventListener("click", () => {
+    state.extractSelectedBlocks = new Set(button.dataset.extractPreset === "all" ? state.extractBlocks : []);
+    renderExtractBlocks();
+    saveSettings();
+  }));
   ["extract-energy", "extract-min-rank", "extract-max-rank"].forEach((id) => $(id).addEventListener("change", saveSettings));
   $("extract-pick-merged").addEventListener("click", () => openBrowser("extract-merged"));
   $("extract-pick-pruned").addEventListener("click", () => openBrowser("extract-pruned"));
@@ -958,6 +1207,7 @@ function setWorkflowMode(mode) {
   // Show the sidebar Model Merge section only in model mode.
   $("mm-side-panel").classList.toggle("hidden", mode !== "model");
   $("extract-side-panel").classList.toggle("hidden", mode !== "extract");
+  if (mode === "extract" && state.sourcePath && state.extractScannedPath !== state.sourcePath) scanExtractBlocks();
   updateExtractRecipeVisibility();
   updateDeltaOptionsVisibility();
   applyControlVisibility(mode);
@@ -1031,6 +1281,7 @@ async function searchFiles(query, path) {
         : item.name,
       path: item.path,
       is_dir: false,
+      is_symlink: item.is_symlink,
       size: item.size,
       modified_at: item.modified_at,
     }));
@@ -1115,7 +1366,10 @@ function renderBrowserList() {
 
     const kindSpan = document.createElement("span");
     kindSpan.className = "kind";
-    kindSpan.textContent = item.is_dir ? "folder" : "file";
+    kindSpan.textContent = item.is_symlink
+      ? (item.is_dir ? "link · folder" : "link · file")
+      : (item.is_dir ? "folder" : "file");
+    kindSpan.title = item.is_symlink ? "Symbolic link (opens its target)" : "";
     btn.appendChild(kindSpan);
 
     btn.addEventListener("click", () => {
@@ -1346,6 +1600,12 @@ function renderLoras() {
 }
 
 async function selectSource(path) {
+  if (state.sourcePath !== path) {
+    state.extractBlocks = [];
+    state.extractSelectedBlocks.clear();
+    state.extractScannedPath = "";
+    state.extractSelectionSaved = false;
+  }
   rememberPickerDirectory("file", path);
   state.sourcePath = path;
   setPathLabel("source-label", path, "Choose file");
@@ -1371,6 +1631,7 @@ async function selectSource(path) {
   }
   saveSettings();
   if (state.workflowMode === "model") refreshModelMergeHint();
+  if (state.workflowMode === "extract") scanExtractBlocks();
 }
 
 async function refreshMetadata() {
@@ -1471,6 +1732,9 @@ async function startLoraExtract() {
   if (!state.sourcePath || !state.extractMergedPath) return log("Select the base and modified checkpoints.\n");
   if (recipe === "h3_pruned" && !state.extractPrunedPath) return log("Select the target pruned checkpoint for the MiniMax H3 pruned recipe.\n");
   if (!$("model-name").value && !$("mm-dry-run").checked) return log("Enter a Display & Output Name.\n");
+  const limitBlocks = $("extract-block-filter").checked;
+  if (limitBlocks && state.extractScannedPath !== state.sourcePath) return log("Wait for base block scan before extracting.\n");
+  if (limitBlocks && !state.extractSelectedBlocks.size) return log("Select at least one block to extract.\n");
   $("start").disabled = true; $("stop").disabled = false;
   try {
     const data = await api("/api/lora/extract", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
@@ -1478,6 +1742,7 @@ async function startLoraExtract() {
       models_dir: state.modelsDir, output_name: $("model-name").value, architecture: state.architecture, recipe: recipe,
       frobenius_energy: Number($("extract-energy").value), min_rank: Number($("extract-min-rank").value),
       max_rank: Number($("extract-max-rank").value), dry_run: $("mm-dry-run").checked,
+      ...(limitBlocks ? {selected_blocks: [...state.extractSelectedBlocks]} : {}),
     })});
     state.jobId = data.job_id; attachEvents(data.job_id);
   } catch (err) { log(`LoRA extract failed to start: ${err.message}\n`); $("start").disabled = false; $("stop").disabled = true; }

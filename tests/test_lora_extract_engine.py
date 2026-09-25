@@ -7,10 +7,37 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from core.lora_extract_engine import run_lora_extract
+from core.lora_extract_engine import checkpoint_blocks, run_lora_extract
 
 
 class TestGenericCheckpointLoraExtract(unittest.TestCase):
+    @mock.patch("core.lora_extract_engine.verify_architecture_match", return_value=(True, "ok"))
+    def test_selected_blocks_only_extract_requested_family_and_index(self, _verify):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base, modified, output = (root / name for name in ("base.safetensors", "modified.safetensors", "adapter.safetensors"))
+            keys = ["blocks.0.attn.weight", "blocks.1.attn.weight",
+                    "transformer_blocks.0.attn.weight", "head.weight"]
+            save_file({key: torch.zeros((2, 2)) for key in keys}, str(base))
+            save_file({key: torch.eye(2) for key in keys}, str(modified))
+            self.assertEqual(checkpoint_blocks(str(base)), ["blocks.0", "blocks.1", "transformer_blocks.0"])
+            payload = {"recipe": "generic", "architecture": "WAN 2.2", "base_path": str(base),
+                       "merged_path": str(modified), "output_path": str(output),
+                       "selected_blocks": ["blocks.1"], "frobenius_energy": 1.0}
+            events = list(run_lora_extract(payload))
+            self.assertEqual(events[-1]["status"], "finished")
+            with safe_open(str(output), framework="pt", device="cpu") as handle:
+                self.assertEqual([key for key in handle.keys() if key.endswith("lora_A.weight")],
+                                 ["diffusion_model.blocks.1.attn.lora_A.weight"])
+                self.assertEqual(handle.metadata()["selected_blocks"], '["blocks.1"]')
+            self.assertIn("Selected blocks: blocks.1", (Path(str(output) + ".txt")).read_text())
+            with self.assertRaisesRegex(ValueError, "selected_blocks"):
+                list(run_lora_extract({**payload, "output_path": str(root / "invalid.safetensors"),
+                                       "selected_blocks": ["blocks.9"], "dry_run": True}))
+            with self.assertRaisesRegex(ValueError, "selected_blocks"):
+                list(run_lora_extract({**payload, "output_path": str(root / "invalid.safetensors"),
+                                       "selected_blocks": [], "dry_run": True}))
+
     @mock.patch("core.lora_extract_engine.verify_architecture_match", return_value=(True, "ok"))
     def test_generic_recipe_extracts_two_checkpoint_delta_as_standard_lora(self, _verify):
         with tempfile.TemporaryDirectory() as tmp:

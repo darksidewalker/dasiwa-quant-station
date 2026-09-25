@@ -14,6 +14,7 @@ import os
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import torch
@@ -25,6 +26,9 @@ from core.model_merge_engine import (
     _classify_h3_family,
     _is_svd_eligible,
     _randomized_svd_cap,
+    _commutator_conflict,
+    _larv_tier_scales,
+    _larv_block_scales,
 )
 
 
@@ -76,6 +80,9 @@ def _payload(base, overlay, out_dir, **extra):
         "output_dir": out_dir,
         "output_name": "out_hybrid.safetensors",
         "watermark": False,
+        # Test fixtures use 4 blocks; default range (30-49) would select none.
+        "block_range_start": extra.pop("block_range_start", 0),
+        "block_range_end": extra.pop("block_range_end", 3),
         **extra,
     }
 
@@ -115,8 +122,10 @@ class H3ModelMergeTests(unittest.TestCase):
         self._write_pair()
         out1 = Path(self.dir) / "out_a.safetensors"
         out2 = Path(self.dir) / "out_b.safetensors"
-        p1 = _payload(str(self.fl), str(self.ref), str(self.dir), output_name="out_a.safetensors")
-        p2 = _payload(str(self.ref), str(self.fl), str(self.dir), output_name="out_b.safetensors")
+        p1 = _payload(str(self.fl), str(self.ref), str(self.dir), output_name="out_a.safetensors",
+                      block_range_start=0, block_range_end=3)
+        p2 = _payload(str(self.ref), str(self.fl), str(self.dir), output_name="out_b.safetensors",
+                      block_range_start=0, block_range_end=3)
         _events(p1)
         _events(p2)
         self.assertTrue(out1.exists())
@@ -125,7 +134,9 @@ class H3ModelMergeTests(unittest.TestCase):
 
     def test_overlay_provenance(self):
         self._write_pair()
-        _events(_payload(str(self.fl), str(self.ref), str(self.dir)))
+        # Explicit range 0-3: all blocks overlaid in this 4-block fixture
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         block_range_start=0, block_range_end=3))
         out = Path(self.dir) / "out_hybrid.safetensors"
         # overlay (blocks 2..3) adaln must come from REF (value 1.0)
         self.assertEqual(_read_safetensors_tensor(out, "blocks.2.adaln_proj.linear.weight").mean().item(), 1.0)
@@ -191,12 +202,51 @@ class H3ModelMergeTests(unittest.TestCase):
         self.assertNotIn("rope.comfy_quant", keys)
         self.assertIn("blocks.2.adaln_proj.linear.weight", keys)
 
+    def test_hybrid_writes_companion_recipe_for_custom_blocks(self):
+        self._write_pair()
+        fl = _h3_tensors(distinct_blocks=(), base=0.0)
+        ref = _h3_tensors(distinct_blocks=(2, 3), base=0.0, distinct=1.0)
+        fl["final_layer.adaln_proj.linear.weight"] = torch.zeros(8, 4)
+        ref["final_layer.adaln_proj.linear.weight"] = torch.ones(8, 4)
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+        name = "out_recipe.safetensors"
+        events = _events(_payload(str(self.ref), str(self.fl), str(self.dir),
+                                  output_name=name, overlay_blocks=[1, 3],
+                                  block_range_start=0, block_range_end=2,
+                                  final_adaln_from_overlay=True,
+                                  preserve_loader_metadata=False))
+        recipe_path = Path(self.dir) / "out_recipe.txt"
+        self.assertEqual(events[-1]["status"], "finished")
+        self.assertTrue(recipe_path.is_file())
+        content = recipe_path.read_text(encoding="utf-8")
+        for expected in ("Recipe: h3_hybrid", "Architecture: MiniMax H3",
+                         f"Base checkpoint: {self.fl}", f"Overlay checkpoint: {self.ref}",
+                         "Blend mode: binary", "Block selection: custom",
+                         "Selected blocks: 1, 3", "Final AdaLN requested: yes",
+                         "Final AdaLN from overlay: yes",
+                         "Preserve loader metadata: no", "Watermark: off",
+                         "Overlay tensors: 5"):
+            self.assertIn(expected, content)
+        self.assertIn(str(recipe_path), "".join(event.get("text", "") for event in events))
+
+    def test_hybrid_range_recipe_records_actual_block_set(self):
+        self._write_pair()
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name="range_recipe.safetensors",
+                         block_range_start=2, block_range_end=3))
+        recipe = (Path(self.dir) / "range_recipe.txt").read_text(encoding="utf-8")
+        self.assertIn("Block selection: range", recipe)
+        self.assertIn("Block range: 2–3", recipe)
+        self.assertIn("Selected blocks: 2, 3", recipe)
+
     def test_dry_run_writes_nothing(self):
         self._write_pair()
         out = Path(self.dir) / "out_hybrid.safetensors"
         events = _events(_payload(str(self.fl), str(self.ref), str(self.dir), dry_run=True))
         self.assertEqual(events[-1]["status"], "dry-run complete")
         self.assertFalse(out.exists())
+        self.assertFalse((Path(self.dir) / "out_hybrid.txt").exists())
 
     def test_hybrid_streams_progress_events(self):
         """h3_hybrid streams `h3_hybrid N/M tensors` progress ticks as
@@ -218,6 +268,213 @@ class H3ModelMergeTests(unittest.TestCase):
         # Progress ticks must not touch the topbar status line: no `status` field.
         self.assertFalse(any(e.get("status") for e in progress))
         self.assertEqual(events[-1], {"type": "done", "status": "finished"})
+
+    def test_custom_block_range(self):
+        """Only specified block range is overlaid; others stay base."""
+        self._write_pair()
+        out_name = "out_range.safetensors"
+        # Only overlay blocks 2-3 (last 2 of 4)
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=out_name,
+                         block_range_start=2, block_range_end=3))
+        out = Path(self.dir) / out_name
+        # Blocks 2-3: overlay (value 1.0)
+        self.assertEqual(_read_safetensors_tensor(out, "blocks.2.adaln_proj.linear.weight").mean().item(), 1.0)
+        self.assertEqual(_read_safetensors_tensor(out, "blocks.3.adaln_proj.linear.weight").mean().item(), 1.0)
+        # Blocks 0-1: base (value 0.0)
+        self.assertEqual(_read_safetensors_tensor(out, "blocks.0.adaln_proj.linear.weight").mean().item(), 0.0)
+        self.assertEqual(_read_safetensors_tensor(out, "blocks.1.adaln_proj.linear.weight").mean().item(), 0.0)
+
+    def test_sparse_block_selection_overlays_only_requested_adaln(self):
+        self._write_pair()
+        save_file(_h3_tensors(distinct_blocks=(0, 1, 2, 3), base=0.0, distinct=1.0), self.ref)
+        name = "out_sparse.safetensors"
+        events = _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                                  output_name=name, block_range_start=0,
+                                  block_range_end=3, overlay_blocks=[0, 2]))
+        self.assertEqual(events[-1]["status"], "finished")
+        for i in range(4):
+            for kind in ("weight", "bias"):
+                value = _read_safetensors_tensor(Path(self.dir) / name,
+                    f"blocks.{i}.adaln_proj.linear.{kind}").mean().item()
+                self.assertEqual(value, 1.0 if i in (0, 2) else 0.0)
+        meta, _ = _read_meta(Path(self.dir) / name)
+        self.assertEqual(json.loads(meta["h3_hybrid_overlay_blocks"]), [0, 2])
+        self.assertEqual(meta["h3_hybrid_block_selection"], "custom")
+        self.assertIn("blocks 0,2", "".join(event.get("text", "") for event in events))
+
+    def test_sparse_selection_rejects_invalid_indices_without_output(self):
+        self._write_pair()
+        for selection in ([], [0, 0], [0, 4], [-1, 2], [0, "2"], "0,2", [True]):
+            name = "out_invalid.safetensors"
+            events = _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                                      output_name=name, overlay_blocks=selection))
+            self.assertEqual(events[-1]["status"], "failed", selection)
+            self.assertFalse((Path(self.dir) / name).exists(), selection)
+
+    def test_sparse_selection_and_final_layer_are_independent(self):
+        fl = _h3_tensors(base=0.0)
+        ref = _h3_tensors(distinct_blocks=(1,), base=0.0, distinct=1.0)
+        fl["final_layer.adaln_proj.linear.weight"] = torch.zeros(8, 4)
+        ref["final_layer.adaln_proj.linear.weight"] = torch.full((8, 4), 9.0)
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+        name = "out_sparse_final.safetensors"
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=name, overlay_blocks=[1], final_adaln_from_overlay=True))
+        self.assertEqual(_read_safetensors_tensor(Path(self.dir) / name,
+            "final_layer.adaln_proj.linear.weight").mean().item(), 9.0)
+        self.assertEqual(_read_safetensors_tensor(Path(self.dir) / name,
+            "blocks.2.adaln_proj.linear.weight").mean().item(), 0.0)
+
+    def test_single_block_range(self):
+        """A single-block range overlays only that block."""
+        self._write_pair()
+        out_name = "out_single.safetensors"
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=out_name,
+                         block_range_start=2, block_range_end=2))
+        out = Path(self.dir) / out_name
+        self.assertEqual(_read_safetensors_tensor(out, "blocks.2.adaln_proj.linear.weight").mean().item(), 1.0)
+        for i in (0, 1, 3):
+            self.assertEqual(_read_safetensors_tensor(out, f"blocks.{i}.adaln_proj.linear.weight").mean().item(), 0.0)
+
+    def test_range_clamping(self):
+        """Range beyond actual block count is clamped to valid range."""
+        self._write_pair()
+        out_name = "out_clamped.safetensors"
+        # Request blocks 10-20 but only 4 exist → clamped to 3-3
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=out_name,
+                         block_range_start=10, block_range_end=20))
+        out = Path(self.dir) / out_name
+        # Only last block (3) should be overlaid after clamping
+        self.assertEqual(_read_safetensors_tensor(out, "blocks.3.adaln_proj.linear.weight").mean().item(), 1.0)
+        for i in (0, 1, 2):
+            self.assertEqual(_read_safetensors_tensor(out, f"blocks.{i}.adaln_proj.linear.weight").mean().item(), 0.0)
+
+    def test_final_adaln_from_overlay(self):
+        """final_adaln_from_overlay includes final_layer.adaln_proj in overlay."""
+        # Build fixture with final_layer.adaln_proj
+        fl = _h3_tensors(distinct_blocks=(), base=0.0)
+        ref = _h3_tensors(distinct_blocks=(2, 3), base=0.0, distinct=1.0)
+        fl["final_layer.adaln_proj.linear.weight"] = torch.full((8, 4), 0.0)
+        fl["final_layer.adaln_proj.linear.bias"] = torch.full((4,), 0.0)
+        ref["final_layer.adaln_proj.linear.weight"] = torch.full((8, 4), 9.0)
+        ref["final_layer.adaln_proj.linear.bias"] = torch.full((4,), 9.0)
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+
+        # Without final_adaln toggle: final layer stays base (0.0)
+        out_name1 = "out_no_final.safetensors"
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=out_name1,
+                         block_range_start=2, block_range_end=3))
+        self.assertEqual(
+            _read_safetensors_tensor(Path(self.dir) / out_name1, "final_layer.adaln_proj.linear.weight").mean().item(),
+            0.0
+        )
+
+        # With final_adaln toggle: final layer comes from overlay (9.0)
+        out_name2 = "out_with_final.safetensors"
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=out_name2,
+                         block_range_start=2, block_range_end=3,
+                         final_adaln_from_overlay=True))
+        self.assertEqual(
+            _read_safetensors_tensor(Path(self.dir) / out_name2, "final_layer.adaln_proj.linear.weight").mean().item(),
+            9.0
+        )
+
+    def test_modality_slices_keep_audio_and_select_video_by_block(self):
+        fl, ref = {}, {}
+        for block in range(4):
+            for suffix in ("weight", "bias"):
+                key = f"blocks.{block}.adaln_proj.linear.{suffix}"
+                shape = (36, 4) if suffix == "weight" else (36,)
+                fl[key] = torch.zeros(shape)
+                ref[key] = torch.full(shape, 1.0 + block)
+        fl["final_layer.audio_out.weight"] = torch.zeros((2, 6))
+        fl["final_layer.audio_out.bias"] = torch.zeros(2)
+        ref["final_layer.audio_out.weight"] = torch.ones((2, 6))
+        ref["final_layer.audio_out.bias"] = torch.ones(2)
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+        events = _events(_payload(str(self.fl), str(self.ref), self.dir,
+                                 overlay_blocks=[1, 3], modality_mode="split",
+                                 audio_blocks="all", text_blocks="base",
+                                 audio_out_from_overlay=True))
+        self.assertEqual(events[-1]["status"], "finished")
+        out = Path(self.dir) / "out_hybrid.safetensors"
+        from safetensors import safe_open
+        with safe_open(out, framework="pt") as f:
+            for block in range(4):
+                for suffix in ("weight", "bias"):
+                    tensor = f.get_tensor(f"blocks.{block}.adaln_proj.linear.{suffix}")
+                    rows = tensor.reshape(3, 6, 2, -1)
+                    self.assertEqual(rows[0].unique().tolist(), [float(block + 1)] if block in (1, 3) else [0.0])
+                    self.assertEqual(rows[1].unique().tolist(), [0.0])
+                    self.assertEqual(rows[2].unique().tolist(), [float(block + 1)])
+            self.assertEqual(f.get_tensor("final_layer.audio_out.bias").tolist(), [1.0, 1.0])
+            meta = f.metadata()
+            self.assertEqual(meta["h3_hybrid_modality_mode"], "split")
+            self.assertEqual(meta["h3_hybrid_audio_blocks"], "[0, 1, 2, 3]")
+            self.assertEqual(meta["h3_hybrid_text_blocks"], "[]")
+            self.assertEqual(meta["h3_hybrid_video_blocks"], "[1, 3]")
+        recipe = (Path(self.dir) / "out_hybrid.txt").read_text()
+        self.assertIn("Audio blocks: 0, 1, 2, 3", recipe)
+        self.assertIn("Video blocks: 1, 3", recipe)
+        self.assertIn("Audio output head from overlay: yes", recipe)
+
+    def test_modality_split_dry_run_reports_recipe_without_files(self):
+        fl, ref = {}, {}
+        for block in range(4):
+            for suffix in ("weight", "bias"):
+                key = f"blocks.{block}.adaln_proj.linear.{suffix}"
+                shape = (36, 4) if suffix == "weight" else (36,)
+                fl[key] = torch.zeros(shape)
+                ref[key] = torch.ones(shape)
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+        events = _events(_payload(str(self.fl), str(self.ref), self.dir,
+                                 overlay_blocks=[2], modality_mode="split",
+                                 audio_blocks="selected", text_blocks="base",
+                                 dry_run=True))
+        self.assertEqual(events[-1]["status"], "dry-run complete")
+        self.assertIn("audio=[2]", "".join(event.get("text", "") for event in events))
+        self.assertFalse((Path(self.dir) / "out_hybrid.safetensors").exists())
+        self.assertFalse((Path(self.dir) / "out_hybrid.txt").exists())
+
+    def test_modality_split_rejects_incompatible_adaln_before_writing(self):
+        self._write_pair()
+        events = _events(_payload(str(self.fl), str(self.ref), self.dir,
+                                 overlay_blocks=[2], modality_mode="split"))
+        self.assertEqual(events[-1]["status"], "failed")
+        self.assertFalse((Path(self.dir) / "out_hybrid.safetensors").exists())
+        self.assertFalse((Path(self.dir) / "out_hybrid.txt").exists())
+
+    def test_larv_mode_is_rejected_before_any_output_write(self):
+        """H3 LARV is blocked after black-video regressions; it must not write output."""
+        self._write_pair()
+        out_name = "out_larv_rejected.safetensors"
+        events = _events(_payload(
+            str(self.fl), str(self.ref), str(self.dir), output_name=out_name,
+            block_range_start=2, block_range_end=3, blend_mode="larv_tiered",
+        ))
+        self.assertEqual(events[-1]["status"], "failed")
+        self.assertIn("LARV is disabled", "".join(event.get("text", "") for event in events))
+        self.assertFalse((Path(self.dir) / out_name).exists())
+
+    def test_metadata_records_block_range(self):
+        """Merged output metadata records the block range used."""
+        self._write_pair()
+        out_name = "out_meta.safetensors"
+        _events(_payload(str(self.fl), str(self.ref), str(self.dir),
+                         output_name=out_name,
+                         block_range_start=2, block_range_end=3))
+        meta, _ = _read_meta(Path(self.dir) / out_name)
+        self.assertEqual(meta.get("h3_hybrid_block_start"), "2")
+        self.assertEqual(meta.get("h3_hybrid_block_end"), "3")
 
     def test_missing_overlay_key_fails(self):
         self._write_pair()
@@ -320,6 +577,20 @@ class H3DeltaRecipeTests(unittest.TestCase):
     def test_recipes_listed_includes_delta(self):
         ids = [r["id"] for r in list_recipes()]
         self.assertIn("h3_delta", ids)
+
+    def test_delta_writes_companion_recipe_with_resolved_parameters(self):
+        self._write_delta_pair()
+        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir),
+                                        rank=0, strength=0))
+        self.assertEqual(events[-1]["status"], "finished")
+        recipe_path = Path(self.dir) / "out_delta.txt"
+        content = recipe_path.read_text(encoding="utf-8")
+        for expected in ("Recipe: h3_delta", f"Base checkpoint: {self.fl}",
+                         f"Overlay checkpoint: {self.ref}", "Delta rank: 0",
+                         "Delta mode: exact", "Delta strength: 1.0",
+                         "Watermark: off"):
+            self.assertIn(expected, content)
+        self.assertIn(str(recipe_path), "".join(event.get("text", "") for event in events))
 
     # -- exact delta ---------------------------------------------------------
     def test_exact_delta_applies_shift(self):
@@ -435,6 +706,7 @@ class H3DeltaRecipeTests(unittest.TestCase):
                                         dry_run=True, rank=64))
         self.assertEqual(events[-1]["status"], "dry-run complete")
         self.assertFalse(out.exists())
+        self.assertFalse((Path(self.dir) / "out_delta.txt").exists())
 
     def test_delta_order_agnostic_roles(self):
         self._write_delta_pair()
@@ -505,6 +777,28 @@ class H3DeltaRecipeTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Family classifier
 # ---------------------------------------------------------------------------
+
+class LARVMetricTests(unittest.TestCase):
+    def test_rectangular_conflict_matches_symmetric_paper_definition(self):
+        """The memory-safe conflict metric retains both paper Gram-commutator terms."""
+        base = torch.tensor([[1.0, 2.0], [3.0, 5.0], [7.0, 11.0]])
+        delta = torch.tensor([[2.0, -1.0], [0.5, 4.0], [-3.0, 1.0]])
+        denom = torch.norm(base) * torch.norm(delta) + 1e-10
+        left = torch.norm(base @ delta.t() - delta @ base.t()) / denom
+        right = torch.norm(base.t() @ delta - delta.t() @ base) / denom
+        expected = 0.5 * (left + right)
+        self.assertAlmostEqual(_commutator_conflict(base, delta), float(expected), places=6)
+
+    def test_h3_tiered_gate_never_extrapolates_past_ref2va(self):
+        scales = _larv_tier_scales({22: 0.2, 23: 0.5, 24: 0.9})
+        self.assertEqual(scales, {22: 0.5, 23: 0.75, 24: 1.0})
+
+    def test_h3_continuous_gate_never_extrapolates_past_ref2va(self):
+        scales, _ = _larv_block_scales(
+            {22: (20.0, 0.01), 23: (50.0, 0.02)}, total_layers=50, gate="continuous",
+        )
+        self.assertTrue(all(0.0 <= scale <= 1.0 for scale in scales.values()))
+
 
 class H3FamilyClassificationTests(unittest.TestCase):
     def test_pruned_block_families(self):

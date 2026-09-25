@@ -12,12 +12,29 @@ and the second-checkpoint (ref2va) picker. Output name = the **Display &
 Output Name** field in the Source panel.
 
 - **Base** = fl2va checkpoint (all tensors)
-- **Overlay** = ref2va checkpoint (`blocks.{25..49}.adaln_proj.linear.{bias,weight,weight_scale}`)
+- **Overlay** = ref2va checkpoint. In the default **Whole blocks** mode,
+  blocks 30–49 contribute their entire AdaLN weight and bias; change the
+  inclusive range or select any set of blocks in the 50-block grid.
+- **Modality rows (experimental)** uses that same range/grid for *video* AdaLN
+  rows. Independently choose Ref2VA *audio* and *text* rows from every block,
+  only the selected blocks, or no blocks (FL2VA). The initial split settings
+  keep Ref2VA audio and text rows in every block. Optionally copy the Ref2VA
+  `final_layer.audio_out` weight and bias together; the separate final AdaLN
+  checkbox affects **both** output streams, not just audio. Unlike whole-block
+  selection, row selection requires matching, floating-point, unquantized
+  AdaLN weight and bias tensors in both checkpoints. Unsupported layouts fail
+  before output is written. No AdaLN values are interpolated.
 
 Selection order doesn't matter — the engine auto-detects roles from filenames
-(fl2va/ref2va markers). Works for both pruned (932 keys) and full (1035 keys)
-variants. Output carries `minimax_h3_hybrid=baked` +
-`base_model`/`overlay_model` provenance.
+(fl2va/ref2va markers). Pruned and full H3 variants are supported when the two
+inputs have matching AdaLN shapes. The output carries `minimax_h3_hybrid=baked`,
+source names, the exact selected video/audio/text blocks in metadata, and a
+companion `.txt` containing the effective recipe. Dry runs report the selection
+without writing files. **These modality settings are research ablations, not
+verified full Ref2VA audio-preservation presets.** Compare renders with the
+unmodified Ref2VA and FL2VA under identical reference conditioning, connected
+video/audio VAEs, prompt, seed, and sampler; score voice/audio adherence,
+visual-reference adherence, and output quality separately.
 
 ## Delta-fused MiniMax H3 (`h3_delta`)
 

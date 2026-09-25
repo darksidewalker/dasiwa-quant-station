@@ -67,6 +67,15 @@
         <label class="field"><span title="Extraction recipe">Recipe</span><select id="extract-mode" title="Generic factorizes the difference between two matching checkpoints; the H3 pruned recipe additionally rebases AdaLN"><option value="generic" selected>Any architecture — checkpoint difference</option><option value="h3_full">MiniMax H3 — full LoRA</option><option value="h3_pruned">MiniMax H3 — pruned adapter</option></select></label>
         <button id="extract-pick-merged" class="picker-button drop-target" type="button" title="Pick the modified or fine-tuned checkpoint"><span>Second checkpoint (modified)</span><strong id="extract-merged-label">Pick…</strong></button>
         <button id="extract-pick-pruned" class="picker-button drop-target" type="button" title="Pick the exact pruned checkpoint this H3 adapter will target"><span>Target pruned checkpoint</span><strong id="extract-pruned-label">Pick…</strong></button>
+        <label class="checkline" title="Extract only selected blocks. Non-block tensors are excluded when enabled."><input id="extract-block-filter" type="checkbox"><span>Limit extraction to blocks</span></label>
+        <div id="extract-block-controls" style="display:none">
+          <div class="mm-grid-presets" aria-label="Extract block presets">
+            <button type="button" data-extract-preset="all" title="Select all scanned blocks">All</button>
+            <button type="button" data-extract-preset="none" title="Clear selected blocks">None</button>
+          </div>
+          <div id="extract-block-grid" class="mm-block-grid" role="group" aria-label="Blocks found in base checkpoint"></div>
+          <p id="extract-block-count" class="hint" role="status" aria-live="polite">Pick a base checkpoint to scan blocks.</p>
+        </div>
         <label class="field"><span title="Energy retained in each ordinary matrix LoRA extraction">Frobenius energy</span><input id="extract-energy" type="number" min="0.5" max="1" step="0.001" value="0.990"></label>
         <label class="field"><span title="Smallest permitted LoRA rank">Min rank</span><input id="extract-min-rank" type="number" min="1" step="1" value="1"></label>
         <label class="field"><span title="0 means no maximum rank cap">Max rank</span><input id="extract-max-rank" type="number" min="0" step="1" value="0"></label>
@@ -85,6 +94,77 @@
           <span>Second checkpoint (ref2va)</span>
           <strong id="mm-overlay-label">Pick…</strong>
         </button>
+        <div id="mm-hybrid-options" style="display:none">
+          <label class="field">
+            <span title="Use a contiguous range, or select arbitrary AdaLN blocks from ref2va in the grid. Both use exact binary tensor selection.">Block selection</span>
+            <select id="mm-block-selection" title="Choose contiguous range or a custom set of H3 blocks">
+              <option value="range" selected>Contiguous range</option>
+              <option value="custom">Custom grid</option>
+            </select>
+          </label>
+          <div id="mm-range-controls">
+            <label class="field">
+              <span title="First block (0-indexed) whose adaln_proj tensors come from ref2va. Default 30.">Block range start</span>
+              <input id="mm-block-start" type="number" min="0" max="49" step="1" value="30">
+            </label>
+            <label class="field">
+              <span title="Last block (inclusive) whose adaln_proj tensors come from ref2va. Default 49.">Block range end</span>
+              <input id="mm-block-end" type="number" min="0" max="49" step="1" value="49">
+            </label>
+          </div>
+          <div id="mm-custom-controls" style="display:none">
+            <p class="hint">Selected = ref2va AdaLN; unselected = fl2va. Sparse selections are experimental and may affect audio/reference fidelity.</p>
+            <div class="mm-grid-presets" aria-label="Block selection presets">
+              <button type="button" data-mm-preset="range" title="Select the current contiguous block range">Range</button>
+              <button type="button" data-mm-preset="even" title="Select even blocks 0, 2, …, 48">Even</button>
+              <button type="button" data-mm-preset="odd" title="Select odd blocks 1, 3, …, 49">Odd</button>
+              <button type="button" data-mm-preset="all" title="Select all 50 blocks">All</button>
+              <button type="button" data-mm-preset="none" title="Clear all selected blocks">None</button>
+            </div>
+            <div id="mm-block-grid" class="mm-block-grid" role="group" aria-label="Ref2va AdaLN overlay blocks 0 through 49"></div>
+            <p id="mm-block-count" class="hint" role="status" aria-live="polite"></p>
+          </div>
+          <label class="field">
+            <span title="Binary is the validated MiniMax H3 hybrid method: selected AdaLN blocks are taken directly from ref2va. LARV is disabled because even bounded interpolation produced black output on H3.">Blend mode</span>
+            <select id="mm-blend-mode">
+              <option value="binary" selected>Binary (validated H3 hard switch)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span title="Whole-block switching preserves the old merge. Experimental split copies modality-specific AdaLN rows independently, without interpolation.">AdaLN selection mode</span>
+            <select id="mm-modality-mode" title="Choose whole-block binary overlay or experimental modality-specific rows">
+              <option value="whole" selected>Whole blocks (existing)</option>
+              <option value="split">Modality rows (experimental)</option>
+            </select>
+          </label>
+          <div id="mm-modality-options" style="display:none">
+            <p class="hint">Grid/range selects Ref2VA <strong>video</strong> rows. Audio and text can be kept on Ref2VA across every block. Shared attention means this does not guarantee audio-reference fidelity; compare renders against full Ref2VA.</p>
+            <label class="field">
+              <span title="Ref2VA audio AdaLN rows in all blocks, only grid-selected blocks, or none. Weight and bias rows are copied together.">Ref2VA audio rows</span>
+              <select id="mm-audio-blocks" title="Choose which blocks retain Ref2VA audio AdaLN rows">
+                <option value="all" selected>All blocks</option>
+                <option value="selected">Grid/range blocks only</option>
+                <option value="base">None (FL2VA)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span title="Ref2VA text AdaLN rows in all blocks, only grid-selected blocks, or none.">Ref2VA text rows</span>
+              <select id="mm-text-blocks" title="Choose which blocks retain Ref2VA text AdaLN rows">
+                <option value="all" selected>All blocks</option>
+                <option value="selected">Grid/range blocks only</option>
+                <option value="base">None (FL2VA)</option>
+              </select>
+            </label>
+            <label class="field checkbox-field">
+              <input id="mm-audio-out" type="checkbox" title="Experimentally copy Ref2VA final_layer.audio_out weight and bias; off keeps FL2VA output head">
+              <span title="Independent audio-output-head ablation; disabled by default.">Ref2VA audio output head (experimental)</span>
+            </label>
+          </div>
+          <label class="field checkbox-field">
+            <input id="mm-final-adaln" type="checkbox">
+            <span title="Also take final_layer.adaln_proj from ref2va (independent of selected blocks). This high-risk option can reduce output quality; leave off for initial tests.">Include final_layer.adaln_proj</span>
+          </label>
+        </div>
         <div id="mm-delta-options" style="display:none">
           <label class="field">
             <span title="Delta mode: 0 = exact full delta (≈ ref2va-equivalent, ~38 GB). A rank cap N compresses the trunk attention/MLP deltas to a randomized-SVD approximation while keeping the non-compressible families (RMSNorm, biases, timestep table, rope) exact. Higher rank = closer to exact = larger file + slower.">Delta rank (0 = exact)</span>

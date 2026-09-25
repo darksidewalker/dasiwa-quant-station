@@ -79,6 +79,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/lora/merge", s.handleLoraMerge)
 	mux.HandleFunc("POST /api/lora/compose", s.handleLoraCompose)
 	mux.HandleFunc("POST /api/lora/extract", s.handleLoraExtract)
+	mux.HandleFunc("GET /api/lora/extract/blocks", s.handleExtractBlocks)
 	mux.HandleFunc("POST /api/model-merge", s.handleModelMerge)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
@@ -242,12 +243,13 @@ type browserItem struct {
 	Name       string `json:"name"`
 	Path       string `json:"path"`
 	IsDir      bool   `json:"is_dir"`
+	IsSymlink  bool   `json:"is_symlink,omitempty"`
 	Size       int64  `json:"size"`
 	ModifiedAt string `json:"modified_at"`
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
-	path := cleanPath(r.URL.Query().Get("path"), s.modelsDir)
+	path := expandBrowsePath(r.URL.Query().Get("path"), s.modelsDir)
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -258,17 +260,22 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
+		fullPath := filepath.Join(path, e.Name())
 		info, err := e.Info()
+		if e.Type()&os.ModeSymlink != 0 {
+			info, err = os.Stat(fullPath) // DirEntry.Info uses Lstat for symlinks.
+		}
 		if err != nil {
-			continue
+			continue // broken or unreadable symlink
 		}
 		if !info.IsDir() && !isModelFile(e.Name()) {
 			continue
 		}
 		items = append(items, browserItem{
 			Name:       e.Name(),
-			Path:       filepath.Join(path, e.Name()),
+			Path:       fullPath,
 			IsDir:      info.IsDir(),
+			IsSymlink:  e.Type()&os.ModeSymlink != 0,
 			Size:       fileSize(info),
 			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
 		})
@@ -299,41 +306,49 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	queryLower := strings.ToLower(query)
 	var results []browserItem
-	err := filepath.WalkDir(path, func(fp string, d os.DirEntry, err error) error {
+	visited := make(map[string]bool)
+	var walk func(string)
+	walk = func(dir string) {
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil || visited[real] {
+			return
+		}
+		visited[real] = true
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil // skip inaccessible dirs
+			return // skip inaccessible directories
 		}
-		name := d.Name()
-		if strings.HasPrefix(name, ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
 			}
-			return nil
-		}
-		if !d.IsDir() && !isModelFile(name) {
-			return nil
-		}
-		if d.IsDir() {
-			return nil // files only in search results
-		}
-		if strings.Contains(strings.ToLower(name), queryLower) {
-			info, infoErr := d.Info()
-			if infoErr != nil {
-				return nil
+			fp := filepath.Join(dir, name)
+			info, err := entry.Info()
+			isSymlink := entry.Type()&os.ModeSymlink != 0
+			if isSymlink {
+				info, err = os.Stat(fp)
+			}
+			if err != nil {
+				continue
+			}
+			if info.IsDir() {
+				walk(fp)
+				continue
+			}
+			if !isModelFile(name) || !strings.Contains(strings.ToLower(name), queryLower) {
+				continue
 			}
 			results = append(results, browserItem{
 				Name:       name,
 				Path:       fp,
+				IsSymlink:  isSymlink,
 				Size:       info.Size(),
 				ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
 			})
 		}
-		return nil
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
 	}
+	walk(path)
 	sort.Slice(results, func(i, j int) bool {
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
@@ -351,6 +366,15 @@ func isModelFile(path string) bool {
 }
 
 func cleanPath(value, fallback string) string {
+	value = expandBrowsePath(value, fallback)
+	if real, err := filepath.EvalSymlinks(value); err == nil {
+		value = real
+	}
+	return value
+}
+
+// Keep the selected symlink spelling in the browser so "Up" returns to its parent.
+func expandBrowsePath(value, fallback string) string {
 	if value == "" {
 		value = fallback
 	}
@@ -362,9 +386,6 @@ func cleanPath(value, fallback string) string {
 	}
 	if abs, err := filepath.Abs(value); err == nil {
 		value = abs
-	}
-	if real, err := filepath.EvalSymlinks(value); err == nil {
-		value = real
 	}
 	return value
 }
@@ -555,20 +576,21 @@ type LoraComposeRequest struct {
 }
 
 type LoraExtractRequest struct {
-	BasePath         string  `json:"base_path"`
-	MergedPath       string  `json:"merged_path"`
-	PrunedTargetPath string  `json:"pruned_target_path"`
-	ModelsDir        string  `json:"models_dir"`
-	OutputDir        string  `json:"output_dir"`
-	OutputPath       string  `json:"output_path"`
-	OutputName       string  `json:"output_name"`
-	Architecture     string  `json:"architecture"`
-	Recipe           string  `json:"recipe"`
-	OutputMode       string  `json:"output_mode"` // Legacy alias for h3_full/h3_pruned.
-	FrobeniusEnergy  float64 `json:"frobenius_energy"`
-	MinRank          int     `json:"min_rank"`
-	MaxRank          int     `json:"max_rank"`
-	DryRun           bool    `json:"dry_run"`
+	SelectedBlocks   []string `json:"selected_blocks,omitempty"`
+	BasePath         string   `json:"base_path"`
+	MergedPath       string   `json:"merged_path"`
+	PrunedTargetPath string   `json:"pruned_target_path"`
+	ModelsDir        string   `json:"models_dir"`
+	OutputDir        string   `json:"output_dir"`
+	OutputPath       string   `json:"output_path"`
+	OutputName       string   `json:"output_name"`
+	Architecture     string   `json:"architecture"`
+	Recipe           string   `json:"recipe"`
+	OutputMode       string   `json:"output_mode"` // Legacy alias for h3_full/h3_pruned.
+	FrobeniusEnergy  float64  `json:"frobenius_energy"`
+	MinRank          int      `json:"min_rank"`
+	MaxRank          int      `json:"max_rank"`
+	DryRun           bool     `json:"dry_run"`
 }
 
 type ModelMergeRequest struct {
@@ -584,10 +606,27 @@ type ModelMergeRequest struct {
 	// h3_delta recipe options (ignored by splice recipes):
 	// Rank 0 = exact delta; Rank N = SVD rank cap on SVD-eligible matrices.
 	// Strength scales the delta (0 → treated as 1.0).
-	Rank      int     `json:"rank"`
-	Strength  float64 `json:"strength"`
-	DryRun    bool    `json:"dry_run"`
-	Watermark bool    `json:"watermark"`
+	Rank     int     `json:"rank"`
+	Strength float64 `json:"strength"`
+	// h3_hybrid recipe options (ignored by delta recipes):
+	// Block range for adaln_proj overlay (0-indexed, inclusive).
+	// FinalAdalnFromOverlay adds final_layer.adaln_proj to the overlay set.
+	// BlendMode: only "binary" is accepted for H3; LARV modes are rejected because
+	// they produced black-video regressions even with bounded interpolation.
+	BlockRangeStart int `json:"block_range_start"`
+	BlockRangeEnd   int `json:"block_range_end"`
+	// OverlayBlocks overrides the contiguous range when provided. A pointer
+	// preserves an explicit empty list so Python can reject it instead of
+	// silently falling back to the range.
+	OverlayBlocks         *[]int `json:"overlay_blocks,omitempty"`
+	ModalityMode          string `json:"modality_mode"` // whole or experimental split
+	AudioBlocks           string `json:"audio_blocks"`  // all, selected, base
+	TextBlocks            string `json:"text_blocks"`   // all, selected, base
+	AudioOutFromOverlay   bool   `json:"audio_out_from_overlay"`
+	FinalAdalnFromOverlay bool   `json:"final_adaln_from_overlay"`
+	BlendMode             string `json:"blend_mode"`
+	DryRun                bool   `json:"dry_run"`
+	Watermark             bool   `json:"watermark"`
 }
 
 func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
@@ -654,6 +693,48 @@ func (s *Server) handleModelMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Recipe == "" {
 		req.Recipe = "h3_hybrid"
+	}
+	if req.Recipe == "h3_hybrid" {
+		if req.ModalityMode == "" {
+			req.ModalityMode = "whole"
+		}
+		if req.AudioBlocks == "" {
+			req.AudioBlocks = "all"
+		}
+		if req.TextBlocks == "" {
+			req.TextBlocks = "all"
+		}
+		if req.ModalityMode != "whole" && req.ModalityMode != "split" {
+			writeError(w, http.StatusBadRequest, "modality_mode must be whole or split")
+			return
+		}
+		for _, mode := range []string{req.AudioBlocks, req.TextBlocks} {
+			if mode != "" && mode != "all" && mode != "selected" && mode != "base" {
+				writeError(w, http.StatusBadRequest, "audio_blocks and text_blocks must be all, selected or base")
+				return
+			}
+		}
+		if req.ModalityMode != "split" && (req.AudioOutFromOverlay ||
+			(req.AudioBlocks != "" && req.AudioBlocks != "all") ||
+			(req.TextBlocks != "" && req.TextBlocks != "all")) {
+			writeError(w, http.StatusBadRequest, "audio/text bank options require modality split mode")
+			return
+		}
+	}
+	if req.Recipe == "h3_hybrid" && req.OverlayBlocks != nil {
+		blocks := *req.OverlayBlocks
+		if len(blocks) == 0 || len(blocks) > 50 {
+			writeError(w, http.StatusBadRequest, "overlay_blocks must contain 1–50 block indices")
+			return
+		}
+		seen := make(map[int]bool, len(blocks))
+		for _, block := range blocks {
+			if block < 0 || block > 49 || seen[block] {
+				writeError(w, http.StatusBadRequest, "overlay_blocks must contain unique indices from 0 to 49")
+				return
+			}
+			seen[block] = true
+		}
 	}
 	id := newID()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -818,6 +899,20 @@ func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "base checkpoint and modified checkpoint are required")
 		return
 	}
+	if req.SelectedBlocks != nil {
+		if len(req.SelectedBlocks) == 0 {
+			writeError(w, http.StatusBadRequest, "selected_blocks cannot be empty")
+			return
+		}
+		seen := make(map[string]bool)
+		for _, block := range req.SelectedBlocks {
+			if block == "" || seen[block] {
+				writeError(w, http.StatusBadRequest, "selected_blocks must contain unique non-empty block names")
+				return
+			}
+			seen[block] = true
+		}
+	}
 	if req.Recipe == "" {
 		if req.OutputMode == "full" {
 			req.Recipe = "h3_full"
@@ -876,6 +971,21 @@ func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
 	s.jobs.Add(job)
 	go s.runLoraExtractJob(ctx, job, req)
 	writeJSON(w, map[string]string{"job_id": id})
+}
+
+func (s *Server) handleExtractBlocks(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeError(w, http.StatusBadRequest, "base checkpoint path is required")
+		return
+	}
+	out, err := s.runBridge(r.Context(), "extract-blocks", cleanPath(path, s.modelsDir))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out)
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {

@@ -156,6 +156,22 @@ input, select, textarea {
 .hint.hidden { display: none; }
 .hint.warn { color: #f0b24e; }
 
+.mm-grid-presets, .mm-block-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+.mm-grid-presets { margin: 8px 0; }
+.mm-grid-presets button, .mm-block-grid button {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #181d22;
+  color: var(--text);
+  padding: 5px 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+.mm-block-grid { grid-template-columns: repeat(10, minmax(0, 1fr)); }
+.mm-block-grid button.selected { background: var(--green); color: #07100b; border-color: var(--green); font-weight: 700; }
+#extract-block-grid { display: block; max-height: 180px; overflow-y: auto; }
+.mm-block-grid button:focus-visible, .mm-grid-presets button:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+
 /* "Watermark outputs" label: gently pulses red when the box is checked but
    no watermark key is configured (enabled-but-inert state). */
 @keyframes wm-pulse {

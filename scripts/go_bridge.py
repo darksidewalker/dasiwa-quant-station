@@ -27,7 +27,7 @@ from core.metadata_manager import (
 )
 from core.lora_merge_engine import run_lora_merge
 from core.lora_compose_engine import run_lora_compose
-from core.lora_extract_engine import run_lora_extract
+from core.lora_extract_engine import checkpoint_blocks, run_lora_extract
 from core.int4_convrot_engine import run_int4_convrot_conversion
 from core.w4a8_engine import run_w4a8_conversion
 from core.safetensors_engine import run_safe_conversion
@@ -323,6 +323,10 @@ def cmd_lora_extract(args):
         _emit(event)
 
 
+def cmd_extract_blocks(args):
+    _emit({"blocks": checkpoint_blocks(args.path)})
+
+
 def cmd_model_merge(args):
     ensure_dirs()
     payload = _load_payload(args)
@@ -413,6 +417,10 @@ def main():
     p = sub.add_parser("lora-extract", help="Extract a standard LoRA from two checkpoints, with specialized MiniMax H3 recipes.")
     p.add_argument("--json")
     p.set_defaults(func=cmd_lora_extract)
+
+    p = sub.add_parser("extract-blocks", help="List block indices in a base checkpoint header.")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_extract_blocks)
 
     p = sub.add_parser("model-merge", help="Model-level merge (not LoRA): e.g. MiniMax H3 fl2va/ref2va hybrid.")
     p.add_argument("--json")

@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -36,6 +37,20 @@ _H3_TIME_KEYS = (
 )
 _ADALN_WEIGHT_SUFFIX = ".adaln_proj.linear.weight"
 _ADALN_BIAS_SUFFIX = ".adaln_proj.linear.bias"
+_BLOCK_KEY = re.compile(r"(?:^|\.)([a-zA-Z_]*blocks|layers)\.(\d+)\.")
+
+
+def checkpoint_blocks(path: str) -> List[str]:
+    """Find block families and indices from safetensors header, without tensor reads."""
+    manifest = read_safetensors_manifest(_require_file(path, "Base checkpoint"))
+    return sorted({f"{match.group(1)}.{match.group(2)}" for key in manifest
+                   if (match := _BLOCK_KEY.search(key))},
+                  key=lambda block: (block.rsplit(".", 1)[0], int(block.rsplit(".", 1)[1])))
+
+
+def _block_for_key(key: str) -> str:
+    match = _BLOCK_KEY.search(key)
+    return f"{match.group(1)}.{match.group(2)}" if match else ""
 
 
 def _event(kind: str, text: str = "", status: str = "") -> Dict[str, str]:
@@ -148,6 +163,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, su
         f"Frobenius energy: {float(payload.get('frobenius_energy', 0.99)):.6f}",
         f"Minimum rank: {int(payload.get('min_rank', 1))}",
         f"Maximum rank: {int(payload.get('max_rank', 0))}",
+        f"Selected blocks: {', '.join(payload['selected_blocks']) if payload.get('selected_blocks') is not None else 'all tensors'}",
         f"AdaLN table SHA256: {table_hash or 'not applicable'}",
         "",
         f"LoRA pairs: {summary['pairs']}",
@@ -202,6 +218,15 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     base_manifest = read_safetensors_manifest(base_path)
     merged_manifest = read_safetensors_manifest(merged_path)
+    selected_blocks = payload.get("selected_blocks")
+    if selected_blocks is not None:
+        available = {_block_for_key(key) for key in base_manifest}
+        if (not isinstance(selected_blocks, list) or not selected_blocks
+                or any(not isinstance(block, str) or block not in available for block in selected_blocks)
+                or len(set(selected_blocks)) != len(selected_blocks)):
+            raise ValueError("selected_blocks must be a non-empty list of unique blocks present in the base checkpoint")
+        selected_blocks = set(selected_blocks)
+        yield _event("log", f"Extracting only blocks: {', '.join(sorted(selected_blocks))}\n")
     if set(base_manifest) != set(merged_manifest):
         only_base = sorted(set(base_manifest) - set(merged_manifest))[:3]
         only_merged = sorted(set(merged_manifest) - set(base_manifest))[:3]
@@ -233,12 +258,17 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         yield _event("log", f"Recovered target AdaLN gauge: {table_detail}\n")
 
     output: Dict[str, torch.Tensor] = {}
-    summary = {"pairs": 0, "adaln": 0, "unchanged": 0, "unsupported": 0}
+    summary = {"pairs": 0, "adaln": 0, "unchanged": 0, "unsupported": 0, "filtered": 0}
     ranks: List[int] = []
     with safe_open(base_path, framework="pt", device="cpu") as base_handle, safe_open(merged_path, framework="pt", device="cpu") as merged_handle:
         keys = list(base_handle.keys())
         total = len(keys)
         for index, key in enumerate(keys, start=1):
+            if selected_blocks is not None and _block_for_key(key) not in selected_blocks:
+                summary["filtered"] += 1
+                if index % 100 == 0 or index == total:
+                    yield _event("progress", f"Extracting tensors: {index}/{total}")
+                continue
             if key.endswith(_ADALN_BIAS_SUFFIX) and output_mode == "pruned":
                 continue
             base = base_handle.get_tensor(key)
@@ -283,7 +313,7 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if summary["pairs"] == 0 and summary["adaln"] == 0:
         raise ValueError("No changed 2-D tensors found between full base and merged checkpoints")
     rank_note = f" ranks={min(ranks)}..{max(ranks)}" if ranks else ""
-    yield _event("log", f"Extraction plan: LoRA pairs={summary['pairs']}, AdaLN rebased patches={summary['adaln']},{rank_note}\n")
+    yield _event("log", f"Extraction plan: LoRA pairs={summary['pairs']}, AdaLN rebased patches={summary['adaln']}, filtered={summary['filtered']},{rank_note}\n")
     if dry_run:
         yield _event("done", status="dry-run complete")
         return
@@ -300,6 +330,8 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         "min_rank": str(min_rank),
         "max_rank": str(max_rank),
     }
+    if selected_blocks is not None:
+        metadata["selected_blocks"] = json.dumps(sorted(selected_blocks))
     if output_mode == "pruned":
         metadata.update({
             "adaln_patch_format": "diff+diff_b",

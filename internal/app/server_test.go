@@ -13,6 +13,84 @@ import (
 	"time"
 )
 
+func TestModelMergeModalityOptionsRoundTrip(t *testing.T) {
+	var req ModelMergeRequest
+	if err := json.Unmarshal([]byte(`{"modality_mode":"split","audio_blocks":"all","text_blocks":"selected","audio_out_from_overlay":true}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]interface{}
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]interface{}{"modality_mode": "split", "audio_blocks": "all", "text_blocks": "selected", "audio_out_from_overlay": true} {
+		if fields[name] != want {
+			t.Errorf("%s = %v, want %v", name, fields[name], want)
+		}
+	}
+}
+
+func TestHandleModelMergeRejectsUnknownModalityMode(t *testing.T) {
+	s := &Server{modelsDir: t.TempDir(), jobs: NewJobStore()}
+	req := httptest.NewRequest(http.MethodPost, "/api/model-merge", bytes.NewBufferString(`{"recipe":"h3_hybrid","modality_mode":"unknown"}`))
+	res := httptest.NewRecorder()
+	s.handleModelMerge(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400", res.Code)
+	}
+}
+
+func TestModelMergeOverlayBlocksJSONRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"legacy range", `{}`, `false`},
+		{"sparse", `{"overlay_blocks":[2,4,7]}`, `[2,4,7]`},
+		{"explicit empty", `{"overlay_blocks":[]}`, `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req ModelMergeRequest
+			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatal(err)
+			}
+			value, exists := payload["overlay_blocks"]
+			if tc.want == `false` {
+				if exists {
+					t.Fatalf("unexpected overlay_blocks: %s", value)
+				}
+			} else if !exists || string(value) != tc.want {
+				t.Fatalf("overlay_blocks = %s, exists=%t; want %s", value, exists, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleModelMergeRejectsInvalidOverlayBlocks(t *testing.T) {
+	s := &Server{modelsDir: t.TempDir(), jobs: NewJobStore()}
+	for _, blocks := range []string{`[]`, `[0,0]`, `[-1]`, `[50]`} {
+		req := httptest.NewRequest(http.MethodPost, "/api/model-merge", bytes.NewBufferString(
+			`{"recipe":"h3_hybrid","overlay_blocks":`+blocks+`}`))
+		res := httptest.NewRecorder()
+		s.handleModelMerge(res, req)
+		if res.Code != http.StatusBadRequest {
+			t.Errorf("overlay_blocks=%s: status %d, want 400", blocks, res.Code)
+		}
+	}
+}
+
 func TestUpdateStepsPullsLatestSourceBeforeSetupAndBuild(t *testing.T) {
 	root := "/tmp/dasiwa-quant-station"
 	steps := updateSteps(context.Background(), root)
@@ -149,10 +227,13 @@ func TestHandleConfigIncludesQuantCapabilities(t *testing.T) {
 }
 
 type browserResponse struct {
-	Items []struct {
+	Path   string `json:"path"`
+	Parent string `json:"parent"`
+	Items  []struct {
 		Name       string `json:"name"`
 		Path       string `json:"path"`
 		IsDir      bool   `json:"is_dir"`
+		IsSymlink  bool   `json:"is_symlink"`
 		Size       int64  `json:"size"`
 		ModifiedAt string `json:"modified_at"`
 	} `json:"items"`
@@ -189,6 +270,95 @@ func TestHandleBrowseIncludesMetadata(t *testing.T) {
 	}
 	if body.Items[0].Size != 0 || body.Items[0].ModifiedAt == "" {
 		t.Fatalf("directory metadata = %#v", body.Items[0])
+	}
+}
+
+func TestHandleBrowseFollowsSymlinkDirectoriesAndFiles(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "model.safetensors"), []byte("model"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(dir, "linked")
+	linkFile := filepath.Join(dir, "linked.safetensors")
+	if err := os.Symlink(target, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(target, "model.safetensors"), linkFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "broken")); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{modelsDir: dir}
+	browse := func(path string) browserResponse {
+		t.Helper()
+		res := httptest.NewRecorder()
+		s.handleBrowse(res, httptest.NewRequest(http.MethodGet, "/api/browse?path="+path, nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("browse %s: %d %s", path, res.Code, res.Body.String())
+		}
+		var body browserResponse
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+
+	root := browse(dir)
+	if len(root.Items) != 3 {
+		t.Fatalf("items = %#v, want target, linked, linked.safetensors", root.Items)
+	}
+	if root.Items[0].Name != "linked" || !root.Items[0].IsDir || !root.Items[0].IsSymlink || root.Items[0].Path != linkDir {
+		t.Fatalf("linked directory = %#v", root.Items[0])
+	}
+	if root.Items[2].Name != "linked.safetensors" || root.Items[2].IsDir || !root.Items[2].IsSymlink || root.Items[2].Size != 5 {
+		t.Fatalf("linked file = %#v", root.Items[2])
+	}
+	followed := browse(linkDir)
+	if followed.Path != linkDir || followed.Parent != dir || len(followed.Items) != 1 || followed.Items[0].Path != filepath.Join(linkDir, "model.safetensors") {
+		t.Fatalf("followed directory = %#v", followed)
+	}
+}
+
+func TestHandleSearchFollowsSymlinksWithoutCycles(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "wanted.gguf"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir, filepath.Join(outside, "back")); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{modelsDir: dir}
+	res := httptest.NewRecorder()
+	s.handleSearch(res, httptest.NewRequest(http.MethodGet, "/api/search?path="+dir+"&q=wanted", nil))
+	var body browserResponse
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if res.Code != http.StatusOK || len(body.Items) != 1 || body.Items[0].Path != filepath.Join(dir, "linked", "wanted.gguf") {
+		t.Fatalf("search status %d, items %#v", res.Code, body.Items)
+	}
+}
+
+func TestHandleLoraExtractRejectsEmptyOrDuplicateBlocks(t *testing.T) {
+	s := &Server{modelsDir: t.TempDir(), jobs: NewJobStore()}
+	for _, blocks := range []string{`[]`, `["blocks.1","blocks.1"]`, `[""]`} {
+		body := `{"base_path":"base.safetensors","merged_path":"modified.safetensors","recipe":"generic","selected_blocks":` + blocks + `}`
+		res := httptest.NewRecorder()
+		s.handleLoraExtract(res, httptest.NewRequest(http.MethodPost, "/api/lora/extract", bytes.NewBufferString(body)))
+		if res.Code != http.StatusBadRequest {
+			t.Errorf("selected_blocks=%s: status %d, want 400", blocks, res.Code)
+		}
 	}
 }
 

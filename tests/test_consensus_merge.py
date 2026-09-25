@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -45,6 +46,25 @@ class AdapterFactorizationTests(unittest.TestCase):
         torch.testing.assert_close(reconstruct_lora(down, up), delta, rtol=1e-6, atol=1e-6)
         self.assertEqual(report.rank, 2)
         self.assertLessEqual(report.relative_error, 1e-6)
+
+    def test_svd_nonconvergence_uses_qr_lapack_fallback(self):
+        from core.adapter_factorization import factorize_lora, reconstruct_lora
+
+        delta = torch.tensor([[3.0, 0.0], [0.0, 2.0]])
+        with patch("core.adapter_factorization.torch.linalg.svd", side_effect=RuntimeError(
+            "linalg.svd: The algorithm failed to converge (error code: 1)"
+        )), patch("core.adapter_factorization.linalg.svd", wraps=__import__("scipy").linalg.svd) as fallback:
+            down, up, report = factorize_lora(delta, max_rank=2, energy=1.0)
+        fallback.assert_called_once()
+        self.assertEqual(fallback.call_args.kwargs["lapack_driver"], "gesvd")
+        torch.testing.assert_close(reconstruct_lora(down, up), delta, rtol=1e-6, atol=1e-6)
+        self.assertLess(report.relative_error, 1e-6)
+
+    def test_nonfinite_delta_is_rejected_before_svd(self):
+        from core.adapter_factorization import factorize_lora
+
+        with self.assertRaisesRegex(ValueError, "NaN or infinity"):
+            factorize_lora(torch.tensor([[float("nan"), 1.0]]))
 
     def test_direct_lokr_exact_round_trip_with_anchor_shapes(self):
         from core.adapter_factorization import factorize_lokr, reconstruct_lokr

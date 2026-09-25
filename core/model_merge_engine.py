@@ -80,6 +80,13 @@ _H3_ADALN_RE = re.compile(
     r"^blocks\.(\d+)\.adaln_proj\.linear\.(bias|weight|weight_scale)$"
 )
 
+# Default block range: 30-49 (last 20 of 50 blocks). Quality-first default
+# based on community testing — FL2VA quality is preserved while still
+# providing functional reference conditioning. Lower start values increase
+# reference fidelity at the cost of raw output quality.
+_H3_DEFAULT_BLOCK_START = 30
+_H3_DEFAULT_BLOCK_END = 49
+
 RECIPES: Dict[str, _Recipe] = {
     "h3_hybrid": _Recipe(
         name="h3_hybrid",
@@ -238,12 +245,17 @@ def _resolve_roles(base_path: str, overlay_path: str) -> Tuple[str, str]:
 def _compute_overlay_keys(
     base_manifest: Dict[str, Any],
     overlay_key_re: re.Pattern,
-) -> set:
+    block_start: int = _H3_DEFAULT_BLOCK_START,
+    block_end: int = _H3_DEFAULT_BLOCK_END,
+    final_adaln_from_overlay: bool = False,
+    overlay_blocks: Optional[set] = None,
+) -> Tuple[set, int, int]:
     """
     Determine which tensor keys should come from the overlay (ref2va) file.
 
     For h3_hybrid: all ``blocks.{i}.adaln_proj.linear.{bias,weight,weight_scale}``
-    where ``i >= len(blocks) // 2``.
+    in the inclusive range, or exactly the indices in ``overlay_blocks`` when
+    given. The optional final AdaLN overlay remains independent of this choice.
     """
     # Collect block indices from keys that match the pattern
     block_set: set = set()
@@ -252,14 +264,97 @@ def _compute_overlay_keys(
         if m:
             block_set.add(int(m.group(1)))
     if not block_set:
-        return set()
-    threshold = len(block_set) // 2
+        return set(), 0, 0
+
+    # Validate range against actual block count
+    total_blocks = len(block_set)
+    max_block = total_blocks - 1
+    start = min(max(block_start, 0), max_block)
+    end = min(max(block_end, start), max_block)
+
     overlay_keys: set = set()
     for key in base_manifest:
         m = overlay_key_re.match(key)
-        if m and int(m.group(1)) >= threshold:
+        if m and (int(m.group(1)) in overlay_blocks if overlay_blocks is not None
+                  else start <= int(m.group(1)) <= end):
             overlay_keys.add(key)
-    return overlay_keys
+
+    # Optional final_layer.adaln_proj overlay (max-reference mode)
+    if final_adaln_from_overlay:
+        final_adaln_re = re.compile(r"^final_layer\.adaln_proj\.linear\.(bias|weight)$")
+        for key in base_manifest:
+            if final_adaln_re.match(key):
+                overlay_keys.add(key)
+
+    return overlay_keys, start, end
+
+
+def _compute_blend_weights(
+    base_manifest: Dict[str, Any],
+    overlay_key_re: re.Pattern,
+    block_start: int,
+    block_end: int,
+    blend_mode: str,
+    final_adaln_from_overlay: bool = False,
+) -> Tuple[Dict[str, Optional[float]], int, int]:
+    """
+    Compute per-key blend weights for hybrid merge.
+
+    Returns (weights_dict, actual_start, actual_end).
+
+    Modes:
+      binary: weight 0.0 or 1.0 (original behavior)
+      larv:   LARV (Layer-wise Adaptive Rescaling Veneer) per arXiv:2602.09413.
+             Computes per-layer information richness and conflict diagnostics
+             to scale overlay contribution adaptively. Returns None weights to
+             signal "compute at merge time" for all matching keys.
+
+    Note: larv requires reading tensor data, so it's computed during the
+    streaming pass, not here. This function returns None weights for those
+    keys to signal "compute at merge time".
+    """
+    # Collect block indices
+    block_set: set = set()
+    for key in base_manifest:
+        m = overlay_key_re.match(key)
+        if m:
+            block_set.add(int(m.group(1)))
+    if not block_set:
+        return {}, 0, 0
+
+    total_blocks = len(block_set)
+    max_block = total_blocks - 1
+    start = min(max(block_start, 0), max_block)
+    end = min(max(block_end, start), max_block)
+
+    weights: Dict[str, Optional[float]] = {}
+
+    if blend_mode == "larv":
+        # LARV: signal "compute at merge time" for all matching keys
+        # Scale computed per-block from weight diagnostics (effective rank + commutator conflict)
+        for key in base_manifest:
+            m = overlay_key_re.match(key)
+            if not m:
+                continue
+            block_idx = int(m.group(1))
+            if start <= block_idx <= end:
+                weights[key] = None  # compute during streaming pass
+            else:
+                weights[key] = 0.0 if block_idx < start else 1.0
+
+    else:  # binary (default)
+        for key in base_manifest:
+            m = overlay_key_re.match(key)
+            if m and start <= int(m.group(1)) <= end:
+                weights[key] = 1.0
+
+    if final_adaln_from_overlay:
+        final_adaln_re = re.compile(r"^final_layer\.adaln_proj\.linear\.(bias|weight)$")
+        for key in base_manifest:
+            if final_adaln_re.match(key):
+                weights[key] = 1.0
+
+    return weights, start, end
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +408,139 @@ def _randomized_svd_cap(
     full_energy = float((mat32.pow(2).sum()))
     cap_energy = float((S.pow(2).sum()))
     return approx, (cap_energy / full_energy) if full_energy > 0 else 1.0, r
+
+
+def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
+    """Compute cosine similarity between two tensors."""
+    a_flat = a.flatten().to(torch.float32)
+    b_flat = b.flatten().to(torch.float32)
+    dot = torch.dot(a_flat, b_flat)
+    norm_a = torch.norm(a_flat)
+    norm_b = torch.norm(b_flat)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return float((dot / (norm_a * norm_b)).clamp(-1.0, 1.0))
+
+
+def _effective_rank(matrix: torch.Tensor, k: int = 32) -> float:
+    """Effective rank from the small Gram matrix, avoiding a full SVD."""
+    if matrix.ndim != 2 or matrix.numel() == 0:
+        return 1.0
+    m32 = matrix.to(torch.float32)
+    # AdaLN projections are extremely tall (e.g. 96,768 × 8). Their singular
+    # values equal sqrt(eigenvalues(MᵀM)), so this keeps the largest temporary
+    # bounded by the feature dimension rather than allocating a tall QR basis.
+    gram = m32.t() @ m32
+    eigenvalues = torch.linalg.eigvalsh(gram).clamp_min_(0)
+    singular_values = eigenvalues.sqrt()
+    energy = singular_values.pow(2)
+    total_energy = energy.sum()
+    if total_energy <= 1e-10:
+        return 1.0
+    probabilities = (energy / total_energy).clamp_min_(1e-10)
+    entropy = -(probabilities * probabilities.log()).sum()
+    return float(torch.exp(entropy).item())
+
+
+def _commutator_conflict(base: torch.Tensor, delta: torch.Tensor) -> float:
+    """Compute normalized commutator conflict coefficient.
+
+    Measures non-commutativity between base operator and update.
+    Higher values indicate more potential interference.
+    """
+    b32 = base.to(torch.float32)
+    d32 = delta.to(torch.float32)
+    norm_b = torch.norm(b32).item()
+    norm_d = torch.norm(d32).item()
+    if norm_b < 1e-10 or norm_d < 1e-10:
+        return 0.0
+
+    # For rectangular matrices, the paper averages left and right Gram
+    # commutators. The left term normally has rows² entries; its squared
+    # Frobenius norm is exactly recoverable from small feature-space Grams:
+    # ||AΔᵀ - ΔAᵀ||² = 2 tr((AᵀA)(ΔᵀΔ)) - 2 tr((AᵀΔ)²).
+    base_gram = b32.t() @ b32
+    delta_gram = d32.t() @ d32
+    cross_gram = b32.t() @ d32
+    left_sq = 2.0 * torch.trace(base_gram @ delta_gram) - 2.0 * torch.trace(cross_gram @ cross_gram)
+    left_norm = torch.sqrt(left_sq.clamp_min(0.0)) / (norm_b * norm_d + 1e-10)
+    right_norm = torch.norm(b32.t() @ d32 - d32.t() @ b32) / (norm_b * norm_d + 1e-10)
+    return float(0.5 * (left_norm + right_norm))
+
+
+def _larv_tier_scales(scores: Dict[int, float]) -> Dict[int, float]:
+    """H3-safe LARV terciles; never extrapolate the direct ref2va checkpoint."""
+    if not scores:
+        return {}
+    values = torch.tensor(list(scores.values()), dtype=torch.float32)
+    lower, upper = torch.quantile(values, torch.tensor([1 / 3, 2 / 3]))
+    return {
+        block: 0.5 if score <= lower else 0.75 if score <= upper else 1.0
+        for block, score in scores.items()
+    }
+
+
+def _larv_block_metrics(base_tensor: torch.Tensor, delta_tensor: torch.Tensor) -> Tuple[float, float]:
+    """Return paper-defined (effective-rank contrast, commutator conflict)."""
+    if torch.norm(delta_tensor.to(torch.float32)) < 1e-10:
+        return 0.0, 0.0
+    effective_rank_contrast = _effective_rank(base_tensor) / (_effective_rank(delta_tensor) + 1e-8)
+    return effective_rank_contrast, _commutator_conflict(base_tensor, delta_tensor)
+
+
+def _larv_block_scales(
+    metrics: Dict[int, Tuple[float, float]],
+    total_layers: int,
+    gate: str,
+    eta: float = 1.0,
+    rho: float = 0.5,
+    gamma: float = 3.0,
+) -> Tuple[Dict[int, float], Dict[int, float]]:
+    """Apply LARV Eq. 8 across all selected H3 blocks, then gate its scores."""
+    if not metrics:
+        return {}, {}
+    blocks = sorted(metrics)
+    conflicts = torch.tensor([metrics[block][1] for block in blocks], dtype=torch.float32)
+    std = conflicts.std(correction=0)
+    standardized_conflicts = (conflicts - conflicts.mean()) / (std if std > 1e-8 else 1.0)
+    scores: Dict[int, float] = {}
+    for block, standardized_conflict in zip(blocks, standardized_conflicts.tolist()):
+        effective_rank_contrast = metrics[block][0]
+        depth_prior = (block + 1) / max(total_layers, 1)
+        score = (effective_rank_contrast ** eta) * (depth_prior ** rho)
+        score /= float(torch.nn.functional.softplus(torch.tensor(standardized_conflict)).item()) + 1.0
+        scores[block] = score
+    if gate == "tiered":
+        return _larv_tier_scales(scores), scores
+    # H3 hybrid has a direct, viable ref2va endpoint. Unlike the paper's
+    # multi-task task-vector setting, scaling past 1.0 extrapolates beyond that
+    # checkpoint and can corrupt AdaLN modulation (black video). Keep LARV as
+    # a non-extrapolating interpolation for this architecture.
+    scales = {
+        block: min(1.0, 1.0 + 0.5 * float(torch.tanh(gamma * (torch.tensor(score) - 1.0)).item()))
+        for block, score in scores.items()
+    }
+    return scales, scores
+
+
+def _analyze_h3_larv_blocks(
+    fl2va_path: str,
+    ref2va_path: str,
+    block_indices: Iterable[int],
+    gate: str,
+) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, Tuple[float, float]]]:
+    """Read one AdaLN weight per selected block and return bounded LARV scales."""
+    metrics: Dict[int, Tuple[float, float]] = {}
+    with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
+         safe_open(ref2va_path, framework="pt", device="cpu") as of:
+        for block in sorted(set(block_indices)):
+            key = f"blocks.{block}.adaln_proj.linear.weight"
+            base = bf.get_tensor(key).to(torch.float32)
+            delta = of.get_tensor(key).to(torch.float32) - base
+            metrics[block] = _larv_block_metrics(base, delta)
+            del base, delta
+    scales, scores = _larv_block_scales(metrics, total_layers=50, gate=gate)
+    return scales, scores, metrics
 
 
 def _run_h3_delta(
@@ -482,6 +710,47 @@ def _run_h3_delta(
     yield {"type": "done", "status": "finished"}
 
 
+def _write_model_merge_recipe(
+    output_path: str,
+    recipe_name: str,
+    architecture: str,
+    fl2va_path: str,
+    ref2va_path: str,
+    preserve_loader_metadata: bool,
+    watermark: bool,
+    details: List[str],
+) -> str:
+    """Write the parameters actually used, next to a completed checkpoint."""
+    recipe_path = os.path.splitext(output_path)[0] + ".txt"
+    lines = [
+        "DaSiWa Quant Station Model Merge Recipe",
+        "",
+        f"Recipe: {recipe_name}",
+        f"Architecture: {architecture}",
+        f"Base checkpoint: {fl2va_path}",
+        f"Overlay checkpoint: {ref2va_path}",
+        f"Output checkpoint: {output_path}",
+        *details,
+        f"Preserve loader metadata: {'yes' if preserve_loader_metadata else 'no'}",
+        f"Watermark: {'on (requested)' if watermark else 'off'}",
+    ]
+    tmp_path = recipe_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file:
+        file.write("\n".join(lines) + "\n")
+    os.replace(tmp_path, recipe_path)
+    return recipe_path
+
+def _splice_h3_adaln_modalities(base: torch.Tensor, overlay: torch.Tensor,
+                                modalities: Tuple[int, ...]) -> torch.Tensor:
+    """Copy complete video/text/audio AdaLN banks without interpolating weights."""
+    rows = base.shape[0] // 3
+    result = base.clone().reshape(3, rows, *base.shape[1:])
+    source = overlay.reshape(3, rows, *overlay.shape[1:])
+    for modality in modalities:
+        result[modality].copy_(source[modality])
+    return result.reshape(base.shape)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -623,11 +892,134 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             fl2va_path, ref2va_path, base_manifest,
             output_path, rank, strength, dry_run, delta_meta,
         ):
+            if event.get("type") == "done" and event.get("status") == "finished":
+                try:
+                    recipe_path = _write_model_merge_recipe(
+                        output_path, recipe_name, architecture, fl2va_path, ref2va_path,
+                        preserve_loader_metadata, do_watermark,
+                        [f"Delta rank: {max(0, rank)}",
+                         f"Delta mode: {'exact' if rank <= 0 else f'svd-r{rank}'}",
+                         f"Delta strength: {strength}",
+                         f"Model variant: {_h3_variant(base_manifest)}",
+                         f"Output tensors: {len(base_manifest)}"],
+                    )
+                except OSError as exc:
+                    yield _log(f"ERROR: checkpoint created but could not write merge recipe: {exc}\n")
+                    yield {"type": "done", "status": "failed"}
+                    return
+                yield _log(f"Wrote model merge recipe: {recipe_path}\n")
             yield event
         return
 
-    # Compute which keys come from the overlay
-    overlay_set = _compute_overlay_keys(base_manifest, overlay_re)
+    # Compute which keys come from the overlay (splice recipe)
+    block_start = int(payload.get("block_range_start", _H3_DEFAULT_BLOCK_START))
+    block_end = int(payload.get("block_range_end", _H3_DEFAULT_BLOCK_END))
+    final_adaln_from_overlay = bool(payload.get("final_adaln_from_overlay", False))
+    blend_mode = payload.get("blend_mode", "binary")
+    if blend_mode != "binary":
+        yield _log(
+            "ERROR: LARV is disabled for MiniMax H3. Even non-extrapolating "
+            "LARV interpolation produced black videos because H3 AdaLN weights "
+            "are not validated task vectors. Use Binary hard switch.\n"
+        )
+        yield {"type": "done", "status": "failed"}
+        return
+
+    # Exact row-bank selection is experimental and distinct from the legacy
+    # whole-tensor switch. The grid always selects video banks in this mode.
+    modality_mode = payload.get("modality_mode", "whole")
+    audio_blocks = payload.get("audio_blocks", "all")
+    text_blocks = payload.get("text_blocks", "all")
+    audio_out_from_overlay = payload.get("audio_out_from_overlay", False)
+    if (modality_mode not in ("whole", "split") or
+            audio_blocks not in ("all", "selected", "base") or
+            text_blocks not in ("all", "selected", "base") or
+            type(audio_out_from_overlay) is not bool):
+        yield _log("ERROR: invalid H3 modality selection.\n")
+        yield {"type": "done", "status": "failed"}
+        return
+    if modality_mode == "whole" and (audio_out_from_overlay or
+                                     audio_blocks != "all" or text_blocks != "all"):
+        yield _log("ERROR: audio/text bank options require modality split mode.\n")
+        yield {"type": "done", "status": "failed"}
+        return
+
+    # Explicit block lists override the legacy contiguous range. Validate against
+    # actual checkpoint indices: never silently clamp/drop a requested block.
+    custom_blocks = None
+    if "overlay_blocks" in payload:
+        selected = payload["overlay_blocks"]
+        available = {int(match.group(1)) for key in base_manifest if (match := overlay_re.match(key))}
+        if (not isinstance(selected, list) or not selected
+                or any(type(index) is not int for index in selected)
+                or len(selected) != len(set(selected))
+                or not set(selected) <= available):
+            yield _log("ERROR: overlay_blocks must be a non-empty list of unique available block indices.\n")
+            yield {"type": "done", "status": "failed"}
+            return
+        custom_blocks = set(selected)
+
+    overlay_set, actual_start, actual_end = _compute_overlay_keys(
+        base_manifest, overlay_re, block_start, block_end, final_adaln_from_overlay,
+        custom_blocks,
+    )
+    video_idxs = {int(match.group(1)) for key in overlay_set
+                  if (match := overlay_re.match(key))}
+    available_idxs = {int(match.group(1)) for key in base_manifest
+                      if (match := overlay_re.match(key))}
+    if not video_idxs:
+        yield _log("ERROR: no requested video AdaLN blocks found in base checkpoint.\n")
+        yield {"type": "done", "status": "failed"}
+        return
+    audio_idxs = (available_idxs if audio_blocks == "all" else
+                  video_idxs if audio_blocks == "selected" else set()) if modality_mode == "split" else set()
+    text_idxs = (available_idxs if text_blocks == "all" else
+                 video_idxs if text_blocks == "selected" else set()) if modality_mode == "split" else set()
+    modality_keys = {}
+    if modality_mode == "split":
+        touched = video_idxs | audio_idxs | text_idxs
+        for block in sorted(touched):
+            sources = tuple(modality for modality, selected in
+                            ((0, video_idxs), (1, text_idxs), (2, audio_idxs)) if block in selected)
+            for suffix in ("weight", "bias"):
+                key = f"blocks.{block}.adaln_proj.linear.{suffix}"
+                if key not in base_manifest or key not in overlay_manifest:
+                    yield _log(f"ERROR: modality split needs matching AdaLN weight/bias: {key}\n")
+                    yield {"type": "done", "status": "failed"}
+                    return
+                spec = base_manifest[key]
+                other = overlay_manifest[key]
+                if (spec.shape != other.shape or spec.dtype != other.dtype or
+                        len(spec.shape) != (2 if suffix == "weight" else 1) or
+                        spec.shape[0] == 0 or spec.shape[0] % 18 or
+                        spec.dtype not in ("F16", "BF16", "F32")):
+                    yield _log(f"ERROR: unsupported modality-split AdaLN layout: {key}\n")
+                    yield {"type": "done", "status": "failed"}
+                    return
+                modality_keys[key] = sources
+            weight_shape = base_manifest[f"blocks.{block}.adaln_proj.linear.weight"].shape
+            bias_shape = base_manifest[f"blocks.{block}.adaln_proj.linear.bias"].shape
+            if weight_shape[0] != bias_shape[0]:
+                yield _log(f"ERROR: AdaLN weight/bias row mismatch in block {block}\n")
+                yield {"type": "done", "status": "failed"}
+                return
+            for suffix in ("weight_scale",):
+                key = f"blocks.{block}.adaln_proj.linear.{suffix}"
+                if key in base_manifest or key in overlay_manifest:
+                    yield _log(f"ERROR: quantized AdaLN cannot be split by modality: {key}\n")
+                    yield {"type": "done", "status": "failed"}
+                    return
+        overlay_set = (overlay_set - {key for key in overlay_set if overlay_re.match(key)}) | set(modality_keys)
+        if audio_out_from_overlay:
+            for suffix in ("weight", "bias"):
+                key = f"final_layer.audio_out.{suffix}"
+                if key not in base_manifest or key not in overlay_manifest:
+                    yield _log(f"ERROR: audio output head missing: {key}\n")
+                    yield {"type": "done", "status": "failed"}
+                    return
+                overlay_set.add(key)
+    weights = {k: 1.0 for k in overlay_set}
+    is_larv = False  # Kept for the shared streaming branch; unsafe LARV is rejected above.
 
     if not overlay_set:
         yield _log("No overlay keys matched — nothing to merge.\n")
@@ -676,12 +1068,46 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         )
 
     overlay_set_list = sorted(overlay_set)
-    block_idxs = sorted({int(overlay_re.match(k).group(1)) for k in overlay_set_list})
+    block_match_keys = [k for k in overlay_set_list if overlay_re.match(k)]
+    block_idxs = (sorted(video_idxs) if modality_mode == "split" else
+                  sorted({int(match.group(1)) for key in block_match_keys
+                          if (match := overlay_re.match(key))}))
+    final_included = any(k.startswith("final_layer.adaln_proj") for k in overlay_set_list)
+    block_description = (",".join(map(str, block_idxs)) if custom_blocks is not None
+                         else f"{block_idxs[0]}..{block_idxs[-1]}")
     yield _log(
         f"Overlay keys: {len(overlay_set)} tensors "
-        f"(blocks {block_idxs[0]}..{block_idxs[-1]}, "
-        f"{len(block_idxs)} of the overlay set)\n"
+        f"(blocks {block_description}, "
+        f"{len(block_idxs)} blocks"
+        + (", final_layer.adaln_proj included" if final_included else "")
+        + ")\n"
     )
+
+    if modality_mode == "split":
+        yield _log(f"Experimental modality split: video={block_idxs}, "
+                   f"text={sorted(text_idxs)}, audio={sorted(audio_idxs)}, "
+                   f"ref2va audio_out={audio_out_from_overlay}. "
+                   "This has not been validated for audio fidelity or visual quality.\n")
+
+    larv_scales: Dict[int, float] = {}
+    larv_scores: Dict[int, float] = {}
+    if is_larv:
+        gate = "tiered" if blend_mode == "larv_tiered" else "continuous"
+        yield _log(f"LARV {gate} analysis: {len(block_idxs)} AdaLN block weights (paper metrics)\n")
+        larv_scales, larv_scores, _ = _analyze_h3_larv_blocks(
+            fl2va_path, ref2va_path, block_idxs, gate,
+        )
+        tier_counts = {scale: sum(value == scale for value in larv_scales.values()) for scale in (0.5, 0.75, 1.0)}
+        if gate == "tiered":
+            yield _log(
+                "LARV H3-safe tiered scales: "
+                f"0.5×={tier_counts[0.5]}, 0.75×={tier_counts[0.75]}, 1.0×={tier_counts[1.0]}\n"
+            )
+        else:
+            yield _log(
+                f"LARV continuous scales: min={min(larv_scales.values()):.3f}, "
+                f"max={max(larv_scales.values()):.3f}\n"
+            )
 
     # Build metadata: base __metadata__ + recipe static fields + provenance
     base_meta = _read_base_metadata(fl2va_path, preserve_loader_metadata)
@@ -689,6 +1115,22 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     meta.update(recipe.extra_meta_static)
     meta["base_model"] = os.path.basename(fl2va_path)
     meta["overlay_model"] = os.path.basename(ref2va_path)
+    if recipe.kind == "splice":
+        meta["h3_hybrid_block_start"] = str(actual_start)
+        meta["h3_hybrid_block_end"] = str(actual_end)
+        meta["h3_hybrid_block_selection"] = "custom" if custom_blocks is not None else "range"
+        meta["h3_hybrid_overlay_blocks"] = json.dumps(block_idxs)
+        meta["h3_hybrid_blend_mode"] = blend_mode
+        if modality_mode == "split":
+            meta["h3_hybrid_modality_mode"] = "split"
+            meta["h3_hybrid_video_blocks"] = json.dumps(block_idxs)
+            meta["h3_hybrid_audio_blocks"] = json.dumps(sorted(audio_idxs))
+            meta["h3_hybrid_text_blocks"] = json.dumps(sorted(text_idxs))
+            meta["h3_hybrid_audio_out"] = "ref2va" if audio_out_from_overlay else "fl2va"
+        if is_larv:
+            meta["h3_hybrid_larv_gate"] = "tiered" if blend_mode == "larv_tiered" else "continuous"
+            meta["h3_hybrid_larv_scales"] = json.dumps(larv_scales, sort_keys=True)
+            meta["h3_hybrid_larv_scores"] = json.dumps(larv_scores, sort_keys=True)
 
     if do_watermark:
         wm = watermark_for(
@@ -707,8 +1149,9 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if dry_run:
         yield _log(
             f"Dry run summary: {len(base_keys)} tensors total, "
-            f"{len(overlay_set)} from overlay (ref2va), "
-            f"{len(base_keys) - len(overlay_set)} from base (fl2va).\n"
+            f"{len(modality_keys)} modality-sliced, "
+            f"{len(overlay_set) - len(modality_keys)} copied whole from ref2va, "
+            f"{len(base_keys) - len(overlay_set)} copied whole from fl2va.\n"
             f"Metadata fields: {list(meta.keys())}\n"
         )
         yield _status("Dry run complete")
@@ -718,11 +1161,12 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     tmp_output_path = output_path + ".tmp"
 
-    # Stream: base order, overlay keys read from ref2va
+    # Stream: base order, overlay keys read from ref2va (or blended)
     overlay_set_frozenset = frozenset(overlay_set)
     total_keys = len(base_manifest)
     progress_every = max(1, total_keys // 100)
     t0 = time.monotonic()
+
     with open(tmp_output_path, "wb") as out_f:
         header = _build_safetensors_header(base_manifest, meta)
         out_f.write(struct.pack("<Q", len(header)))
@@ -731,10 +1175,45 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
              safe_open(ref2va_path, framework="pt", device="cpu") as of:
             for i, key in enumerate(base_manifest):
-                if key in overlay_set_frozenset:
-                    tensor = of.get_tensor(key)
+                if blend_mode == "binary":
+                    if key in modality_keys:
+                        tensor = _splice_h3_adaln_modalities(
+                            bf.get_tensor(key), of.get_tensor(key), modality_keys[key])
+                    elif key in overlay_set_frozenset:
+                        tensor = of.get_tensor(key)
+                    else:
+                        tensor = bf.get_tensor(key)
+                elif is_larv:
+                    # LARV: Layer-wise Adaptive Rescaling Veneer (arXiv:2602.09413)
+                    # Compute per-layer scale from weight diagnostics, apply as:
+                    # result = base + s_l * (ref - base) where s_l is the LARV scale
+                    m = overlay_re.match(key)
+                    if not m:
+                        tensor = of.get_tensor(key) if key in overlay_set_frozenset else bf.get_tensor(key)
+                    else:
+                        block_idx = int(m.group(1))
+                        w = weights.get(key)
+                        if w is not None:
+                            # Outside blend range → binary selection
+                            if w >= 1.0:
+                                tensor = of.get_tensor(key)
+                            else:
+                                tensor = bf.get_tensor(key)
+                        else:
+                            # Metrics were precomputed across the complete selected block set;
+                            # biases share their weight tensor's one scalar LARV scale.
+                            scale_l = larv_scales[block_idx]
+                            fl_t = bf.get_tensor(key).to(torch.float32)
+                            ref_t = of.get_tensor(key).to(torch.float32)
+                            tensor = (fl_t + scale_l * (ref_t - fl_t)).to(fl_t.dtype)
+                            del fl_t, ref_t
                 else:
-                    tensor = bf.get_tensor(key)
+                    # Fallback to binary
+                    if key in overlay_set_frozenset:
+                        tensor = of.get_tensor(key)
+                    else:
+                        tensor = bf.get_tensor(key)
+
                 _write_tensor_bytes(out_f, tensor)
                 del tensor
 
@@ -752,11 +1231,39 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     os.replace(tmp_output_path, output_path)
 
+    try:
+        recipe_path = _write_model_merge_recipe(
+            output_path, recipe_name, architecture, fl2va_path, ref2va_path,
+            preserve_loader_metadata, do_watermark,
+            ["Blend mode: binary",
+             f"Block selection: {'custom' if custom_blocks is not None else 'range'}",
+             f"Block range: {actual_start}–{actual_end}" if custom_blocks is None
+             else "Block range: not used (custom selection)",
+             f"Selected blocks: {', '.join(map(str, block_idxs))}",
+             *(["Modality selection: experimental split",
+                f"Video blocks: {', '.join(map(str, block_idxs))}",
+                f"Text blocks: {', '.join(map(str, sorted(text_idxs))) or 'none'}",
+                f"Audio blocks: {', '.join(map(str, sorted(audio_idxs))) or 'none'}",
+                f"Audio output head from overlay: {'yes' if audio_out_from_overlay else 'no'}",
+                f"Sliced AdaLN tensors: {len(modality_keys)}"] if modality_mode == "split" else []),
+             f"Final AdaLN requested: {'yes' if final_adaln_from_overlay else 'no'}",
+             f"Final AdaLN from overlay: {'yes' if final_included else 'no'}",
+             f"Overlay tensors: {len(overlay_set) - len(modality_keys)}",
+             f"Sliced tensors: {len(modality_keys)}",
+             f"Base tensors: {len(base_keys) - len(overlay_set)}"],
+        )
+    except OSError as exc:
+        yield _log(f"ERROR: checkpoint created but could not write merge recipe: {exc}\n")
+        yield {"type": "done", "status": "failed"}
+        return
+    yield _log(f"Wrote model merge recipe: {recipe_path}\n")
+
     elapsed_total = time.monotonic() - t0
     yield _log(f"Wrote merged checkpoint: {output_path}\n")
     yield _log(
         f"Model merge complete: {len(base_keys)} tensors "
-        f"({len(overlay_set)} overlay + {len(base_keys) - len(overlay_set)} base), "
+        f"({len(overlay_set) - len(modality_keys)} overlay + "
+        f"{len(modality_keys)} sliced + {len(base_keys) - len(overlay_set)} base), "
         f"elapsed {_format_duration(elapsed_total)}\n"
     )
     yield _status("Model merge complete")

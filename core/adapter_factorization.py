@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import torch
+from scipy import linalg
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,22 @@ def factorize_lora(
     if not 0.0 < energy <= 1.0 or max_rank < 0:
         raise ValueError("energy must be in (0, 1] and max_rank must be non-negative")
     work = delta.to(torch.float32)
-    u, singular, vh = torch.linalg.svd(work, full_matrices=False)
+    if not torch.isfinite(work).all():
+        raise ValueError("cannot factorize a LoRA delta containing NaN or infinity")
+    try:
+        u, singular, vh = torch.linalg.svd(work, full_matrices=False)
+    except RuntimeError as exc:
+        if "linalg.svd" not in str(exc):
+            raise
+        # PyTorch's CPU SVD uses divide-and-conquer (gesdd), which can fail
+        # to converge on ill-conditioned adapter deltas. QR-based gesvd is
+        # slower but is a more robust fallback for this case.
+        u_np, singular_np, vh_np = linalg.svd(
+            work.cpu().numpy(), full_matrices=False, lapack_driver="gesvd", check_finite=False
+        )
+        u = torch.from_numpy(u_np).to(work.device)
+        singular = torch.from_numpy(singular_np).to(work.device)
+        vh = torch.from_numpy(vh_np).to(work.device)
     total = singular.square().sum()
     if total <= 0:
         rank = 1
