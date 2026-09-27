@@ -1752,7 +1752,6 @@ async function startJob() {
   if (!state.sourcePath) return log("Select a source checkpoint first.\n");
   if (!$("model-name").value) return log("Enter a display name.\n");
   if (state.formats.size === 0) return log("Choose at least one target format.\n");
-  enforceInt4ConvRotStrategy();
 
   $("start").disabled = true;
   $("stop").disabled = false;
