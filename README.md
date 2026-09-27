@@ -164,7 +164,17 @@ Switch to **LoRA Extract**, select the original checkpoint as Source and the com
 
 ### Merge LoRAs into a reusable adapter
 
-Switch to **Merge LoRAs**, add at least two LoRA, direct-LoKr, or `.diff` adapters, choose a consensus preset and output type, then run a dry-run before writing. This mode does not require a base checkpoint. Standard LoRA output uses SVD with an optional rank cap and retained-energy target. Direct LoKr output uses the factor layout of a compatible direct-LoKr input and reports approximation error; Auto emits LoKr for anchored layers and LoRA otherwise.
+Switch to **Merge LoRAs**, add at least two LoRA, direct-LoKr, or `.diff` adapters, and set each adapter's strength and architecture strategy. No base checkpoint is needed: this creates a reusable adapter rather than baking a checkpoint. Select a consensus preset, output representation, and factorization settings; leave **Dry run** on for a compatibility preview, then turn it off to write the adapter and adjacent `.txt` recipe. A dry run checks planning, not the numerical factorization or inference quality. Compare renders in ComfyUI using the same prompt and seed before distributing the result.
+
+| Control | Effect |
+|---|---|
+| Consensus preset | **Balanced** (diversity weighting and comfort bandpass), **Conservative** (rejects weakly aligned rows), or **Neutral** (similarity weighting without diversity). H3 defaults to Balanced; other architectures default to Conservative when architecture selection changes. |
+| Output adapter | **Auto** chooses direct LoKr only for layers with compatible direct-LoKr input anchors, otherwise standard LoRA. **LoRA** writes SVD factors. **Direct LoKr** requires a compatible anchor for every output layer and can approximate the merged delta lossily. |
+| Max rank (0 = auto) | Caps standard LoRA SVD rank when positive. **0** removes the explicit cap but still defaults to the largest input rank per layer; larger ranks cost more memory, compute, and disk. |
+| Frobenius energy | Requested fraction of squared singular-value energy retained by LoRA SVD (default 0.99); a rank limit can prevent reaching it. This target does not apply to LoKr layers or guarantee visual quality. |
+| Mismatch | **Error** aborts on incompatible layers; **Skip incompatible layers** omits and reports them. Review skipped counts before using the output. |
+
+For **LoRA Merge** (checkpoint baking), choose **Additive** to sum scaled deltas or **Consensus** to blend contributors targeting the same tensor before adding the result to the base. The consensus preset is used only with Consensus. Per-adapter strength, global strength, and architecture strategy apply before consensus; effective strength is limited to ±3. Adaptive scaling and Krea 2 Unchain are unavailable in checkpoint consensus mode. Preset thresholds and detailed input/output limitations: [LoRA merge strategies](doc/lora-merge-strategies.md).
 
 ---
 
