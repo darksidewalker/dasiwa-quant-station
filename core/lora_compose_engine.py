@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import statistics
 from collections import defaultdict
 from contextlib import ExitStack
 from typing import Any, Dict, Iterable, List, Tuple
@@ -89,6 +90,35 @@ def _device(payload: Dict[str, Any], estimated_bytes: int = 0) -> str:
     return "cpu"
 
 
+def _reconstruction_recap(reports: List[Dict[str, Any]], *, max_rank: int, energy: float) -> str:
+    """Describe factorization loss, not the adapter's unmeasured inference quality."""
+    errors = [item["relative_error"] for item in reports]
+    worst = max(reports, key=lambda item: item["relative_error"])
+    lora = [item for item in reports if item["kind"] == "lora"]
+    lokr_count = len(reports) - len(lora)
+    high_loss = sum(value > 0.5 for value in errors)
+    signal = ("high reconstruction loss; try a higher rank and compare outputs" if high_loss else
+              "material reconstruction loss; compare with a higher rank" if max(errors) > 0.1 else
+              "low measured reconstruction loss")
+    lines = [
+        "Reconstruction recap (numerical estimate, not inference-verified):",
+        f"Layers: {len(reports)} (LoRA: {len(lora)}, LoKr: {lokr_count}) | "
+        f"Relative error median: {statistics.median(errors):.3f} | "
+        f"Worst: {worst['relative_error']:.3f} ({worst['layer']})",
+        f"Relative error > 0.5: {high_loss}/{len(reports)}",
+    ]
+    if lora:
+        below = sum(item["retained_energy"] + 1e-6 < energy for item in lora)
+        lines.append(f"Requested energy: {energy:.1%} | Retained energy below target: {below}/{len(lora)} "
+                     f"| Lowest: {min(item['retained_energy'] for item in lora):.1%}")
+        if max_rank:
+            lines.append(f"At rank cap: {sum(item['rank'] == max_rank for item in lora)}/{len(lora)} "
+                         f"(cap {max_rank})")
+    lines.append(f"Result signal: {signal}. This is factorization loss, not a quality verdict. "
+                 "Test the adapter in ComfyUI with matching prompt and seed; output is not inference-verified.")
+    return "\n".join(lines) + "\n"
+
+
 def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     specs = payload.get("loras") or []
     if len(specs) < 2:
@@ -170,6 +200,11 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             raise ValueError(f"LoKr anchor required for forced LoKr output: {detail}")
         raise ValueError(f"incompatible adapter layers: {detail}")
 
+    if not plans:
+        yield _log("No compatible adapter layers remain; no output written.\n")
+        yield {"type": "done", "status": "no matches"}
+        return
+
     estimated_bytes = max(
         (contributors[0]["shape"][0] * contributors[0]["shape"][1] * 4 * (2 * len(contributors) + 2)
          for _, contributors, _, _ in plans),
@@ -234,6 +269,7 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
     recipe = output_path.rsplit(".", 1)[0] + ".txt"
+    recap = _reconstruction_recap(reports, max_rank=max_rank, energy=energy)
     with open(recipe, "w", encoding="utf-8") as handle:
         handle.write("DaSiWa LoRA Compose Recipe\n")
         handle.write(f"Output: {os.path.basename(output_path)}\nArchitecture: {architecture}\nConsensus preset: {settings.name}\nOutput adapter: {output_kind}\n")
@@ -241,7 +277,9 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         for index, spec in enumerate(specs, 1):
             handle.write(f"{index}. {os.path.realpath(os.path.expanduser(spec['path']))}\n")
             handle.write(f"   Strength: {spec.get('strength', 1.0)}\n")
+        handle.write(recap)
         handle.write("Layer report:\n" + json.dumps(reports, indent=2) + "\n")
+    yield _log(recap)
     yield _log(f"Wrote composed adapter: {output_path}\nWrote recipe: {recipe}\n")
     yield _status(f"LoRA composition complete: {len(reports)} layers")
     yield {"type": "done", "status": "finished"}

@@ -8,7 +8,7 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from core.adapter_factorization import reconstruct_lokr
-from core.lora_compose_engine import run_lora_compose
+from core.lora_compose_engine import _reconstruction_recap, run_lora_compose
 
 
 class LoraComposeEngineTests(unittest.TestCase):
@@ -41,7 +41,35 @@ class LoraComposeEngineTests(unittest.TestCase):
             self.assertEqual(events[-1]["status"], "finished")
             progress = [event for event in events if event.get("type") == "progress"]
             self.assertEqual(progress[-1]["text"], "Merge adapters: 1/1 layers (100%) · writing LORA")
-            self.assertTrue(out.with_suffix(".txt").exists())
+            recipe = out.with_suffix(".txt").read_text()
+            self.assertIn("Reconstruction recap (numerical estimate, not inference-verified)", recipe)
+            self.assertIn("Requested energy: 100.0%", recipe)
+            self.assertIn("Retained energy below target: 0/1", recipe)
+            self.assertIn("Result signal:", recipe)
+            self.assertIn("Test the adapter in ComfyUI", recipe)
+            self.assertTrue(any("Reconstruction recap" in event.get("text", "") for event in events))
+
+    def test_recap_flags_rank_limited_high_loss_without_claiming_quality(self):
+        reports = [
+            {"layer": "a", "kind": "lora", "rank": 32, "retained_energy": 0.34, "relative_error": 0.81},
+            {"layer": "b", "kind": "lora", "rank": 32, "retained_energy": 0.99, "relative_error": 0.1},
+        ]
+        recap = _reconstruction_recap(reports, max_rank=32, energy=0.995)
+        self.assertIn("Retained energy below target: 2/2", recap)
+        self.assertIn("At rank cap: 2/2", recap)
+        self.assertIn("Relative error > 0.5: 1/2", recap)
+        self.assertIn("Worst: 0.810 (a)", recap)
+        self.assertIn("high reconstruction loss", recap)
+        self.assertIn("not inference-verified", recap)
+
+    def test_recap_distinguishes_uncapped_and_lokr_outputs(self):
+        reports = [{"layer": "a", "kind": "lokr", "rank": 1,
+                    "retained_energy": 0.7, "relative_error": 0.55}]
+        recap = _reconstruction_recap(reports, max_rank=0, energy=0.995)
+        self.assertIn("LoKr: 1", recap)
+        self.assertNotIn("At rank cap", recap)
+        self.assertNotIn("Retained energy below target", recap)
+        self.assertIn("high reconstruction loss", recap)
 
     def test_direct_lokr_output_has_no_alpha(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,6 +89,9 @@ class LoraComposeEngineTests(unittest.TestCase):
             self.assertIn("diffusion_model.blocks.0.attn.qkv_proj.lokr_w1", tensors)
             self.assertIn("diffusion_model.blocks.0.attn.qkv_proj.lokr_w2", tensors)
             self.assertFalse(any(key.endswith(".alpha") for key in tensors))
+            recap = out.with_suffix(".txt").read_text().split("Layer report:", 1)[0]
+            self.assertIn("LoKr: 1", recap)
+            self.assertNotIn("Retained energy below target", recap)
             rebuilt = reconstruct_lokr(
                 tensors["diffusion_model.blocks.0.attn.qkv_proj.lokr_w1"],
                 tensors["diffusion_model.blocks.0.attn.qkv_proj.lokr_w2"],
