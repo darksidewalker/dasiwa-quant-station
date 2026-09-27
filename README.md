@@ -117,6 +117,25 @@ An architecture marked with 🔒 has locally verified preserve/rescue tables. Ot
 
 If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. W4A8 and NVFP4 HQ are MiniMax H3 only.
 
+### Optimizer vs Simple by format
+
+This table describes the **Quantize** tab (not the separate LoRA/Model Merge strategies). The server validates format, architecture, and strategy before starting a job. “Accepted, ignored” means the selection is allowed but does not change the GGUF conversion.
+
+| Target format | Optimizer-driven | Simple | Architecture restriction |
+|---------------|:----------------:|:------:|--------------------------|
+| FP8 | Yes | Yes | Any listed architecture |
+| NVFP4 | Yes | Yes | Any listed architecture |
+| NVFP4 HQ | Yes | Yes | MiniMax H3 only |
+| MXFP8 | Yes | Yes | Any listed architecture |
+| Hybrid MXFP8 | Yes | Yes | Any listed architecture |
+| INT8 Tensor-wise | Yes | Yes | Any listed architecture |
+| INT8 Row-wise ConvRot Runtime | Yes | Yes | Any listed architecture |
+| INT4 ConvRot Runtime | No | Yes | WAN 2.2, LTX-2.3, Krea 2, MiniMax H3 |
+| W4A8 | No | Yes | MiniMax H3 only |
+| GGUF F32/BF16/F16 and Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K | Accepted, ignored | Accepted, ignored | Any listed architecture |
+
+For safetensors formats using `convert_to_quant`, **Optimizer-driven** enables its optimizer-based rounding; **Simple** uses its deterministic `--simple` path. INT4 ConvRot and W4A8 have separate deterministic backends and require **Simple**. GGUF uses `ggufy --datatype`, not either strategy; its output is the same regardless of the mode selection. In a batch with several formats, the selected strategy must be accepted by **every** format (so adding INT4 ConvRot or W4A8 requires Simple). These are request/implementation capabilities, not a guarantee that every checkpoint or inference runtime is compatible; see [format requirements](doc/choosing-formats.md).
+
 ---
 
 ## Quantization Workflow
