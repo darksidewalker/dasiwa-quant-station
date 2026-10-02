@@ -551,6 +551,7 @@ type LoraMergeRequest struct {
 	DryRun                 bool       `json:"dry_run"`
 	StrictMatching         bool       `json:"strict_matching"`
 	Krea2Unchain           bool       `json:"krea2_unchain"`
+	ProtectTokenRefiner    bool       `json:"protect_token_refiner"`
 	MergeDevice            string     `json:"merge_device"`
 	CUDADevice             string     `json:"cuda_device"`
 	VRAMHeadroomMB         int        `json:"vram_headroom_mb"`

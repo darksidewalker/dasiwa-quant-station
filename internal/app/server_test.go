@@ -13,6 +13,30 @@ import (
 	"time"
 )
 
+func TestLoraMergeTokenRefinerFlagRoundTrip(t *testing.T) {
+	for _, input := range []string{`{}`, `{"protect_token_refiner":false}`, `{"protect_token_refiner":true}`} {
+		var req LoraMergeRequest
+		if err := json.Unmarshal([]byte(input), &req); err != nil {
+			t.Fatal(err)
+		}
+		want := input == `{"protect_token_refiner":true}`
+		if req.ProtectTokenRefiner != want {
+			t.Fatalf("%s: protection = %v", input, req.ProtectTokenRefiner)
+		}
+		encoded, err := json.Marshal(req) // Same serialization used by runLoraMergeJob.
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]interface{}
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields["protect_token_refiner"] != want {
+			t.Fatalf("bridge payload = %s", encoded)
+		}
+	}
+}
+
 func TestModelMergeModalityOptionsRoundTrip(t *testing.T) {
 	var req ModelMergeRequest
 	if err := json.Unmarshal([]byte(`{"modality_mode":"split","audio_blocks":"all","text_blocks":"selected","audio_out_from_overlay":true}`), &req); err != nil {

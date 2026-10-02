@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import struct
 from contextlib import ExitStack
 from typing import Any, Dict, Iterable, List, Tuple
@@ -49,6 +50,15 @@ def _get_profile(arch: str):
     return is_preserved, classify, strat_mult
 
 
+def is_token_refiner_key(key: str, architecture: str) -> bool:
+    """Explicit known refiner modules only; never guess from tokenizer/text names."""
+    if architecture == "MiniMax H3":
+        return re.search(r"(?:^|\.)token_refiner(?:\.|$)", key) is not None
+    if architecture == "Krea 2":
+        return re.search(r"(?:^|\.)txtfusion\.refiner_blocks(?:\.|$)", key) is not None
+    return False
+
+
 def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     base_path = os.path.realpath(os.path.expanduser(payload["base_path"]))
     output_path = os.path.realpath(os.path.expanduser(payload.get("output_path") or _default_output_path(payload)))
@@ -68,6 +78,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     cuda_device = payload.get("cuda_device") or "cuda:0"
     vram_headroom_mb = int(payload.get("vram_headroom_mb") or 1024)
     krea2_unchain = bool(payload.get("krea2_unchain", False))
+    protect_token_refiner = bool(payload.get("protect_token_refiner", False))
     merge_algorithm = _normalize_merge_algorithm(payload.get("merge_algorithm"))
     consensus_settings = resolve_consensus_preset(payload.get("consensus_preset"), architecture)
     if merge_algorithm == "consensus" and len(loras) < 2:
@@ -82,6 +93,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
 
     yield _log(f"LoRA merge init\nBase: {base_path}\nArchitecture: {architecture}\nStrategy: {strategy}\nAlgorithm: {merge_algorithm}\nConsensus preset: {consensus_settings.name}\nAdaptive: {'yes' if adaptive else 'no'}\nDry run: {'yes' if dry_run else 'no'}\nMerge device: requested={merge_device} cuda_device={cuda_device} headroom={vram_headroom_mb}MB\n")
+    yield _log(f"Protect Token Refiner: {'yes' if protect_token_refiner else 'no'} (checkpoint baking only)\n")
     reject_quantized_merge_source(base_path)
     base_metadata = read_source_metadata(base_path)
     base_manifest = read_safetensors_manifest(base_path)
@@ -90,6 +102,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     reports: List[Dict[str, Any]] = []
     matched_ops: List[Dict[str, Any]] = []
+    token_refiner_skipped = 0
     skipped = 0          # preserve-pattern skips
     strategy_skipped = 0 # tensors excluded by strategy multiplier (e.g. Video → audio)
     decomposed_skipped = 0  # factorized LoKr (lokr_w1_a/b, lokr_w2_a/b) — reported, not merged
@@ -130,6 +143,10 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     if strict:
                         continue
                 target_key = candidates[0]
+                if protect_token_refiner and is_token_refiner_key(target_key, architecture):
+                    token_refiner_skipped += 1
+                    reports.append(_report(pair.base_name, target_key, "skipped_token_refiner", lora_path))
+                    continue
                 if is_preserved(target_key):
                     skipped += 1
                     reports.append(_report(pair.base_name, target_key, "skipped_preserve", lora_path))
@@ -178,6 +195,10 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     if strict:
                         continue
                 dp_target = dp_candidates[0]
+                if protect_token_refiner and is_token_refiner_key(dp_target, architecture):
+                    token_refiner_skipped += 1
+                    reports.append(_report(dp.diff_key, dp_target, "skipped_token_refiner", lora_path))
+                    continue
                 if is_preserved(dp_target):
                     skipped += 1
                     reports.append(_report(dp.diff_key, dp_target, "skipped_preserve_diff", lora_path))
@@ -225,16 +246,18 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if dry_run:
         # Build per-LoRA summary for dry run (computed but not yet displayed)
         from collections import Counter, defaultdict
-        lora_stats = defaultdict(lambda: {"matched": 0, "skipped_preserve": 0, "skipped_strategy": 0, "skipped_decomposed": 0, "unmatched": 0, "categories": Counter()})
+        lora_stats = defaultdict(lambda: {"matched": 0, "skipped_preserve": 0, "skipped_strategy": 0, "skipped_decomposed": 0, "skipped_token_refiner": 0, "unmatched": 0, "categories": Counter()})
         unmatched_by_lora = defaultdict(list)
         for rpt in reports:
             ln = rpt["lora"]
             st = rpt["status"]
-            if st == "matched":
+            if st in {"matched", "matched_diff", "matched_builtin_unchain"}:
                 lora_stats[ln]["matched"] += 1
                 lora_stats[ln]["categories"][rpt.get("category", "?")] += 1
             elif st.startswith("skipped_preserve"):
                 lora_stats[ln]["skipped_preserve"] += 1
+            elif st == "skipped_token_refiner":
+                lora_stats[ln]["skipped_token_refiner"] += 1
             elif st == "skipped_strategy":
                 lora_stats[ln]["skipped_strategy"] += 1
             elif st == "skipped_decomposed":
@@ -245,11 +268,12 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
         summary = {}
         for ln, st in lora_stats.items():
-            total_skipped = st["skipped_preserve"] + st["skipped_strategy"] + st["skipped_decomposed"]
+            total_skipped = st["skipped_preserve"] + st["skipped_strategy"] + st["skipped_decomposed"] + st["skipped_token_refiner"]
             summary[ln] = {
                 "matched": st["matched"],
                 "skipped": total_skipped,
                 "skipped_breakdown": {
+                    "token_refiner": st["skipped_token_refiner"],
                     "preserve": st["skipped_preserve"],
                     "strategy": st["skipped_strategy"],
                     "decomposed": st["skipped_decomposed"],
@@ -269,7 +293,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         # Quick human-readable summary right before done so it's visible at the bottom.
         yield _log(
             f"Dry run summary: matched={len(matched_ops)} "
-            f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} "
+            f"skipped_token_refiner={token_refiner_skipped} skipped_preserve={skipped} skipped_strategy={strategy_skipped} "
             f"skipped_decomposed={decomposed_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
         )
         yield _status("Dry run complete")
@@ -385,7 +409,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     recipe_path = _write_recipe(output_path, payload, loras, strategy,
                                 global_strength, adaptive, matched_ops,
                                 skipped, unmatched, ambiguous, device_summary, merge_summary,
-                                strategy_skipped, decomposed_skipped)
+                                strategy_skipped, decomposed_skipped, token_refiner_skipped)
 
     yield _log(f"Wrote merged checkpoint: {output_path}\n")
     yield _log(f"Wrote merge recipe: {recipe_path}\n")
@@ -393,7 +417,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     # Post-merge match summary (unconditional, for logs and tests).
     yield _log(
         f"Merge report: matched={len(matched_ops)} "
-        f"skipped_preserve={skipped} skipped_strategy={strategy_skipped} "
+        f"skipped_token_refiner={token_refiner_skipped} skipped_preserve={skipped} skipped_strategy={strategy_skipped} "
         f"skipped_decomposed={decomposed_skipped} unmatched={unmatched} ambiguous={ambiguous}\n"
     )
 
@@ -760,7 +784,8 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
                   device_summary: Dict[str, Any] | None = None,
                   merge_summary: Dict[str, Any] | None = None,
                   strategy_skipped: int = 0,
-                  decomposed_skipped: int = 0) -> str:
+                  decomposed_skipped: int = 0,
+                  token_refiner_skipped: int = 0) -> str:
     """Write a human-readable merge recipe .txt next to the checkpoint."""
     import datetime
 
@@ -790,6 +815,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         f"Dry run first:     {'yes' if dry_run else 'no'}",
         f"Strict matching:   {'yes' if strict else 'no'}",
         f"Krea2 unchain:     {'yes' if krea2_unchain else 'no'}",
+        f"Protect Token Refiner: {'yes' if payload.get('protect_token_refiner', False) else 'no'}",
         f"Preserve loader metadata: {'yes' if payload.get('preserve_loader_metadata', True) else 'no'}",
         "",
         "-" * 64,
@@ -813,6 +839,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         "-" * 64,
         "",
         f"  Matched tensors:  {len(matched_ops)}",
+        f"  Skipped (Token Refiner): {token_refiner_skipped}",
         f"  Skipped (preserve): {skipped}",
         f"  Skipped (strategy): {strategy_skipped}",
         f"  Skipped (LoKr factorized): {decomposed_skipped}",

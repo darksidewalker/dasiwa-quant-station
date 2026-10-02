@@ -3,7 +3,11 @@ import re
 from core.layer_config_builder import BAKED_VAE_PATTERNS, PRESERVE_PATTERNS
 
 
-_PRESERVE_RX = [re.compile(pattern) for pattern in PRESERVE_PATTERNS["MiniMax H3"] + BAKED_VAE_PATTERNS]
+# Quantization keeps the whole refiner at source precision; LoRA baking must
+# allow its learned updates unless Protect Token Refiner is explicitly enabled.
+# Retain every other structural/norm preserve rule.
+_PRESERVE_RX = [re.compile(pattern) for pattern in PRESERVE_PATTERNS["MiniMax H3"] + BAKED_VAE_PATTERNS
+                if pattern != r"^(.*\.)?token_refiner($|\..*)"]
 
 
 def is_minimax_h3_preserved_key(key: str) -> bool:

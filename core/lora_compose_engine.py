@@ -142,6 +142,7 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
     layers: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     manifests = {}
+    unsupported_inputs = []
     _, classify_key, strategy_multiplier = _get_profile(architecture)
     for index, spec in enumerate(specs):
         path = os.path.realpath(os.path.expanduser(spec["path"]))
@@ -152,7 +153,27 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             raise ValueError(f"{os.path.basename(path)} effective strength {effective:g} exceeds safe limit ±3")
         manifest = read_safetensors_manifest(path)
         manifests[path] = manifest
-        for pair in discover_lora_pairs(manifest):
+        pairs = discover_lora_pairs(manifest)
+        patches = discover_diff_patches(manifest)
+        supported_pairs = [pair for pair in pairs if pair.kind != "lokr_decomposed"]
+        if not supported_pairs and not patches:
+            raise ValueError(
+                f"Unsupported standalone module/adapter input: {path}. No recognized LoRA A/B "
+                "or down/up pairs, direct LoKr pairs, or .diff patches were found. "
+                "Full fc1/fc2/fc3 weights and biases are not LoRA deltas and cannot be composed. "
+                "Remove this file and load the standalone conditioning bridge/module separately "
+                "with its compatible runtime loader; conversion requires an explicit supported format."
+            )
+        consumed = {key for pair in supported_pairs for key in
+                    (pair.down_key, pair.up_key, pair.alpha_key) if key}
+        consumed.update(patch.diff_key for patch in patches)
+        unhandled = sorted(set(manifest) - consumed)
+        if unhandled:
+            report = {"path": path, "count": len(unhandled), "keys": unhandled}
+            unsupported_inputs.append(report)
+            yield _log("WARNING: unsupported/unhandled input tensors (not added as deltas): "
+                       + json.dumps(report) + "\n")
+        for pair in pairs:
             if pair.kind == "lokr_decomposed":
                 if mismatch == "error":
                     raise ValueError(f"factorized LoKr input is unsupported: {pair.base_name}")
@@ -167,7 +188,7 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 "shape": tuple(shape), "scale": layer_scale,
                 "lokr_shapes": (tuple(pair.down_shape), tuple(pair.up_shape)) if pair.kind == "lokr" else None,
             })
-        for patch in discover_diff_patches(manifest):
+        for patch in patches:
             logical = _canonical_candidates(patch.target_candidates, patch.diff_key[:-len(".diff")])
             layer_scale = effective
             layers[logical].append({"path": path, "source": index, "kind": "diff", "diff_key": patch.diff_key,
@@ -220,7 +241,7 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     )
     if dry_run:
         yield _log(json.dumps({"layers": len(plans), "skipped": invalid, "output_adapter": output_kind,
-                               "consensus_preset": settings.name}, indent=2) + "\n")
+                               "consensus_preset": settings.name, "unsupported_inputs": unsupported_inputs}, indent=2) + "\n")
         yield _status("Dry run complete")
         yield {"type": "done", "status": "dry-run complete"}
         return
@@ -277,6 +298,8 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         for index, spec in enumerate(specs, 1):
             handle.write(f"{index}. {os.path.realpath(os.path.expanduser(spec['path']))}\n")
             handle.write(f"   Strength: {spec.get('strength', 1.0)}\n")
+        handle.write("Unsupported/unhandled input tensors (not composed):\n"
+                     + json.dumps(unsupported_inputs, indent=2) + "\n")
         handle.write(recap)
         handle.write("Layer report:\n" + json.dumps(reports, indent=2) + "\n")
     yield _log(recap)

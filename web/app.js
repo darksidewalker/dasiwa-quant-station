@@ -78,6 +78,7 @@ function currentSettings() {
       adaptive: $("lora-adaptive").checked,
       strict: $("lora-strict").checked,
       krea2Unchain: $("krea2-unchain").checked,
+      protectTokenRefiner: $("protect-token-refiner").checked,
       rows: state.loras.map((lora) => ({...lora})),
     },
     compose: {
@@ -171,6 +172,7 @@ function loadSettings() {
   $("lora-adaptive").checked = lora.adaptive ?? s.loraAdaptive ?? false;
   $("lora-strict").checked = lora.strict ?? s.loraStrict ?? true;
   $("krea2-unchain").checked = lora.krea2Unchain ?? s.krea2Unchain ?? false;
+  $("protect-token-refiner").checked = lora.protectTokenRefiner ?? false;
   const rows = lora.rows || s.loras;
   if (Array.isArray(rows)) {
     state.loras = rows.map((row) => ({
@@ -605,6 +607,7 @@ function formatTitle(value) {
 
 function updateArchDependentUI() {
   applyArchFormatFilter();
+  $("protect-token-refiner-label").style.display = ["MiniMax H3", "Krea 2"].includes(state.architecture) ? "" : "none";
   const unchainLabel = $("krea2-unchain-label");
   if (unchainLabel) {
     unchainLabel.style.display = state.architecture === "Krea 2" ? "" : "none";
@@ -1071,6 +1074,7 @@ function wireEvents() {
   $("lora-adaptive").addEventListener("change", saveSettings);
   $("lora-strict").addEventListener("change", saveSettings);
   $("krea2-unchain").addEventListener("change", saveSettings);
+  $("protect-token-refiner").addEventListener("change", saveSettings);
 
   // Model Merge (model-level) — base reuses the Source panel; only overlay is picked here
   $("mm-pick-overlay").addEventListener("click", () => openBrowser("mm-overlay"));
@@ -1691,6 +1695,7 @@ async function startLoraMerge() {
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,
         krea2_unchain: $("krea2-unchain").checked,
+        protect_token_refiner: $("protect-token-refiner").checked,
         preserve_loader_metadata: $("preserve-loader-metadata").checked,
         watermark: $("watermark").checked,
       }),
@@ -2101,11 +2106,11 @@ async function parseRecipeAndApply(recipeText, fileName) {
   // Helper: read a "Key: value" line by searching for the label.
   var i = 0;
   function field(label) {
-    while (i < lines.length) {
-      var escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      var m = lines[i].match(new RegExp("^\\s*" + escaped + "[: ]+(.*)"));
-      if (m) { i++; return m[1].trim(); }
-      i++;
+    var escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (var headerLine = headerStart + 1; headerLine < lines.length; headerLine++) {
+      if (lines[headerLine].trim() === "LoRAs") break;
+      var m = lines[headerLine].match(new RegExp("^\\s*" + escaped + "[: ]+(.*)"));
+      if (m) return m[1].trim();
     }
     return "";
   }
@@ -2127,6 +2132,7 @@ async function parseRecipeAndApply(recipeText, fileName) {
     var dryRun            = field("Dry run first") === "yes";
     var strictMatch       = field("Strict matching") === "yes";
     var krea2Unchain      = field("Krea2 unchain") === "yes";
+    var protectTokenRefiner = field("Protect Token Refiner") === "yes";
 
     // Move to the LoRA section before parsing entries. Header field scanning
     // intentionally stops before the separator, so skip section labels/blanks.
@@ -2193,6 +2199,9 @@ async function parseRecipeAndApply(recipeText, fileName) {
     $("lora-adaptive").checked = adaptive;
     $("mm-dry-run").checked = dryRun;
     $("lora-strict").checked = strictMatch;
+    $("lora-merge-algorithm").value = field("Merge algorithm") || "additive";
+    $("lora-consensus-preset").value = field("Consensus preset") || "balanced";
+    $("protect-token-refiner").checked = protectTokenRefiner;
 
     // Krea2 unchain checkbox visibility + state.
     updateArchDependentUI();

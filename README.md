@@ -193,6 +193,10 @@ Switch to **Merge LoRAs**, add at least two LoRA, direct-LoKr, or `.diff` adapte
 | Frobenius energy | Requested fraction of squared singular-value energy retained by LoRA SVD (default 0.99); a rank limit can prevent reaching it. This target does not apply to LoKr layers or guarantee visual quality. |
 | Mismatch | **Error** aborts on incompatible layers; **Skip incompatible layers** omits and reports them. Review skipped counts before using the output. |
 
+**Protect Token Refiner** is optional and **off by default**, for checkpoint LoRA baking only. It leaves MiniMax H3 `token_refiner.*` (including wrapped keys) or Krea 2 `txtfusion.refiner_blocks.*` unchanged for both LoRA pairs and direct `.diff` patches, in Additive and Consensus modes. Dry runs show the skipped counts; checkpoint recipes and saved UI settings restore the option. This is a neural **Token Refiner**, not a tokenizer; adapter composition is unaffected.
+
+Adapter composition rejects any input with no recognized LoRA/LoKr pairs or `.diff` patches before writing output, including standalone conditioning bridges with `fc1/fc2/fc3` weights and biases. Load those modules separately with a compatible runtime loader; full weights cannot safely be treated as LoRA deltas. Mixed adapters explicitly report every unsupported/unhandled tensor in logs, dry-run output, and the companion recipe; those tensors are not composed.
+
 For **LoRA Merge** (checkpoint baking), choose **Additive** to sum scaled deltas or **Consensus** to blend contributors targeting the same tensor before adding the result to the base. The consensus preset is used only with Consensus. Per-adapter strength, global strength, and architecture strategy apply before consensus; effective strength is limited to ±3. Adaptive scaling and Krea 2 Unchain are unavailable in checkpoint consensus mode. Preset thresholds and detailed input/output limitations: [LoRA merge strategies](doc/lora-merge-strategies.md).
 
 ---
