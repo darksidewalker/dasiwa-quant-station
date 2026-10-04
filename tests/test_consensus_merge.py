@@ -85,3 +85,22 @@ class AdapterFactorizationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+def test_row_batched_consensus_matches_unchunked_stats():
+    from core.consensus_merge import CONSENSUS_PRESETS, merge_consensus_rows
+    rows = torch.randn(3, 17, 11, generator=torch.Generator().manual_seed(42))
+    for settings in CONSENSUS_PRESETS.values():
+        expected, stats = merge_consensus_rows(rows, settings, return_stats=True)
+        actual, chunk_stats = merge_consensus_rows(rows, settings, return_stats=True, row_batch_size=3)
+        torch.testing.assert_close(actual, expected)
+        assert chunk_stats == stats
+def test_additive_factor_space_svd_matches_signed_stack_and_uses_small_core():
+    from core import adapter_factorization as af
+    pairs = [(torch.randn(2, 19), torch.randn(23, 2), -0.7),
+             (torch.randn(1, 19), torch.randn(23, 1), 0.)]
+    expected = sum(up @ down * scale for down, up, scale in pairs)
+    assert hasattr(af, 'factorize_additive_lora')
+    with patch.object(af, 'factorize_lora', wraps=af.factorize_lora) as svd:
+        down, up, report = af.factorize_additive_lora(pairs, max_rank=3, energy=1.)
+    assert max(svd.call_args.args[0].shape) <= 3
+    torch.testing.assert_close(up @ down, expected, atol=2e-5, rtol=2e-5)
+    assert report.relative_error < 1e-5

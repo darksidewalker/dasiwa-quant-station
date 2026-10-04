@@ -17,6 +17,22 @@ def _relative_error(source: torch.Tensor, rebuilt: torch.Tensor) -> float:
     return float((torch.linalg.vector_norm(source - rebuilt) / denominator).item())
 
 
+def _factor_relative_error(source, first, second, kind):
+    error = 0.; norm = 0.
+    for start in range(0, source.shape[0], 256):
+        end = min(source.shape[0], start + 256)
+        if kind == 'lora':
+            rebuilt = second[start:end].float() @ first.float()
+        else:
+            indices = torch.arange(start, end, device=source.device)
+            rebuilt = (first[indices // second.shape[0], :, None].float() *
+                       second[indices % second.shape[0], None, :].float()).reshape(end-start, -1)
+        rows = source[start:end].double()
+        error += float((rows - rebuilt.double()).square().sum())
+        norm += float(rows.square().sum())
+    return (error / max(norm, 1e-24)) ** 0.5
+
+
 def _normalize_pair_sign(first: torch.Tensor, second: torch.Tensor) -> None:
     flat = first.reshape(-1)
     if flat.numel() and flat[torch.argmax(torch.abs(flat))] < 0:
@@ -68,9 +84,8 @@ def factorize_lora(
     down = (root.unsqueeze(1) * vh[:rank, :]).contiguous()
     for index in range(rank):
         _normalize_pair_sign(up[:, index], down[index, :])
-    rebuilt = reconstruct_lora(down, up)
     retained = 1.0 if total <= 0 else float((singular[:rank].square().sum() / total).item())
-    return down, up, FactorizationReport("lora", rank, retained, _relative_error(work, rebuilt))
+    return down, up, FactorizationReport("lora", rank, retained, _factor_relative_error(work, down, up, 'lora'))
 
 
 def reconstruct_lokr(w1: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
@@ -95,7 +110,16 @@ def factorize_lokr(
     w1 = (u[:, 0] * root).reshape(w1_shape).contiguous()
     w2 = (vh[0, :] * root).reshape(w2_shape).contiguous()
     _normalize_pair_sign(w1, w2)
-    rebuilt = reconstruct_lokr(w1, w2)
     total = singular.square().sum()
     retained = 1.0 if total <= 0 else float((singular[0].square() / total).item())
-    return w1, w2, FactorizationReport("lokr", 1, retained, _relative_error(work, rebuilt))
+    return w1, w2, FactorizationReport("lokr", 1, retained, _factor_relative_error(work, w1, w2, 'lokr'))
+def factorize_additive_lora(pairs, *, max_rank=0, energy=0.99):
+    """Exact QR/core SVD of sum(scale * B @ A), without a dense delta."""
+    down = torch.cat([a.to(torch.float32) for a, b, scale in pairs], dim=0)
+    up = torch.cat([b.to(torch.float32) * scale for a, b, scale in pairs], dim=1)
+    if not torch.isfinite(down).all() or not torch.isfinite(up).all():
+        raise ValueError('cannot factorize factors containing NaN or infinity')
+    qu, ru = torch.linalg.qr(up, mode='reduced')
+    qd, rd = torch.linalg.qr(down.T, mode='reduced')
+    small_down, small_up, report = factorize_lora(ru @ rd.T, max_rank=max_rank, energy=energy)
+    return (small_down @ qd.T).contiguous(), (qu @ small_up).contiguous(), report

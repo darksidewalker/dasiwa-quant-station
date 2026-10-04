@@ -81,6 +81,8 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/lora/extract", s.handleLoraExtract)
 	mux.HandleFunc("GET /api/lora/extract/blocks", s.handleExtractBlocks)
 	mux.HandleFunc("POST /api/model-merge", s.handleModelMerge)
+	mux.HandleFunc("POST /api/h3/prune", s.handleH3Prune)
+	mux.HandleFunc("POST /api/h3/adapter-convert", s.handleH3AdapterConvert)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
@@ -204,7 +206,18 @@ func legacyFormatSupport() map[string][]string {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	capabilities := map[string]any{"h3_ctq": map[string]any{"supported": false, "detail": "Unable to verify installed converter"}}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if out, err := s.runBridge(ctx, "capabilities"); err == nil {
+		var verified map[string]any
+		if json.Unmarshal(out, &verified) == nil && verified["h3_ctq"] != nil {
+			capabilities = verified
+		}
+	}
 	writeJSON(w, map[string]any{
+		"h3_ctq":             capabilities["h3_ctq"],
+		"output_dir":         s.modelsDir,
 		"version":            s.version,
 		"root_dir":           s.rootDir,
 		"models_dir":         s.modelsDir,
@@ -513,7 +526,212 @@ func (s *Server) handleMetadataInject(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
+type H3Request struct {
+	BasePath         string `json:"base_path"`
+	ReferencePath    string `json:"reference_path"`
+	PrunedTargetPath string `json:"pruned_target_path"`
+	AdapterPath      string `json:"adapter_path"`
+	OutputPath       string `json:"output_path"`
+	OutputDir        string `json:"output_dir"`
+	OutputName       string `json:"output_name"`
+	Architecture     string `json:"architecture"`
+	FoldMode         string `json:"fold_mode"`
+	MergeDevice      string `json:"merge_device"`
+	CUDADevice       string `json:"cuda_device"`
+	VRAMHeadroomMB   int    `json:"vram_headroom_mb"`
+	DryRun           bool   `json:"dry_run"`
+}
+
+func (s *Server) validateH3Request(req *H3Request, convert bool) error {
+	if req.Architecture == "" {
+		req.Architecture = "MiniMax H3"
+	}
+	if req.Architecture != "MiniMax H3" {
+		return fmt.Errorf("H3 workflows require MiniMax H3")
+	}
+	if req.FoldMode == "" {
+		req.FoldMode = "reference"
+	}
+	if req.FoldMode != "reference" && req.FoldMode != "independent" {
+		return fmt.Errorf("fold_mode must be reference or independent")
+	}
+	if req.BasePath == "" {
+		return fmt.Errorf("full source checkpoint is required")
+	}
+	paths := []*string{&req.BasePath}
+	if convert {
+		if req.FoldMode != "reference" || req.PrunedTargetPath == "" || req.AdapterPath == "" || req.ReferencePath != "" {
+			return fmt.Errorf("conversion requires target and adapter, reference fold mode only")
+		}
+		paths = append(paths, &req.PrunedTargetPath, &req.AdapterPath)
+	} else {
+		if req.AdapterPath != "" || req.PrunedTargetPath != "" {
+			return fmt.Errorf("adapter/target paths are only valid for conversion")
+		}
+		if req.FoldMode == "reference" {
+			if req.ReferencePath == "" {
+				return fmt.Errorf("pruned reference is required")
+			}
+			paths = append(paths, &req.ReferencePath)
+		} else if req.ReferencePath != "" {
+			return fmt.Errorf("independent fold cannot use a reference")
+		}
+	}
+	for _, path := range paths {
+		*path = cleanPath(*path, s.modelsDir)
+		stat, err := os.Stat(*path)
+		if err != nil || !stat.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(*path), ".safetensors") {
+			return fmt.Errorf("input must be an existing safetensors file: %s", *path)
+		}
+	}
+	if req.MergeDevice == "" {
+		req.MergeDevice = "auto"
+	}
+	if !containsString([]string{"auto", "cpu", "cuda"}, req.MergeDevice) {
+		return fmt.Errorf("merge_device must be auto, cpu or cuda")
+	}
+	if req.CUDADevice == "" {
+		req.CUDADevice = "cuda:0"
+	}
+	if req.CUDADevice != "cuda" {
+		if !strings.HasPrefix(req.CUDADevice, "cuda:") {
+			return fmt.Errorf("invalid CUDA device")
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(req.CUDADevice, "cuda:"))
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid CUDA device")
+		}
+	}
+	if req.VRAMHeadroomMB < 0 {
+		return fmt.Errorf("VRAM headroom cannot be negative")
+	}
+	if req.VRAMHeadroomMB == 0 {
+		req.VRAMHeadroomMB = 1024
+	}
+	if req.OutputDir == "" {
+		req.OutputDir = filepath.Dir(req.BasePath)
+	}
+	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.BasePath))
+	if req.OutputName != "" && (filepath.Base(req.OutputName) != req.OutputName || strings.ContainsAny(req.OutputName, "/\\") || req.OutputName == "." || req.OutputName == "..") {
+		return fmt.Errorf("output_name must be a filename, not a path")
+	}
+	if req.OutputPath == "" {
+		if req.OutputName == "" {
+			if req.DryRun {
+				return nil
+			}
+			return fmt.Errorf("output_path or output_name is required")
+		}
+		name := req.OutputName
+		if !strings.HasSuffix(strings.ToLower(name), ".safetensors") {
+			name += ".safetensors"
+		}
+		req.OutputPath = filepath.Join(req.OutputDir, name)
+	}
+	req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
+	if !strings.EqualFold(filepath.Ext(req.OutputPath), ".safetensors") {
+		return fmt.Errorf("output must be safetensors")
+	}
+	if _, err := os.Lstat(req.OutputPath); !os.IsNotExist(err) {
+		return fmt.Errorf("output already exists or cannot be accessed")
+	}
+	if _, err := os.Lstat(req.OutputPath + ".txt"); !os.IsNotExist(err) {
+		return fmt.Errorf("recipe destination already exists or cannot be accessed")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(req.OutputPath))
+	if err != nil {
+		return fmt.Errorf("output parent must exist")
+	}
+	output := filepath.Join(parent, filepath.Base(req.OutputPath))
+	for _, path := range paths {
+		input, err := filepath.EvalSymlinks(*path)
+		if err != nil || input == output {
+			return fmt.Errorf("output aliases an input")
+		}
+	}
+	return nil
+}
+
+// runH3Command owns one exact private staging root. CommandContext may SIGKILL
+// Python, so __exit__ is not a cleanup guarantee; remove only this root after Wait.
+func (s *Server) runH3Command(ctx context.Context, cmd *exec.Cmd, job *Job, outputDir string, outputPaths ...string) error {
+	stage, err := os.MkdirTemp(outputDir, ".h3_job_")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	cmd.Env = append(cmd.Env, "DASIWA_H3_STAGE_DIR="+stage)
+	err = streamCommand(ctx, cmd, job)
+	if err != nil && len(outputPaths) > 0 && outputPaths[0] != "" {
+		// A kill between the two hard links can leave a recipe or artifact. Only
+		// unlink outputs proven to be links to this job's own staged inode.
+		entries, _ := os.ReadDir(stage)
+		for _, entry := range entries {
+			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".h3_stage_") {
+				continue
+			}
+			for staged, target := range map[string]string{"recipe.txt": outputPaths[0] + ".txt", "artifact.safetensors": outputPaths[0]} {
+				owned, e1 := os.Lstat(filepath.Join(stage, entry.Name(), staged))
+				published, e2 := os.Lstat(target)
+				if e1 == nil && e2 == nil && owned.Mode().IsRegular() && published.Mode().IsRegular() && os.SameFile(owned, published) {
+					_ = os.Remove(target)
+				}
+			}
+		}
+	}
+	return err
+}
+
+func (s *Server) handleH3Prune(w http.ResponseWriter, r *http.Request) { s.handleH3(w, r, false) }
+func (s *Server) handleH3AdapterConvert(w http.ResponseWriter, r *http.Request) {
+	s.handleH3(w, r, true)
+}
+func (s *Server) handleH3(w http.ResponseWriter, r *http.Request, convert bool) {
+	var req H3Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if err := s.validateH3Request(&req, convert); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	command := "h3-prune"
+	if convert {
+		command = "h3-adapter-convert"
+	}
+	id := newID()
+	ctx, cancel := context.WithCancel(context.Background())
+	job := &Job{ID: id, CreatedAt: time.Now(), Events: make(chan Event, 512), cancel: cancel, Status: "starting " + command}
+	s.jobs.Add(job)
+	go func() {
+		defer close(job.Events)
+		payload, _ := json.Marshal(req)
+		cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), command, "--json", string(payload))
+		cmd.Dir = s.rootDir
+		cmd.Env = s.commandEnv()
+		stageDir := req.OutputDir
+		if req.OutputPath != "" {
+			stageDir = filepath.Dir(req.OutputPath)
+		}
+		if err := s.runH3Command(ctx, cmd, job, stageDir, req.OutputPath); err != nil {
+			status := "failed"
+			if ctx.Err() != nil {
+				status = "stopped"
+			}
+			job.setStatus(status)
+			job.Emit(Event{Type: "error", Text: err.Error()})
+			job.Emit(Event{Type: "done", Status: status})
+			return
+		}
+		job.setStatus("finished")
+	}()
+	writeJSON(w, map[string]string{"job_id": id})
+}
+
 type QuantizeRequest struct {
+	H3QuantPolicy          string   `json:"h3_quant_policy"`
+	VerboseLevel           string   `json:"verbose_level,omitempty"`
 	PreserveLoaderMetadata *bool    `json:"preserve_loader_metadata,omitempty"`
 	ModelsDir              string   `json:"models_dir"`
 	OutputDir              string   `json:"output_dir"`
@@ -535,6 +753,7 @@ type LoraSpec struct {
 }
 
 type LoraMergeRequest struct {
+	H3TurboComplete        bool       `json:"h3_turbo_complete"`
 	PreserveLoaderMetadata *bool      `json:"preserve_loader_metadata,omitempty"`
 	BasePath               string     `json:"base_path"`
 	ModelsDir              string     `json:"models_dir"`
@@ -559,6 +778,7 @@ type LoraMergeRequest struct {
 }
 
 type LoraComposeRequest struct {
+	MergeAlgorithm  string     `json:"merge_algorithm"`
 	ModelsDir       string     `json:"models_dir"`
 	OutputPath      string     `json:"output_path"`
 	OutputName      string     `json:"output_name"`
@@ -641,6 +861,21 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ModelName == "" || req.SourcePath == "" || len(req.Formats) == 0 {
 		writeError(w, http.StatusBadRequest, "source, display name, and at least one format are required")
+		return
+	}
+	if req.H3QuantPolicy == "" {
+		req.H3QuantPolicy = "preserve_structural"
+	}
+	if !containsString([]string{"preserve_structural", "upstream_int8_convrot"}, req.H3QuantPolicy) {
+		writeError(w, 400, "invalid H3 quant policy")
+		return
+	}
+	if req.VerboseLevel != "" && !containsString([]string{"DEBUG", "VERBOSE", "NORMAL", "MINIMAL"}, req.VerboseLevel) {
+		writeError(w, 400, "invalid verbose_level")
+		return
+	}
+	if req.H3QuantPolicy == "upstream_int8_convrot" && (req.Architecture != "MiniMax H3" || req.Strategy != "Simple" || len(req.Formats) != 1 || req.Formats[0] != "INT8 Row-wise ConvRot Runtime") {
+		writeError(w, 400, "upstream policy requires MiniMax H3, Simple and only INT8 ConvRot")
 		return
 	}
 	for _, format := range req.Formats {
@@ -751,6 +986,40 @@ func (s *Server) handleModelMerge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"job_id": id})
 }
 
+// resolveAdapterOutput matches TensorSpool's exact artifact and artifact+".txt"
+// destinations before launch, so cancellation can unlink only owned publications.
+func resolveAdapterOutput(outputPath, outputName, outputDir, defaultName string, inputs ...string) (string, error) {
+	if outputName != "" && (filepath.Base(outputName) != outputName || strings.ContainsAny(outputName, "/\\") || outputName == "." || outputName == "..") {
+		return "", fmt.Errorf("output_name must be a filename, not a path")
+	}
+	if outputPath == "" {
+		if outputName == "" {
+			outputName = defaultName
+		}
+		outputPath = filepath.Join(outputDir, outputName)
+	}
+	outputPath = expandBrowsePath(outputPath, outputDir)
+	if !strings.HasSuffix(strings.ToLower(outputPath), ".safetensors") {
+		outputPath += ".safetensors"
+	}
+	for _, target := range []string{outputPath, outputPath + ".txt"} {
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			return "", fmt.Errorf("output or recipe already exists or cannot be accessed: %s", target)
+		}
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(outputPath))
+	if err != nil {
+		return "", fmt.Errorf("output parent must exist: %w", err)
+	}
+	outputPath = filepath.Join(parent, filepath.Base(outputPath))
+	for _, input := range inputs {
+		if input != "" && cleanPath(input, "") == outputPath {
+			return "", fmt.Errorf("output aliases an input")
+		}
+	}
+	return outputPath, nil
+}
+
 func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	var req LoraMergeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -787,6 +1056,10 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "merge_algorithm must be additive or consensus")
 		return
 	}
+	if req.H3TurboComplete && (req.Architecture != "MiniMax H3" || req.MergeAlgorithm != "additive" || req.Adaptive) {
+		writeError(w, 400, "complete Turbo requires MiniMax H3 additive baking without adaptive scaling")
+		return
+	}
 	if req.MergeAlgorithm == "consensus" && len(req.Loras) < 2 {
 		writeError(w, http.StatusBadRequest, "consensus merge requires at least two LoRAs")
 		return
@@ -808,9 +1081,17 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	if req.VRAMHeadroomMB <= 0 {
 		req.VRAMHeadroomMB = 1024
 	}
+	inputs := []string{req.BasePath}
 	for i := range req.Loras {
 		req.Loras[i].Path = cleanPath(req.Loras[i].Path, s.modelsDir)
+		inputs = append(inputs, req.Loras[i].Path)
 	}
+	output, err := resolveAdapterOutput(req.OutputPath, req.OutputName, req.OutputDir, "ltx23_lora_merged.safetensors", inputs...)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.OutputPath = output
 	id := newID()
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &Job{
@@ -829,6 +1110,28 @@ func (s *Server) handleLoraCompose(w http.ResponseWriter, r *http.Request) {
 	var req LoraComposeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.MergeAlgorithm == "" {
+		req.MergeAlgorithm = "consensus"
+	}
+	if req.MergeDevice != "" && !containsString([]string{"auto", "cpu", "cuda"}, req.MergeDevice) {
+		writeError(w, 400, "merge_device must be auto, cpu or cuda")
+		return
+	}
+	if req.ConsensusPreset != "" && !containsString([]string{"balanced", "conservative", "neutral"}, req.ConsensusPreset) {
+		writeError(w, 400, "invalid consensus_preset")
+		return
+	}
+	if req.CUDADevice != "" && req.CUDADevice != "cuda" {
+		n, err := strconv.Atoi(strings.TrimPrefix(req.CUDADevice, "cuda:"))
+		if !strings.HasPrefix(req.CUDADevice, "cuda:") || err != nil || n < 0 {
+			writeError(w, 400, "invalid CUDA device")
+			return
+		}
+	}
+	if !containsString([]string{"consensus", "additive"}, req.MergeAlgorithm) {
+		writeError(w, 400, "merge_algorithm must be consensus or additive")
 		return
 	}
 	if len(req.Loras) < 2 {
@@ -953,9 +1256,16 @@ func (s *Server) handleLoraExtract(w http.ResponseWriter, r *http.Request) {
 		req.OutputDir = filepath.Dir(req.MergedPath)
 	}
 	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.MergedPath))
-	if req.OutputPath != "" {
-		req.OutputPath = cleanPath(req.OutputPath, req.OutputDir)
+	defaultName := "minimax_h3_extracted_lora.safetensors"
+	if req.Recipe == "generic" {
+		defaultName = "checkpoint_delta_lora.safetensors"
 	}
+	output, err := resolveAdapterOutput(req.OutputPath, req.OutputName, req.OutputDir, defaultName, req.BasePath, req.MergedPath, req.PrunedTargetPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.OutputPath = output
 	if req.FrobeniusEnergy == 0 {
 		req.FrobeniusEnergy = 0.99
 	}
@@ -1110,7 +1420,11 @@ func (s *Server) runLoraComposeJob(ctx context.Context, job *Job, req LoraCompos
 	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "lora-compose", "--json", string(payload))
 	cmd.Dir = s.rootDir
 	cmd.Env = s.commandEnv()
-	if err := streamCommand(ctx, cmd, job); err != nil {
+	stageDir := req.ModelsDir
+	if req.OutputPath != "" {
+		stageDir = filepath.Dir(req.OutputPath)
+	}
+	if err := s.runH3Command(ctx, cmd, job, stageDir, req.OutputPath); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			job.setStatus("lora composition stopped")
 			job.Emit(Event{Type: "done", Status: "lora composition stopped"})
@@ -1130,7 +1444,7 @@ func (s *Server) runLoraMergeJob(ctx context.Context, job *Job, req LoraMergeReq
 	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "lora-merge", "--json", string(payload))
 	cmd.Dir = s.rootDir
 	cmd.Env = s.commandEnv()
-	if err := streamCommand(ctx, cmd, job); err != nil {
+	if err := s.runH3Command(ctx, cmd, job, filepath.Dir(req.OutputPath), req.OutputPath); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			job.setStatus("lora merge stopped")
 			job.Emit(Event{Type: "done", Status: "lora merge stopped"})
@@ -1176,7 +1490,11 @@ func (s *Server) runLoraExtractJob(ctx context.Context, job *Job, req LoraExtrac
 	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "lora-extract", "--json", string(payload))
 	cmd.Dir = s.rootDir
 	cmd.Env = s.commandEnv()
-	if err := streamCommand(ctx, cmd, job); err != nil {
+	stageDir := req.ModelsDir
+	if req.OutputPath != "" {
+		stageDir = filepath.Dir(req.OutputPath)
+	}
+	if err := s.runH3Command(ctx, cmd, job, stageDir, req.OutputPath); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			job.setStatus("lora extract stopped")
 			job.Emit(Event{Type: "done", Status: "lora extract stopped"})
@@ -1262,6 +1580,10 @@ func streamCommand(ctx context.Context, cmd *exec.Cmd, job *Job) error {
 		job.Emit(Event{Type: "log", Text: string(line) + "\n"})
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		// A broken stream cannot be allowed to keep writing after the caller
+		// cleans its owned staging root. Always reap the process before return.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return err
 	}
 	return cmd.Wait()

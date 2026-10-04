@@ -12,19 +12,18 @@ The rebased AdaLN payload uses ``.diff`` and ``.diff_b`` because the constant
 term cannot be represented by a conventional LoRA pair alone.
 """
 
-import hashlib
 import json
-import math
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
-import torch.nn.functional as F
 from safetensors import safe_open
-from safetensors.torch import save_file
+from contextlib import nullcontext
+from core.safetensors_stream import TensorSpool, destination
 
+from core.h3_curve import recover_gauge, finite
 from utils.arch_detector import verify_architecture_match
 from utils.lora_inspector import read_safetensors_manifest
 
@@ -91,31 +90,15 @@ def _h3_prefix(manifest: Dict[str, Any], require_full: bool) -> str:
     return tables[0]
 
 
-def _time_curve(handle, prefix: str, grid: int, device: torch.device) -> torch.Tensor:
-    w1 = handle.get_tensor(prefix + "time_embedder.proj_in.weight").to(device=device, dtype=torch.float64)
-    b1 = handle.get_tensor(prefix + "time_embedder.proj_in.bias").to(device=device, dtype=torch.float64)
-    w2 = handle.get_tensor(prefix + "time_embedder.proj_out.weight").to(device=device, dtype=torch.float64)
-    b2 = handle.get_tensor(prefix + "time_embedder.proj_out.bias").to(device=device, dtype=torch.float64)
-    t = torch.linspace(0.0, 1.0, grid, dtype=torch.float64, device=device)
-    half = w1.shape[1] // 2
-    freqs = torch.exp(-math.log(10000.0) * torch.arange(half, dtype=torch.float64, device=device) / half)
-    embedding = torch.cat((torch.cos(t[:, None] * freqs), torch.sin(t[:, None] * freqs)), dim=-1)
-    return F.silu(F.linear(F.silu(F.linear(embedding, w1, b1)), w2, b2))
+def _adapter_module(key: str) -> str:
+    """Return a portable adapter module name accepted by the merge loader."""
+    module = key[:-len(".weight")] if key.endswith(".weight") else key
+    if module.startswith("model.diffusion_model."):
+        return module[len("model."):]
+    if module.startswith("diffusion_model."):
+        return module
+    return "diffusion_model." + module
 
-
-def _recover_target_gauge(full_handle, full_prefix: str, pruned_handle, pruned_prefix: str, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]:
-    table = pruned_handle.get_tensor(pruned_prefix + "adaln_t_table").to(dtype=torch.float64, device=device)
-    if table.ndim != 2 or tuple(table.shape) != (1025, 8):
-        raise ValueError(f"Target pruned AdaLN table must have shape [1025, 8], got {list(table.shape)}")
-    curve = _time_curve(full_handle, full_prefix, table.shape[0], device)
-    design = torch.cat((table, torch.ones((table.shape[0], 1), dtype=torch.float64, device=device)), dim=1)
-    affine = torch.linalg.lstsq(design, curve).solution
-    basis = affine[:8].T.contiguous()  # [2688, 8]
-    center = affine[8].contiguous()    # [2688]
-    residual = design @ affine - curve
-    relative = float(torch.linalg.vector_norm(residual) / torch.linalg.vector_norm(curve))
-    table_hash = hashlib.sha256(table.to(dtype=torch.float32).contiguous().cpu().numpy().tobytes()).hexdigest()
-    return basis, center, table, table_hash + f" (least-squares relative residual {relative:.3e})"
 
 
 def _svd_factors(delta: torch.Tensor, energy: float, min_rank: int, max_rank: int) -> Tuple[torch.Tensor, torch.Tensor, int, float]:
@@ -138,17 +121,8 @@ def _svd_factors(delta: torch.Tensor, energy: float, min_rank: int, max_rank: in
     return down, up, rank, actual
 
 
-def _adapter_module(key: str) -> str:
-    """Return a portable adapter module name accepted by the merge loader."""
-    module = key[:-len(".weight")] if key.endswith(".weight") else key
-    if module.startswith("model.diffusion_model."):
-        return module[len("model."):]
-    if module.startswith("diffusion_model."):
-        return module
-    return "diffusion_model." + module
 
-
-def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, summary: Dict[str, Any]) -> str:
+def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, summary: Dict[str, Any], *, write=True) -> str:
     recipe_path = output_path + ".txt"
     recipe = payload.get("recipe") or ("h3_pruned" if payload.get("output_mode", "pruned") == "pruned" else "h3_full")
     lines = [
@@ -160,6 +134,8 @@ def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, su
         f"Modified checkpoint: {payload['merged_path']}",
         f"Pruned target: {payload.get('pruned_target_path') or 'none'}",
         f"Output mode: {payload.get('output_mode', 'pruned')}",
+        f"Output: {output_path}",
+        f"Dry run first: {'yes' if payload.get('dry_run', False) else 'no'}",
         f"Frobenius energy: {float(payload.get('frobenius_energy', 0.99)):.6f}",
         f"Minimum rank: {int(payload.get('min_rank', 1))}",
         f"Maximum rank: {int(payload.get('max_rank', 0))}",
@@ -168,9 +144,13 @@ def _write_recipe(output_path: str, payload: Dict[str, Any], table_hash: str, su
         "",
         f"LoRA pairs: {summary['pairs']}",
         f"AdaLN direct patches: {summary['adaln']}",
+        f"Bias direct patches: {summary.get('bias', 0)}",
         f"Skipped unchanged tensors: {summary['unchanged']}",
         f"Skipped unsupported tensors: {summary['unsupported']}",
+        'Factorization audit (includes saved dtype rounding; not inference proof):',
+        json.dumps(summary.get('factorization', []), allow_nan=False),
     ]
+    if not write: return "\n".join(lines) + "\n"
     Path(recipe_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return recipe_path
 
@@ -194,19 +174,15 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     payload["recipe"] = recipe
     payload["output_mode"] = output_mode
     default_name = "minimax_h3_extracted_lora.safetensors" if recipe.startswith("h3_") else "checkpoint_delta_lora.safetensors"
-    output_path = _resolve(payload.get("output_path") or os.path.join(payload.get("output_dir") or os.path.dirname(merged_path), payload.get("output_name") or default_name))
-    if not output_path.endswith(".safetensors"):
-        output_path += ".safetensors"
-    if os.path.exists(output_path):
-        raise FileExistsError(f"Refusing to overwrite existing output: {output_path}")
+    output_path = destination(payload, default_name, (base_path, merged_path))
     energy = float(payload.get("frobenius_energy", 0.99))
     min_rank = int(payload.get("min_rank", 1))
     max_rank = int(payload.get("max_rank", 0))
     dry_run = bool(payload.get("dry_run", False))
     if not 0 < energy <= 1:
         raise ValueError("frobenius_energy must be in (0, 1]")
-    if min_rank < 1 or max_rank < 0:
-        raise ValueError("min_rank must be >= 1 and max_rank must be >= 0")
+    if min_rank < 1 or max_rank < 0 or (max_rank and min_rank > max_rank):
+        raise ValueError("min_rank must be >= 1 and not exceed a positive max_rank")
 
     ok, message = verify_architecture_match(base_path, architecture)
     if not ok:
@@ -252,95 +228,132 @@ def run_lora_extract(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         if not ok:
             raise ValueError(message)
         pruned_prefix = _h3_prefix(pruned_manifest, require_full=False)
-        with safe_open(base_path, framework="pt", device="cpu") as base_handle, safe_open(pruned_path, framework="pt", device="cpu") as pruned_handle:
-            basis, center, _table, table_detail = _recover_target_gauge(base_handle, base_prefix, pruned_handle, pruned_prefix, device)
-        table_hash = table_detail.split(" ")[0]
-        yield _event("log", f"Recovered target AdaLN gauge: {table_detail}\n")
+        with safe_open(base_path, framework='pt', device='cpu') as before, safe_open(merged_path, framework='pt', device='cpu') as after:
+            for key in _H3_TIME_KEYS:
+                if not torch.equal(before.get_tensor(base_prefix + key), after.get_tensor(base_prefix + key)):
+                    raise ValueError('Changed time embedder requires a paired-checkpoint fold, not fixed-gauge extraction')
+        gauge = recover_gauge(base_path, pruned_path)
+        basis, center = gauge['basis'], gauge['center']
+        table_hash = gauge['table_sha256']
+        yield _event("log", f"Recovered target AdaLN gauge: {table_hash}; residual {gauge['fit_relative_error']:.3e}\n")
 
-    output: Dict[str, torch.Tensor] = {}
-    summary = {"pairs": 0, "adaln": 0, "unchanged": 0, "unsupported": 0, "filtered": 0}
-    ranks: List[int] = []
-    with safe_open(base_path, framework="pt", device="cpu") as base_handle, safe_open(merged_path, framework="pt", device="cpu") as merged_handle:
-        keys = list(base_handle.keys())
-        total = len(keys)
-        for index, key in enumerate(keys, start=1):
-            if selected_blocks is not None and _block_for_key(key) not in selected_blocks:
-                summary["filtered"] += 1
-                if index % 100 == 0 or index == total:
-                    yield _event("progress", f"Extracting tensors: {index}/{total}")
-                continue
-            if key.endswith(_ADALN_BIAS_SUFFIX) and output_mode == "pruned":
-                continue
-            base = base_handle.get_tensor(key)
-            merged = merged_handle.get_tensor(key)
-            if (
-                base.dtype not in (torch.float16, torch.bfloat16, torch.float32)
-                or base.ndim != 2
-                or (recipe == "generic" and not key.endswith(".weight"))
-            ):
-                summary["unsupported"] += 1
-                continue
-            delta = (merged.to(dtype=torch.float32) - base.to(dtype=torch.float32))
-            if not torch.any(delta):
-                summary["unchanged"] += 1
-                continue
-            module = _adapter_module(key)
-            if output_mode == "pruned" and key.endswith(_ADALN_WEIGHT_SUFFIX):
-                bias_key = key[:-len("weight")] + "bias"
-                if bias_key not in base_manifest:
-                    raise ValueError(f"AdaLN weight has no matching bias: {key}")
-                delta_b = merged_handle.get_tensor(bias_key).to(dtype=torch.float64) - base_handle.get_tensor(bias_key).to(dtype=torch.float64)
-                rebased_w = (delta.to(dtype=torch.float64) @ basis).to(dtype=torch.float32).contiguous()
-                rebased_b = (delta_b + delta.to(dtype=torch.float64) @ center).to(dtype=torch.float32).contiguous()
-                if not dry_run:
-                    output[f"{module}.diff"] = rebased_w
-                    output[f"{module}.diff_b"] = rebased_b
-                summary["adaln"] += 1
-            else:
+    with (nullcontext(None) if dry_run else TensorSpool(output_path)) as output:
+        summary = {"pairs": 0, "adaln": 0, "unchanged": 0, "unsupported": 0, "filtered": 0}
+        ranks: List[int] = []
+        with safe_open(base_path, framework="pt", device="cpu") as base_handle, safe_open(merged_path, framework="pt", device="cpu") as merged_handle:
+            keys = list(base_handle.keys())
+            total = len(keys)
+            for index, key in enumerate(keys, start=1):
+                if selected_blocks is not None and _block_for_key(key) not in selected_blocks:
+                    summary["filtered"] += 1
+                    if index % 100 == 0 or index == total:
+                        yield _event("progress", f"Extracting tensors: {index}/{total}")
+                    continue
+                if key.endswith(_ADALN_BIAS_SUFFIX) and output_mode == "pruned":
+                    continue
+                if output_mode == 'pruned' and key.endswith(_ADALN_WEIGHT_SUFFIX):
+                    bias_key = key[:-len('weight')] + 'bias'
+                    if bias_key not in base_manifest:
+                        raise ValueError(f'AdaLN weight has no matching bias: {key}')
+                    row_count = base_manifest[key].shape[0]
+                    row_size = max(1, min(int(payload.get('row_chunk_size', 256)), 1024))
+                    def read_deltas(lo):
+                        w0 = finite(base_handle.get_slice(key)[lo:lo + row_size].double(), key)
+                        w1 = finite(merged_handle.get_slice(key)[lo:lo + row_size].double(), key)
+                        b0 = finite(base_handle.get_slice(bias_key)[lo:lo + row_size].double(), bias_key)
+                        b1 = finite(merged_handle.get_slice(bias_key)[lo:lo + row_size].double(), bias_key)
+                        return w1 - w0, b1 - b0
+                    changed = False
+                    for lo in range(0, row_count, row_size):
+                        dw, db = read_deltas(lo)
+                        changed = changed or bool(torch.any(dw)) or bool(torch.any(db))
+                    if not changed:
+                        summary['unchanged'] += 1
+                        continue
+                    if not dry_run:
+                        module = _adapter_module(key)
+                        def weight_chunks():
+                            for lo in range(0, row_count, row_size):
+                                dw, _ = read_deltas(lo)
+                                yield finite((dw @ basis).float(), key)
+                        def bias_chunks():
+                            for lo in range(0, row_count, row_size):
+                                dw, db = read_deltas(lo)
+                                yield finite((db + dw @ center).float(), bias_key)
+                        output.chunks(module + '.diff', 'F32', [row_count, basis.shape[1]], weight_chunks())
+                        output.chunks(module + '.diff_b', 'F32', [row_count], bias_chunks())
+                    summary['adaln'] += 1
+                    yield _event('progress', f'Extracting tensors: {index}/{total} (bounded AdaLN rows)')
+                    continue
+                base = base_handle.get_tensor(key)
+                merged = merged_handle.get_tensor(key)
+                if key.endswith('.bias') and base.ndim == 1 and base.is_floating_point() and merged.is_floating_point():
+                    bias_delta = finite(merged.float(), key) - finite(base.float(), key)
+                    if torch.any(bias_delta):
+                        if not dry_run:
+                            module = _adapter_module(key[:-len('.bias')] + '.weight')
+                            output.tensor(module + '.diff_b', bias_delta)
+                        summary['bias'] = summary.get('bias', 0) + 1
+                    else:
+                        summary['unchanged'] += 1
+                    continue
+                if (
+                    base.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+                    or base.ndim != 2
+                    or (recipe == "generic" and not key.endswith(".weight"))
+                ):
+                    summary["unsupported"] += 1
+                    continue
+                delta = finite(merged.to(dtype=torch.float32), key) - finite(base.to(dtype=torch.float32), key)
+                if not torch.any(delta):
+                    summary['unchanged'] += 1
+                    continue
+                module = _adapter_module(key)
                 down, up, rank, actual = _svd_factors(delta, energy, min_rank, max_rank)
                 if rank == 0:
-                    summary["unchanged"] += 1
+                    summary['unchanged'] += 1
                     continue
                 if not dry_run:
-                    output[f"{module}.lora_A.weight"] = down
-                    output[f"{module}.lora_B.weight"] = up
-                    output[f"{module}.alpha"] = torch.tensor(float(rank), dtype=torch.float32)
-                summary["pairs"] += 1
+                    output.tensor(f'{module}.lora_A.weight', down)
+                    output.tensor(f'{module}.lora_B.weight', up)
+                    output.tensor(f'{module}.alpha', torch.tensor(float(rank), dtype=torch.float32))
+                summary['pairs'] += 1
+                serialized_error = float(torch.linalg.vector_norm(up.float() @ down.float() - delta) / torch.linalg.vector_norm(delta).clamp_min(1e-30))
+                summary.setdefault('factorization', []).append({'layer': key, 'rank': rank, 'retained_energy': actual, 'serialized_relative_error': serialized_error, 'rank_cap_hit': bool(max_rank and rank == max_rank)})
                 ranks.append(rank)
-            if index % 10 == 0 or index == total:
-                yield _event("progress", f"Extracting tensors: {index}/{total}")
+                if index % 10 == 0 or index == total:
+                    yield _event("progress", f"Extracting tensors: {index}/{total}")
 
-    if summary["pairs"] == 0 and summary["adaln"] == 0:
-        raise ValueError("No changed 2-D tensors found between full base and merged checkpoints")
-    rank_note = f" ranks={min(ranks)}..{max(ranks)}" if ranks else ""
-    yield _event("log", f"Extraction plan: LoRA pairs={summary['pairs']}, AdaLN rebased patches={summary['adaln']}, filtered={summary['filtered']},{rank_note}\n")
-    if dry_run:
-        yield _event("done", status="dry-run complete")
-        return
+        if summary["pairs"] == 0 and summary["adaln"] == 0 and summary.get('bias', 0) == 0:
+            raise ValueError("No changed supported weights or biases found between checkpoints")
+        rank_note = f" ranks={min(ranks)}..{max(ranks)}" if ranks else ""
+        yield _event("log", f"Extraction plan: LoRA pairs={summary['pairs']}, AdaLN rebased patches={summary['adaln']}, filtered={summary['filtered']},{rank_note}\n")
+        if dry_run:
+            yield _event("done", status="dry-run complete")
+            return
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    metadata = {
-        "format": "dasiwa_checkpoint_delta_lora" if recipe == "generic" else "dasiwa_minimax_h3_extracted_lora",
-        "architecture": architecture,
-        "recipe": recipe,
-        "output_mode": output_mode,
-        "source_base": os.path.basename(base_path),
-        "source_merged": os.path.basename(merged_path),
-        "frobenius_energy": f"{energy:.6f}",
-        "min_rank": str(min_rank),
-        "max_rank": str(max_rank),
-    }
-    if selected_blocks is not None:
-        metadata["selected_blocks"] = json.dumps(sorted(selected_blocks))
-    if output_mode == "pruned":
-        metadata.update({
-            "adaln_patch_format": "diff+diff_b",
-            "adaln_coordinate_table_sha256": table_hash,
-            "adaln_source_width": "2688",
-            "adaln_target_width": "8",
-            "adaln_target": os.path.basename(pruned_path),
-        })
-    save_file(output, output_path, metadata=metadata)
-    recipe_path = _write_recipe(output_path, payload, table_hash, summary)
-    yield _event("log", f"Wrote extracted adapter: {output_path}\nWrote recipe: {recipe_path}\n")
-    yield _event("done", status="finished")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        metadata = {
+            "format": "dasiwa_checkpoint_delta_lora" if recipe == "generic" else "dasiwa_minimax_h3_extracted_lora",
+            "architecture": architecture,
+            "recipe": recipe,
+            "output_mode": output_mode,
+            "source_base": os.path.basename(base_path),
+            "source_merged": os.path.basename(merged_path),
+            "frobenius_energy": f"{energy:.6f}",
+            "min_rank": str(min_rank),
+            "max_rank": str(max_rank),
+        }
+        if selected_blocks is not None:
+            metadata["selected_blocks"] = json.dumps(sorted(selected_blocks))
+        if output_mode == "pruned":
+            metadata.update({
+                "adaln_patch_format": "diff+diff_b",
+                "adaln_coordinate_table_sha256": table_hash,
+                "adaln_source_width": str(basis.shape[0]),
+                "adaln_target_width": str(basis.shape[1]),
+                "adaln_target": os.path.basename(pruned_path),
+            })
+        recipe_path = output.publish(metadata, _write_recipe(output_path, payload, table_hash, summary, write=False))
+        yield _event("log", f"Wrote extracted adapter: {output_path}\nWrote recipe: {recipe_path}\n")
+        yield _event("done", status="finished")

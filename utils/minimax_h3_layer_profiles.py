@@ -42,3 +42,6 @@ _STRATEGIES = {
 def strategy_multiplier(strategy: str, category: str) -> float:
     table = _STRATEGIES.get(strategy) or _STRATEGIES["Balanced"]
     return table.get(category, 0.0 if strategy in {"Motion", "Visuals"} else 1.0)
+def is_h3_turbo_update_key(key: str) -> bool:
+    """Narrow structural exception: AdaLN projections, not IO/norm modules."""
+    return bool(re.fullmatch(r"(?:.*\.)?(?:blocks\.\d+|final_layer)\.adaln_proj\.(?:linear\.)?(?:weight|bias)", key))

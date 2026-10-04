@@ -33,6 +33,7 @@ class DiffPatch:
     diff_key: str
     diff_shape: Tuple[int, ...]
     target_candidates: Tuple[str, ...]
+    target_kind: str = "weight"
 
 
 def read_safetensors_manifest(path: str) -> Dict[str, TensorInfo]:
@@ -140,17 +141,21 @@ def discover_diff_patches(manifest: Dict[str, TensorInfo]) -> List[DiffPatch]:
     """Find .diff keys (ComfyUI direct-weight-patch format) and map them to targets."""
     patches: List[DiffPatch] = []
     for key in sorted(manifest):
-        if not key.endswith(".diff"):
+        if not key.endswith((".diff", ".diff_b")):
             continue
         info = manifest[key]
         # Strip .diff suffix, append .weight → base name for candidate generation
-        base = key[:-len(".diff")] + ".weight"
+        bias = key.endswith(".diff_b")
+        stem = key[:-len(".diff_b" if bias else ".diff")]
+        base = stem + ".weight"
         # Build candidates: the base itself plus prefix-normalized variants
-        candidates = tuple(_diff_target_candidates(base))
+        candidates = tuple(c[:-7] + ".bias" for c in _diff_target_candidates(base)
+                           if c.endswith(".weight")) if bias else tuple(_diff_target_candidates(base))
         patches.append(DiffPatch(
             diff_key=key,
             diff_shape=info.shape,
             target_candidates=candidates,
+            target_kind="bias" if bias else ("buffer" if "adaln_t_table" in stem else "weight"),
         ))
     return patches
 

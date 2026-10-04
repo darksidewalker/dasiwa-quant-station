@@ -50,9 +50,47 @@ def write_quant_recipe(output_path, source_path, model_name, architecture, fmt,
     return recipe_path
 
 
+def h3_ctq_capability():
+    """Check the installed CLI source, not a guessed version or an empty wrapper help."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.find_spec('convert_to_quant')
+    if spec is None or not spec.origin:
+        return False, 'convert_to_quant is not installed'
+    root = Path(spec.origin).parent
+    try:
+        parser = (root / 'cli' / 'argument_parser.py').read_text()
+        presets = (root / 'constants.py').read_text()
+    except OSError as exc:
+        return False, f'Unable to verify converter capability: {exc}'
+    supported = 'minimaxh3' in presets and ('MODEL_FILTERS' in parser or 'minimaxh3' in parser)
+    return supported, 'verified --minimaxh3 preset' if supported else 'missing --minimaxh3'
+
+
 def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type,
                         optimizer_choice, options, log_acc, low_vram=False, actcal=False,
-                        is_full_checkpoint=False, custom_metadata=None, preserve_loader_metadata=True):
+                        is_full_checkpoint=False, custom_metadata=None, preserve_loader_metadata=True,
+                        h3_quant_policy="preserve_structural", verbose_level=None):
+
+    if model_type == 'MiniMax H3':
+        supported, detail = h3_ctq_capability()
+        if not supported:
+            yield log_acc + detail + '\n', 'Aborted: unsupported converter'
+            return
+    upstream_h3 = h3_quant_policy == "upstream_int8_convrot"
+    if h3_quant_policy not in {"preserve_structural", "upstream_int8_convrot"}:
+        yield log_acc + "Invalid H3 quant policy\n", "Aborted: invalid H3 quant policy"
+        return
+    if verbose_level is not None and verbose_level not in {"DEBUG", "VERBOSE", "NORMAL", "MINIMAL"}:
+        yield log_acc + "Invalid verbose level\n", "Aborted: invalid verbose level"
+        return
+    if upstream_h3 and (model_type != "MiniMax H3" or options != "Simple"
+                        or not formats or any(f != "INT8 Row-wise ConvRot Runtime" for f in formats)):
+        yield log_acc + "Upstream policy requires H3 INT8 Row-wise ConvRot Runtime Simple\n", "Aborted: incompatible H3 quant policy"
+        return
+    effective_low_vram = low_vram or upstream_h3
+    effective_verbose = verbose_level if verbose_level is not None else ("VERBOSE" if upstream_h3 else None)
+    log_acc += f"H3 quant policy: {h3_quant_policy}\n"
 
     # Mapping UI selection to CLI flags
     FLAG_MAP = {
@@ -131,13 +169,9 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # active as the stricter source of truth for prefix/fullmatch-safe
         # structural preserves; the upstream flag is an additional safety net.
         "Krea 2":            {"flag": "--krea2",             "optimizer": _OPTIMIZER_DEFAULT},
-        # MiniMax H3 (Hailuo 3.0) omni-modal joint video+audio DiT. No upstream
-        # convert_to_quant preset exists (v1.3.3 has no --minimax/--h3 filter),
-        # so flag=None and the layer config (core/layer_config_builder "MiniMax
-        # H3") carries all quality. Covers both FL2VA and Ref2VA (identical
-        # structure). Verified-pattern arch: markers in arch_detector, entry in
-        # layer_config_builder and metadata_configs.
-        "MiniMax H3":        {"flag": None,                 "optimizer": _OPTIMIZER_DEFAULT},
+        # Verified installed convert-to-quant 1.3.4 exposes --minimaxh3.
+        # Local structural skips remain stricter than this upstream preset.
+        "MiniMax H3":        {"flag": "--minimaxh3",          "optimizer": _OPTIMIZER_DEFAULT},
         # Other convert_to_quant presets. No verified layer-name patterns
         # in this project yet, so layer-config is skipped and we rely on
         # the convert_to_quant preset's own skip rules.
@@ -188,6 +222,17 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             return
         yield log_acc, "Architecture verified"
 
+    h3_variant = None
+    if model_type == "MiniMax H3" and "INT8 Row-wise ConvRot Runtime" in formats:
+        # Shared strict manifest contract: never derive full/pruned from names.
+        from core.h3_curve import inspect_h3_variant
+        try:
+            h3_variant = inspect_h3_variant(source_path)["variant"]
+        except (ValueError, OSError) as exc:
+            yield log_acc + f"Invalid H3 source: {exc}\n", "Aborted: invalid H3 variant"
+            return
+        log_acc += f"H3 variant: {h3_variant}\n"
+
     for fmt in formats:
         suffix = fmt.replace(" ", "_").lower()
         # Output path is finalized AFTER layer config resolution so the
@@ -204,7 +249,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # to let convert_to_quant run with its own defaults, with no
         # per-layer overrides from us. Exact configs are also bypassed
         # because they're keyed to a specific reference architecture.
-        layer_config_enabled = (model_type != "Not set")
+        layer_config_enabled = (model_type != "Not set" and not upstream_h3)
 
         # Exact configs (built from a reference FP8) take precedence over
         # auto/manual regex configs. They live at filters/_exact_*.json
@@ -254,8 +299,10 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
         # --- 2. BUILD COMMAND ---
         cmd = ["convert_to_quant", "-i", source_path, "-o", final_path, "--save-quant-metadata"]
         
-        if low_vram:
+        if effective_low_vram:
             cmd.append("--low-memory")
+        if effective_verbose is not None:
+            cmd.extend(["--verbose", effective_verbose])
         
         if fmt in FLAG_MAP:
             cmd.extend(FLAG_MAP[fmt])
@@ -273,6 +320,12 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
             cmd.extend(["--custom-type", "mxfp8"])
 
         if fmt == "INT8 Row-wise ConvRot Runtime":
+            if h3_variant == "pruned":
+                cmd.extend(["--exclude_layers", "(adaln_t_table|adaln_proj)"])
+            elif h3_variant == 'full' and not upstream_h3:
+                # Native output-dtype finalization also casts skipped 2D
+                # weights. Explicit dtype preservation keeps the full F32 curve.
+                cmd.extend(['--preserve-layers', '(time_embedder)'])
             log_acc += (
                 "NOTE: INT8 Row-wise ConvRot requires a runtime that reads "
                 ".comfy_quant convrot metadata and rotates activations.\n"
@@ -652,7 +705,7 @@ def run_safe_conversion(MODELS_DIR, source_path, formats, model_name, model_type
 
             recipe_path = write_quant_recipe(
                 final_path, source_path, model_name, model_type, fmt,
-                options, optimizer_choice, low_vram, actcal,
+                options, optimizer_choice, effective_low_vram, actcal,
                 is_full_checkpoint, layer_config_path, cmd,
                 success, msg, preserve_loader_metadata=preserve_loader_metadata,
             )

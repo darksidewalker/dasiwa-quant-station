@@ -148,7 +148,7 @@ class LoraMergeEngineTests(unittest.TestCase):
                 "diffusion_model.transformer_blocks.0.attn1.to_k.lora_B.weight": torch.ones(3, 2),
             }, str(lora))
 
-            with mock.patch.object(lora_merge_engine, "save_file", side_effect=AssertionError("save_file should not be used for merge output")):
+            with mock.patch.object(lora_merge_engine, "save_file", create=True, side_effect=AssertionError("save_file should not be used for merge output")):
                 list(run_lora_merge({
                     "base_path": str(base),
                     "loras": [{"path": str(lora), "strength": 0.5}],
@@ -1292,3 +1292,11 @@ class H3AndLoKrMergeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+def test_diff_b_discovery_maps_only_bias():
+    from utils.lora_inspector import TensorInfo, discover_diff_patches
+    key = 'diffusion_model.blocks.0.adaln_proj.diff_b'
+    patches = discover_diff_patches({key: TensorInfo(key, (4,), 'F32')})
+    assert len(patches) == 1
+    assert patches[0].target_kind == 'bias'
+    assert 'blocks.0.adaln_proj.bias' in patches[0].target_candidates
+    assert not any(c.endswith('.weight') for c in patches[0].target_candidates)

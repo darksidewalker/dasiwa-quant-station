@@ -118,6 +118,12 @@ class SafetensorsEngineCommandTests(unittest.TestCase):
                 self.assertIn("--optimizer", cmd)
                 self.assertNotIn("--simple", cmd)
 
+    def test_h3_preset_is_present_exactly_once_with_local_policy(self):
+        commands = self._capture_commands("MiniMax H3")
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0].count("--minimaxh3"), 1)
+        self.assertIn("--layer-config", commands[0])
+
     def test_layer_config_only_arch_h3_passes_guard_with_zero_arch_flags(self):
         # "MiniMax H3" has flag=None: it is a layer-config-only arch. The
         # command carries a --layer-config (DaSiWa's H3 preserve/rescue

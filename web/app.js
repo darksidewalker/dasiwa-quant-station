@@ -28,6 +28,9 @@ const state = {
   mmRecipe: "h3_hybrid",
   mmRank: 1024,
   mmStrength: 1,
+  h3ReferencePath: "",
+  h3TargetPath: "",
+  h3AdapterPath: "",
   extractMergedPath: "",
   extractPrunedPath: "",
   extractBlocks: [],
@@ -48,6 +51,9 @@ const PICKER_ROLE = Object.freeze({
   "mm-overlay": "model-overlay",
   "extract-merged": "extract-modified",
   "extract-pruned": "extract-pruned",
+  "h3-reference": "source",
+  "h3-target": "source",
+  "h3-adapter": "lora",
 });
 const PING_INTERVAL_MS = 30000;
 const MAX_EFFECTIVE_LORA_STRENGTH = 3;
@@ -62,12 +68,15 @@ function currentSettings() {
     strategy: state.strategy,
     formats: [...state.formats],
     sourcePath: state.sourcePath,
+    outputDir: state.outputDir || "",
     modelName: $("model-name").value,
     fullCheckpoint: $("full-checkpoint").checked,
     lowVram: $("low-vram").checked,
     watermark: $("watermark").checked,
     preserveLoaderMetadata: $("preserve-loader-metadata").checked,
     dryRun: $("mm-dry-run").checked,
+    h3: {referencePath: state.h3ReferencePath, targetPath: state.h3TargetPath, adapterPath: state.h3AdapterPath, foldMode: $("h3-fold-mode").value, outputPath: state.h3OutputPath || "", outputName: state.h3OutputName || ""},
+    quant: {h3QuantPolicy: $("h3-quant-policy").value, verboseLevel: $("quant-verbose").value},
     lora: {
       globalStrength: $("lora-global-strength").value,
       mergeDevice: $("lora-merge-device").value,
@@ -78,10 +87,12 @@ function currentSettings() {
       adaptive: $("lora-adaptive").checked,
       strict: $("lora-strict").checked,
       krea2Unchain: $("krea2-unchain").checked,
+      h3TurboComplete: $("h3-turbo-complete").checked,
       protectTokenRefiner: $("protect-token-refiner").checked,
       rows: state.loras.map((lora) => ({...lora})),
     },
     compose: {
+      mergeAlgorithm: $("compose-merge-algorithm").value,
       preset: $("compose-preset").value,
       outputAdapter: $("compose-output-adapter").value,
       outputRank: $("compose-output-rank").value,
@@ -105,6 +116,8 @@ function currentSettings() {
       blendMode: $("mm-blend-mode").value,
     },
     extract: {
+      outputPath: state.extractOutputPath || "",
+      outputName: state.extractOutputName || "",
       modifiedPath: state.extractMergedPath,
       prunedPath: state.extractPrunedPath,
       recipe: $("extract-mode").value,
@@ -162,6 +175,17 @@ function loadSettings() {
   $("preserve-loader-metadata").checked = s.preserveLoaderMetadata ?? true;
   $("mm-dry-run").checked = s.dryRun ?? s.mmDryRun ?? s.loraDryRun ?? true;
 
+  const h3 = s.h3 || {};
+  state.outputDir = s.outputDir || "";
+  state.h3OutputPath = h3.outputPath || "";
+  state.h3OutputName = h3.outputName || "";
+  state.h3ReferencePath = h3.referencePath || "";
+  state.h3TargetPath = h3.targetPath || "";
+  state.h3AdapterPath = h3.adapterPath || "";
+  $("h3-fold-mode").value = h3.foldMode === "independent" ? "independent" : "reference";
+  $("h3-quant-policy").value = s.quant?.h3QuantPolicy || "preserve_structural";
+  $("quant-verbose").value = s.quant?.verboseLevel || "";
+  ["reference", "target", "adapter"].forEach((role) => setPathLabel(`h3-${role}-label`, state[{reference:"h3ReferencePath",target:"h3TargetPath",adapter:"h3AdapterPath"}[role]], "Pick…"));
   const lora = s.lora || {};
   $("lora-global-strength").value = lora.globalStrength ?? s.loraGlobalStrength ?? 1;
   $("lora-merge-device").value = lora.mergeDevice || s.loraMergeDevice || "auto";
@@ -172,6 +196,7 @@ function loadSettings() {
   $("lora-adaptive").checked = lora.adaptive ?? s.loraAdaptive ?? false;
   $("lora-strict").checked = lora.strict ?? s.loraStrict ?? true;
   $("krea2-unchain").checked = lora.krea2Unchain ?? s.krea2Unchain ?? false;
+  $("h3-turbo-complete").checked = lora.h3TurboComplete ?? false;
   $("protect-token-refiner").checked = lora.protectTokenRefiner ?? false;
   const rows = lora.rows || s.loras;
   if (Array.isArray(rows)) {
@@ -184,6 +209,7 @@ function loadSettings() {
   }
 
   const compose = s.compose || {};
+  $("compose-merge-algorithm").value = compose.mergeAlgorithm || "consensus";
   $("compose-preset").value = compose.preset || "balanced";
   $("compose-output-adapter").value = compose.outputAdapter || "auto";
   $("compose-output-rank").value = compose.outputRank ?? 0;
@@ -214,6 +240,8 @@ function loadSettings() {
   $("mm-blend-mode").value = "binary";
 
   const extract = s.extract || {};
+  state.extractOutputPath = extract.outputPath || "";
+  state.extractOutputName = extract.outputName || "";
   state.extractMergedPath = extract.modifiedPath || "";
   state.extractPrunedPath = extract.prunedPath || "";
   $("extract-mode").value = extract.recipe || s.extractRecipe || "generic";
@@ -399,6 +427,7 @@ function formatStrength(v) {
 
 async function init() {
   const cfg = await api("/api/config");
+  state.config = cfg;
   state.rootDir = cfg.root_dir;
   state.modelsDir = cfg.models_dir;
   state.browserPath = cfg.models_dir;
@@ -1145,8 +1174,18 @@ function wireEvents() {
   wireDropTarget($("extract-pick-merged"), "extract-merged");
   wireDropTarget($("extract-pick-pruned"), "extract-pruned");
 
+  ["reference", "target", "adapter"].forEach((role) => {
+    $(`h3-pick-${role}`).addEventListener("click", () => openBrowser(`h3-${role}`));
+    wireDropTarget($(`h3-pick-${role}`), `h3-${role}`);
+  });
+  $("h3-fold-mode").addEventListener("change", () => {updateH3Visibility(); saveSettings();});
+  $("compose-merge-algorithm").addEventListener("change", () => {updateH3Visibility(); saveSettings();});
+  ["h3-turbo-complete", "h3-quant-policy", "quant-verbose"].forEach((id) => $(id).addEventListener("change", saveSettings));
+  $("h3-load-recipe").addEventListener("click", loadRecipe);
   $("start").addEventListener("click", () => {
-    if (state.workflowMode === "lora") {
+    if (state.workflowMode.startsWith("h3-")) {
+      startH3Workflow();
+    } else if (state.workflowMode === "lora") {
       startLoraMerge();
     } else if (state.workflowMode === "compose") {
       startLoraCompose();
@@ -1195,6 +1234,33 @@ function updateComposeOutputIndicator() {
   indicator.textContent = messages[output] || "Output: adapter type not selected";
 }
 
+function selectH3Input(role, path) {
+  const keys = {reference: "h3ReferencePath", target: "h3TargetPath", adapter: "h3AdapterPath"};
+  if (!keys[role]) throw new Error("Unknown H3 picker role");
+  state[keys[role]] = path;
+  rememberPickerDirectory(`h3-${role}`, path);
+  setPathLabel(`h3-${role}-label`, path);
+  saveSettings();
+}
+
+function updateH3Visibility() {
+  const mode = state.workflowMode;
+  const pruning = mode === "h3-prune";
+  const converting = mode === "h3-adapter-convert";
+  const active = pruning || converting;
+  $("h3-side-panel").classList.toggle("hidden", !active);
+  $("h3-fold-label").style.display = pruning ? "" : "none";
+  $("h3-pick-reference").style.display = pruning && $("h3-fold-mode").value === "reference" ? "" : "none";
+  $("h3-pick-target").style.display = converting ? "" : "none";
+  $("h3-pick-adapter").style.display = converting ? "" : "none";
+  const compute = $("lora-merge-device").closest("fieldset");
+  if (active) $("shared-compute").appendChild(compute);
+  else $("lora-bake-controls").insertBefore(compute, $("lora-bake-controls").firstChild);
+  const turboLabel = $("h3-turbo-complete").closest?.("label");
+  if (turboLabel) turboLabel.style.display = state.architecture === "MiniMax H3" ? "" : "none";
+  $("compose-preset").closest("label").style.display = $("compose-merge-algorithm").value === "additive" ? "none" : "";
+}
+
 function setWorkflowMode(mode) {
   state.workflowMode = mode;
   document.querySelectorAll("#workflow-mode button").forEach((btn) => {
@@ -1214,6 +1280,7 @@ function setWorkflowMode(mode) {
   if (mode === "extract" && state.sourcePath && state.extractScannedPath !== state.sourcePath) scanExtractBlocks();
   updateExtractRecipeVisibility();
   updateDeltaOptionsVisibility();
+  updateH3Visibility();
   applyControlVisibility(mode);
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
@@ -1381,6 +1448,9 @@ function renderBrowserList() {
         browse(item.path);
       } else if (state.browserMode === "file") {
         selectSource(item.path);
+      } else if (state.browserMode.startsWith("h3-") && !item.is_dir) {
+        selectH3Input(state.browserMode.slice(3), item.path);
+        $("browser").close();
       } else if (state.browserMode === "mm-overlay" && !item.is_dir) {
         selectModelMergeOverlay(item.path);
       } else if (state.browserMode === "extract-merged" && !item.is_dir) {
@@ -1446,6 +1516,8 @@ function wireDropTarget(el, kind) {
     } else if (kind === "mm-overlay") {
       if (paths.length > 1) log(`Dropped ${paths.length} files; using the first as the overlay checkpoint.\n`);
       selectModelMergeOverlay(paths[0]);
+    } else if (kind.startsWith("h3-")) {
+      selectH3Input(kind.slice(3), paths[0]);
     } else {
       addLoraPaths(paths);
     }
@@ -1650,13 +1722,37 @@ async function refreshMetadata() {
   }
 }
 
+async function startH3Workflow() {
+  const converting = state.workflowMode === "h3-adapter-convert";
+  const fold = converting ? "reference" : $("h3-fold-mode").value;
+  if (state.architecture !== "MiniMax H3") return log("Select MiniMax H3 architecture.\n");
+  if (!state.sourcePath) return log("Select the full floating source checkpoint.\n");
+  if (converting && (!state.h3TargetPath || !state.h3AdapterPath)) return log("Select the exact pruned target and full adapter.\n");
+  if (!converting && fold === "reference" && !state.h3ReferencePath) return log("Select a compatible pruned reference.\n");
+  if (!$("mm-dry-run").checked && !$("model-name").value) return log("Enter a Display & Output Name.\n");
+  $("start").disabled = true; $("stop").disabled = false;
+  try {
+    const data = await api(converting ? "/api/h3/adapter-convert" : "/api/h3/prune", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+      base_path: state.sourcePath, output_name: $("model-name").value, architecture: state.architecture,
+      output_dir: state.outputDir || state.config?.output_dir || "",
+      output_path: state.h3OutputPath && state.h3OutputName === $("model-name").value ? state.h3OutputPath : "",
+      fold_mode: fold, reference_path: !converting && fold === "reference" ? state.h3ReferencePath : "",
+      pruned_target_path: converting ? state.h3TargetPath : "", adapter_path: converting ? state.h3AdapterPath : "",
+      merge_device: $("lora-merge-device").value, cuda_device: $("lora-cuda-device").value || "cuda:0",
+      vram_headroom_mb: Number($("lora-vram-headroom").value), dry_run: $("mm-dry-run").checked,
+    })});
+    state.jobId = data.job_id; attachEvents(data.job_id);
+  } catch (err) {log(`H3 workflow failed to start: ${err.message}\n`); $("start").disabled = false; $("stop").disabled = true;}
+}
+
 async function startLoraMerge() {
   const basePath = state.sourcePath;
   const selected = state.loras.filter((lora) => lora.enabled && lora.path);
   if (!basePath) return log("Select a base checkpoint in the sidebar first.\n");
   if (selected.length === 0) return log("Add and enable at least one LoRA.\n");
   const dryRun = $("mm-dry-run").checked;
-  const globalStrength = Number($("lora-global-strength").value) || 1;
+  const globalStrength = Number($("lora-global-strength").value);
+  if (!Number.isFinite(globalStrength)) return log("Global strength must be finite.\n");
   const unsafe = selected.find((lora) => Math.abs((Number(lora.strength) || 0) * globalStrength) > MAX_EFFECTIVE_LORA_STRENGTH);
   if (unsafe) {
     return log(`${shortPath(unsafe.path)} effective strength is too high. Keep per-LoRA × global strength within ±${MAX_EFFECTIVE_LORA_STRENGTH}.\n`);
@@ -1695,6 +1791,7 @@ async function startLoraMerge() {
         dry_run: dryRun,
         strict_matching: $("lora-strict").checked,
         krea2_unchain: $("krea2-unchain").checked,
+        h3_turbo_complete: $("h3-turbo-complete").checked && state.architecture === "MiniMax H3",
         protect_token_refiner: $("protect-token-refiner").checked,
         preserve_loader_metadata: $("preserve-loader-metadata").checked,
         watermark: $("watermark").checked,
@@ -1723,6 +1820,7 @@ async function startLoraCompose() {
       architecture: state.architecture, global_strength: 1,
       output_adapter: $("compose-output-adapter").value, output_rank: Number($("compose-output-rank").value) || 0,
       frobenius_energy: Number($("compose-energy").value) || 0.99, consensus_preset: $("compose-preset").value,
+      merge_algorithm: $("compose-merge-algorithm").value || "consensus",
       mismatch_mode: $("compose-mismatch").value, merge_device: $("lora-merge-device").value,
       cuda_device: $("lora-cuda-device").value || "cuda:0", vram_headroom_mb: Number($("lora-vram-headroom").value) || 1024,
       dry_run: dryRun,
@@ -1744,6 +1842,7 @@ async function startLoraExtract() {
   try {
     const data = await api("/api/lora/extract", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
       base_path: state.sourcePath, merged_path: state.extractMergedPath, pruned_target_path: state.extractPrunedPath,
+      output_path: state.extractOutputPath && state.extractOutputName === $("model-name").value ? state.extractOutputPath : "",
       models_dir: state.modelsDir, output_name: $("model-name").value, architecture: state.architecture, recipe: recipe,
       frobenius_energy: Number($("extract-energy").value), min_rank: Number($("extract-min-rank").value),
       max_rank: Number($("extract-max-rank").value), dry_run: $("mm-dry-run").checked,
@@ -1774,6 +1873,8 @@ async function startJob() {
         formats: [...state.formats],
         architecture: $("architecture").value,
         strategy: state.strategy,
+        h3_quant_policy: state.architecture === "MiniMax H3" ? $("h3-quant-policy").value : "preserve_structural",
+        verbose_level: $("quant-verbose")?.value || "",
         optimizer: "prodigy",
         low_vram: $("low-vram").checked,
         full_checkpoint: $("full-checkpoint").checked,
@@ -2070,6 +2171,72 @@ async function resolveRecipeModelPath(name, kind) {
 }
 
 async function parseRecipeAndApply(recipeText, fileName) {
+  if (recipeText.includes("DaSiWa Quant Station LoRA Extract Recipe")) {
+    const read = (label) => {
+      const line = recipeText.split("\n").find((line) => line.startsWith(label + ":"));
+      return line ? line.slice(label.length + 1).trim() : "";
+    };
+    const recipe = read("Recipe") || (read("Output mode") === "pruned" ? "h3_pruned" : "h3_full");
+    if (!["generic", "h3_full", "h3_pruned"].includes(recipe)) throw new Error("Invalid extraction recipe");
+    const base = read("Base checkpoint"), modified = read("Modified checkpoint");
+    if (!base || !modified) throw new Error("Extraction recipe requires base and modified checkpoints");
+    await selectSource(await resolveRecipeModelPath(base, "base checkpoint"));
+    state.architecture = read("Architecture") || state.architecture;
+    $("architecture").value = state.architecture;
+    state.extractMergedPath = await resolveRecipeModelPath(modified, "modified checkpoint");
+    const target = read("Pruned target");
+    state.extractPrunedPath = target && target !== "none" ? await resolveRecipeModelPath(target, "pruned target") : "";
+    setPathLabel("extract-merged-label", state.extractMergedPath);
+    setPathLabel("extract-pruned-label", state.extractPrunedPath);
+    $("extract-mode").value = recipe;
+    $("extract-energy").value = read("Frobenius energy") || "0.99";
+    $("extract-min-rank").value = read("Minimum rank") || "1";
+    $("extract-max-rank").value = read("Maximum rank") || "0";
+    const selected = read("Selected blocks");
+    const filterEnabled = read("Block filter enabled");
+    $("extract-block-filter").checked = filterEnabled ? filterEnabled === "yes" : !!selected && selected !== "all tensors";
+    const blocks = selected.startsWith("[") ? JSON.parse(selected) : selected === "all tensors" || !selected ? [] : selected.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!Array.isArray(blocks) || !blocks.every((s) => typeof s === "string")) throw new Error("Invalid extraction block selection");
+    state.extractSelectedBlocks = new Set(blocks);
+    state.extractSelectionSaved = $("extract-block-filter").checked;
+    const output = read("Output");
+    state.extractOutputPath = output;
+    if (output) $("model-name").value = output.split("/").pop().replace(/\.safetensors$/i, "");
+    state.extractOutputName = $("model-name").value;
+    $("mm-dry-run").checked = read("Dry run first") ? read("Dry run first") === "yes" : true;
+    updateArchDependentUI();
+    setWorkflowMode("extract");
+    updateExtractRecipeVisibility();
+    updateExtractBlockVisibility();
+    await scanExtractBlocks();
+    saveSettings();
+    log(`Loaded extraction recipe "${fileName}"; saved destination restored.\n`);
+    return;
+  }
+  if (recipeText.startsWith("DaSiWa H3 Prune Recipe") || recipeText.startsWith("DaSiWa H3 Adapter Conversion Recipe")) {
+    const data = JSON.parse(recipeText.slice(recipeText.indexOf("{")));
+    const s = data.settings;
+    if (!s || typeof s.base_path !== "string") throw new Error("Invalid H3 recipe settings");
+    state.architecture = "MiniMax H3"; $("architecture").value = state.architecture;
+    await selectSource(s.base_path);
+    state.h3ReferencePath = s.reference_path || "";
+    state.h3TargetPath = s.pruned_target_path || "";
+    state.h3AdapterPath = s.adapter_path || "";
+    ["reference", "target", "adapter"].forEach((role) => setPathLabel(`h3-${role}-label`, state[{reference:"h3ReferencePath",target:"h3TargetPath",adapter:"h3AdapterPath"}[role]], "Pick…"));
+    $("h3-fold-mode").value = s.fold_mode || "reference";
+    $("lora-merge-device").value = s.merge_device || "auto";
+    $("lora-cuda-device").value = s.cuda_device ?? "cuda:0";
+    $("lora-vram-headroom").value = s.vram_headroom_mb ?? 1024;
+    $("mm-dry-run").checked = s.dry_run ?? true;
+    $("model-name").value = (s.output_name || String(s.output_path || "").split("/").pop()).replace(/\.safetensors$/i, "");
+    state.h3OutputPath = s.output_path || "";
+    state.h3OutputName = $("model-name").value;
+    state.outputDir = s.output_dir || state.h3OutputPath.slice(0, state.h3OutputPath.lastIndexOf("/")) || "";
+    setWorkflowMode(recipeText.startsWith("DaSiWa H3 Prune Recipe") ? "h3-prune" : "h3-adapter-convert");
+    saveSettings();
+    log(`Loaded H3 recipe "${fileName}"; saved destination restored (existing artifacts will not be overwritten).\n`);
+    return;
+  }
   var lines = recipeText.split("\n");
   const preserveMatch = recipeText.match(/^Preserve loader metadata:\s*(yes|no)\s*$/m);
   $("preserve-loader-metadata").checked = !preserveMatch || preserveMatch[1] === "yes";
@@ -2082,6 +2249,7 @@ async function parseRecipeAndApply(recipeText, fileName) {
     };
     const architecture = read("Architecture");
     if (architecture) { state.architecture = architecture; $("architecture").value = architecture; }
+    $("compose-merge-algorithm").value = read("Merge algorithm") || "consensus";
     $("compose-preset").value = read("Consensus preset") || (architecture === "MiniMax H3" ? "balanced" : "conservative");
     $("compose-output-adapter").value = read("Output adapter") || "auto";
     $("compose-output-rank").value = read("Output rank") || "0";
@@ -2202,6 +2370,7 @@ async function parseRecipeAndApply(recipeText, fileName) {
     $("lora-merge-algorithm").value = field("Merge algorithm") || "additive";
     $("lora-consensus-preset").value = field("Consensus preset") || "balanced";
     $("protect-token-refiner").checked = protectTokenRefiner;
+    $("h3-turbo-complete").checked = field("H3 Turbo complete") === "yes";
 
     // Krea2 unchain checkbox visibility + state.
     updateArchDependentUI();

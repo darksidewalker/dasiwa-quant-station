@@ -18,6 +18,8 @@
     lora: ["source", "architecture", "output-name", "full-checkpoint", "dry-run", "watermark", "preserve-metadata"],
     compose: ["architecture", "output-name", "dry-run"],
     extract: ["source", "architecture", "output-name", "full-checkpoint", "dry-run"],
+    "h3-prune": ["source", "architecture", "output-name", "dry-run"],
+    "h3-adapter-convert": ["source", "architecture", "output-name", "dry-run"],
     model: ["source", "architecture", "output-name", "full-checkpoint", "dry-run", "watermark", "preserve-metadata"],
   });
 

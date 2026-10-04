@@ -81,6 +81,17 @@
         <label class="field"><span title="0 means no maximum rank cap">Max rank</span><input id="extract-max-rank" type="number" min="0" step="1" value="0"></label>
       </section>
 
+      <section class="panel hidden" id="h3-side-panel">
+        <h2>H3 Workflow</h2>
+        <label class="field" id="h3-fold-label"><span>Fold coordinates</span><select id="h3-fold-mode" title="Reference uses the exact compatible pruned gauge; independent SVD is not portable to arbitrary ecosystem adapters"><option value="reference">Compatible reference (default)</option><option value="independent">Independent SVD (advanced)</option></select></label>
+        <button id="h3-pick-reference" class="picker-button" type="button" title="Exact compatible pruned checkpoint supplying fold coordinates"><span>Pruned reference</span><strong id="h3-reference-label">Pick…</strong></button>
+        <button id="h3-pick-target" class="picker-button" type="button" title="Exact pruned checkpoint the converted adapter will target"><span>Pruned target</span><strong id="h3-target-label">Pick…</strong></button>
+        <button id="h3-pick-adapter" class="picker-button" type="button" title="Original full-width H3 adapter; time-changing adapters are rejected"><span>Full adapter</span><strong id="h3-adapter-label">Pick…</strong></button>
+        <div id="shared-compute"></div>
+        <p class="hint" id="h3-variant-status">Source compatibility is checked by the backend; inference remains unverified.</p>
+        <button class="secondary" id="h3-load-recipe" type="button" title="Reload a H3 prune, adapter conversion or extraction sidecar recipe">Load Recipe</button>
+      </section>
+
       <section class="panel mm-side-panel hidden" id="mm-side-panel">
         <h2>Model Merge</h2>
         <label class="field">
@@ -178,6 +189,11 @@
         <p class="hint" id="mm-hint"></p>
       </section>
 
+      <section class="panel" id="h3-quant-options" data-workflow-panel="quantize">
+        <h2>H3 Quant Policy</h2>
+        <label class="field"><span>Protection</span><select id="h3-quant-policy" title="Structural preservation is the safe default. Upstream parity requires H3 Simple INT8 ConvRot only and may quantize full AdaLN"><option value="preserve_structural">Preserve structural (default)</option><option value="upstream_int8_convrot">Upstream INT8 ConvRot (opt-in)</option></select></label>
+        <label class="field"><span>Converter logging</span><select id="quant-verbose" title="Optional convert_to_quant logging level; default leaves engine behavior unchanged"><option value="">Engine default</option><option>DEBUG</option><option>VERBOSE</option><option>NORMAL</option><option>MINIMAL</option></select></label>
+      </section>
       <section class="panel">
         <h2>Run</h2>
         <div class="run-actions">
@@ -203,6 +219,8 @@
             <button data-mode="lora" type="button" title="Bake one or more LoRAs into a checkpoint">LoRA Merge</button>
             <button data-mode="compose" type="button" title="Consensus-merge adapters into a reusable LoRA or LoKr">Merge LoRAs</button>
             <button data-mode="extract" type="button" title="Extract a LoRA from the difference between two matching checkpoints">LoRA Extract</button>
+            <button data-mode="h3-prune" type="button" title="Explicitly prune a full floating MiniMax H3 checkpoint">H3 Prune</button>
+            <button data-mode="h3-adapter-convert" type="button" title="Convert a full H3 adapter into an exact pruned target gauge">Convert Adapter</button>
             <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
           </div>
           <p id="status">Idle</p>
@@ -241,57 +259,69 @@
           <div class="section-title">
             <div>
               <h3>LoRA Merge / Compose</h3>
-              <p>Bake adapters into a base checkpoint, or use Merge LoRAs to create a reusable adapter without a base.</p>
+              <p>Bake into a checkpoint · Compose a reusable adapter without a base</p>
             </div>
           </div>
           <div class="lora-controls" id="compose-controls" style="display:none">
+            <label class="field compact"><span>Algorithm</span><select id="compose-merge-algorithm" title="Consensus blends directions; additive reproduces a weighted live adapter stack before compression"><option value="consensus">Consensus</option><option value="additive">Additive</option></select></label>
             <label class="field compact" title="Consensus weighting: Balanced adds diversity filtering and comfort bandpass; Conservative rejects weakly aligned rows; Neutral uses similarity weights without diversity."><span>Consensus preset</span><select id="compose-preset" title="Choose Balanced, Conservative, or Neutral consensus weighting"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
             <label class="field compact"><span>Output adapter</span><select id="compose-output-adapter" title="Auto writes LoKr on layers with compatible direct-LoKr anchors and LoRA elsewhere; LoRA writes SVD factors; Direct LoKr needs anchors and may be lossy."><option value="auto">Auto</option><option value="lora">LoRA</option><option value="lokr">Direct LoKr</option></select></label>
-            <p id="compose-output-indicator" class="adapter-output-indicator" role="status" aria-live="polite"></p>
             <label class="field compact"><span title="Maximum SVD rank for LoRA output. 0 removes the explicit cap but defaults to the largest input rank per layer; higher ranks increase size and compute.">Max rank (0 = auto)</span><input id="compose-output-rank" type="number" min="0" step="1" value="0" title="0 uses the largest input rank per layer; a positive value caps the output rank and may miss the energy target"></label>
             <label class="field compact"><span title="Target fraction of squared singular-value energy retained by standard LoRA SVD; a rank cap may prevent reaching it. Does not apply to LoKr layers.">Frobenius energy</span><input id="compose-energy" type="number" min="0.5" max="1" step="0.001" value="0.99" title="LoRA SVD energy target from 0.5 to 1; not a visual-quality guarantee"></label>
             <label class="field compact"><span title="Error aborts on incompatible adapter layers; Skip omits them and reports the skipped layers.">Mismatch</span><select id="compose-mismatch" title="Choose whether incompatible layers abort the composition or are skipped"><option value="error">Error</option><option value="skip">Skip incompatible layers</option></select></label>
+            <p id="compose-output-indicator" class="adapter-output-indicator" role="status" aria-live="polite"></p>
             <p class="muted-note">Direct LoKr output needs a compatible direct-LoKr input to define factor shapes. Auto falls back to LoRA for unanchored layers.</p>
           </div>
-          <div class="lora-controls" id="lora-bake-controls">
-            <label class="field compact"><span title="Additive sums scaled adapter deltas; Consensus blends contributors for each target tensor before baking into the checkpoint.">Merge algorithm</span><select id="lora-merge-algorithm" title="Choose conventional addition or consensus-weighted blending"><option value="additive">Additive</option><option value="consensus">Consensus</option></select></label>
-            <label class="field compact"><span title="Balanced uses diversity and comfort bandpass; Conservative rejects weakly aligned rows; Neutral similarity-weights without diversity. Used only with Consensus.">Consensus preset</span><select id="lora-consensus-preset" title="Consensus only: choose Balanced, Conservative, or Neutral weighting"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
-            <label class="field compact">
-              <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
-              <input id="lora-global-strength" type="number" min="-3" max="3" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (-3..3; 0=none, 1=full, negative subtracts)">
-            </label>
-            <label class="field compact">
-              <span title="Choose whether LoRA merge math runs on CPU only, CUDA when possible, or automatic GPU/CPU fallback">Merge Device</span>
-              <select id="lora-merge-device" title="Auto uses CUDA when enough VRAM is free and falls back to CPU on OOM">
-                <option value="auto" selected>Auto GPU/CPU</option>
-                <option value="cpu">CPU only</option>
-                <option value="cuda">CUDA GPU</option>
-              </select>
-            </label>
-            <label class="field compact">
-              <span title="CUDA device string used for GPU LoRA merge, usually cuda:0">CUDA Device</span>
-              <input id="lora-cuda-device" type="text" value="cuda:0" title="PyTorch CUDA device for merge acceleration, for example cuda:0">
-            </label>
-            <label class="field compact">
-              <span title="Free VRAM kept in reserve before using CUDA for a tensor merge">VRAM Headroom MB</span>
-              <input id="lora-vram-headroom" type="number" min="256" step="256" value="1024" title="Minimum VRAM to leave free; tensors fall back to CPU if this margin would be crossed">
-            </label>
-            <label class="checkline">
-              <input id="lora-adaptive" type="checkbox">
-              <span title="Experimental: renormalize LoRA deltas by tensor norms. Leave off for ComfyUI-like live LoRA parity.">Adaptive scaling</span>
-            </label>
-            <label class="checkline">
-              <input id="lora-strict" type="checkbox" checked>
-              <span title="Fail if any LoRA key doesn't match the base; uncheck to skip unmatched keys">Strict key matching</span>
-            </label>
-            <label class="checkline" id="protect-token-refiner-label" style="display:none" title="Checkpoint baking only: keep MiniMax H3 token_refiner or Krea 2 txtfusion.refiner_blocks unchanged; does not protect a tokenizer or affect adapter composition">
-              <input id="protect-token-refiner" type="checkbox" title="Skip LoRA and direct-diff updates to the known Token Refiner; off by default">
-              <span>Protect Token Refiner</span>
-            </label>
-            <label class="checkline" id="krea2-unchain-label" style="display:none">
-              <input id="krea2-unchain" type="checkbox">
-              <span title="Negates txtfusion.projector.weight positions 8–10 (filter bypass / unchain)">Unchain (Krea 2 filter bypass)</span>
-            </label>
+          <div class="lora-controls bake-options" id="lora-bake-controls">
+            <fieldset class="merge-option-group"><legend>Merge</legend>
+              <div class="merge-option-fields">
+                <label class="field compact"><span title="Additive sums scaled adapter deltas; Consensus blends contributors for each target tensor before baking into the checkpoint.">Merge algorithm</span><select id="lora-merge-algorithm" title="Choose conventional addition or consensus-weighted blending"><option value="additive">Additive</option><option value="consensus">Consensus</option></select></label>
+                <label class="field compact"><span title="Balanced uses diversity and comfort bandpass; Conservative rejects weakly aligned rows; Neutral similarity-weights without diversity. Used only with Consensus.">Consensus preset</span><select id="lora-consensus-preset" title="Consensus only: choose Balanced, Conservative, or Neutral weighting"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
+                <label class="field compact">
+                  <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>
+                  <input id="lora-global-strength" type="number" min="-3" max="3" step="0.05" value="1" title="Multiplier applied to all LoRA strengths (-3..3; 0=none, 1=full, negative subtracts)">
+                </label>
+              </div>
+            </fieldset>
+            <fieldset class="merge-option-group"><legend>Compute</legend>
+              <div class="merge-option-fields">
+                <label class="field compact">
+                  <span title="Choose whether LoRA merge math runs on CPU only, CUDA when possible, or automatic GPU/CPU fallback">Merge Device</span>
+                  <select id="lora-merge-device" title="Auto uses CUDA when enough VRAM is free and falls back to CPU on OOM">
+                    <option value="auto" selected>Auto GPU/CPU</option>
+                    <option value="cpu">CPU only</option>
+                    <option value="cuda">CUDA GPU</option>
+                  </select>
+                </label>
+                <label class="field compact">
+                  <span title="CUDA device string used for GPU LoRA merge, usually cuda:0">CUDA Device</span>
+                  <input id="lora-cuda-device" type="text" value="cuda:0" title="PyTorch CUDA device for merge acceleration, for example cuda:0">
+                </label>
+                <label class="field compact">
+                  <span title="Free VRAM kept in reserve before using CUDA for a tensor merge">VRAM Headroom MB</span>
+                  <input id="lora-vram-headroom" type="number" min="256" step="256" value="1024" title="Minimum VRAM to leave free; tensors fall back to CPU if this margin would be crossed">
+                </label>
+              </div>
+            </fieldset>
+            <div class="merge-option-toggles" role="group" aria-label="Merge behavior">
+                <label class="checkline" id="h3-turbo-complete-label" title="Opt-in complete additive H3 Turbo baking, including validated AdaLN updates; not an inference-quality guarantee"><input id="h3-turbo-complete" type="checkbox" title="Requires floating MiniMax H3, additive algorithm and compatible adapter gauge"><span>Complete H3 Turbo</span></label>
+                <label class="checkline">
+                  <input id="lora-adaptive" type="checkbox">
+                  <span title="Experimental: renormalize LoRA deltas by tensor norms. Leave off for ComfyUI-like live LoRA parity.">Adaptive scaling</span>
+                </label>
+                <label class="checkline">
+                  <input id="lora-strict" type="checkbox" checked>
+                  <span title="Fail if any LoRA key doesn't match the base; uncheck to skip unmatched keys">Strict key matching</span>
+                </label>
+                <label class="checkline" id="protect-token-refiner-label" style="display:none" title="Checkpoint baking only: keep MiniMax H3 token_refiner or Krea 2 txtfusion.refiner_blocks unchanged; does not protect a tokenizer or affect adapter composition">
+                  <input id="protect-token-refiner" type="checkbox" title="Skip LoRA and direct-diff updates to the known Token Refiner; off by default">
+                  <span>Protect Token Refiner</span>
+                </label>
+                <label class="checkline" id="krea2-unchain-label" style="display:none">
+                  <input id="krea2-unchain" type="checkbox">
+                  <span title="Negates txtfusion.projector.weight positions 8–10 (filter bypass / unchain)">Unchain (Krea 2 filter bypass)</span>
+                </label>
+            </div>
           </div>
           <div id="lora-list" class="lora-list drop-target" title="Drop one or more LoRA files here to add them to the merge list"></div>
           <div class="lora-actions">

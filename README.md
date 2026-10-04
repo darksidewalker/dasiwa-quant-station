@@ -177,6 +177,12 @@ The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp
 
 Per-architecture strategy presets (LTX-2.3 All/Video/Audio, WAN 2.2 Balanced/Motion/Visuals, Krea 2 Balanced/Style/Content/Detail, MiniMax H3 Balanced/Motion/Visuals), supported LoRA formats, consensus presets, and recipe reload are documented in [doc/lora-merge-strategies.md](doc/lora-merge-strategies.md).
 
+### H3 pruning and coordinate-bound adapters
+
+Pruning is not quantization, and EMA600 is a trained Turbo adapter checkpoint rather than a merge algorithm. Full-trained H3 AdaLN updates need both a factor projection and a constant bias update when converted to a pruned coordinate system. A matching input width does not establish compatibility with a target's `adaln_t_table`; independently generated SVD tables can use different signs and rotations.
+
+The [H3 pruning and adapter reference](doc/h3-pruning-and-adapters.md) explains reference-compatible versus independent folding, affine offsets, the supplied full/pruned INT8 ConvRot commands, and numerical/runtime validation requirements. Bake into floating weights before quantization, and retain the runtime sampler and audio/video schedules when using Turbo updates.
+
 ### Extract a LoRA from two checkpoints
 
 Switch to **LoRA Extract**, select the original checkpoint as Source and the compatible fine-tuned or modified checkpoint as the second checkpoint. The default **Any architecture — checkpoint difference** recipe subtracts matching 2-D weights and SVD-factorizes each nonzero delta into a standard LoRA. The selected architecture is verified against both headers. Both checkpoints must have identical tensor keys and shapes; biases and other non-matrix tensors cannot be represented by standard LoRA and are reported as unsupported. Frobenius energy controls retained signal, while Min/Max Rank bound each matrix factorization. MiniMax H3 retains its additional full and curve-pruned recipes; the pruned recipe requires a third target checkpoint for its AdaLN coordinate gauge.

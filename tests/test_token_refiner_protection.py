@@ -62,7 +62,7 @@ class TokenRefinerProtectionTests(unittest.TestCase):
                                 torch.testing.assert_close(output[key], value, rtol=0, atol=0)
                             else:
                                 self.assertTrue(torch.all(output[key] > value), key)
-                        recipe = root.joinpath("out.txt").read_text()
+                        recipe = root.joinpath("out.safetensors.txt").read_text()
                         self.assertIn("Protect Token Refiner: " + ("yes" if enabled else "no"), recipe)
                         self.assertIn("Skipped (Token Refiner): " + ("4" if enabled else "0"), recipe)
 
@@ -101,7 +101,7 @@ class TokenRefinerProtectionTests(unittest.TestCase):
                     self.assertEqual(summary["matched"], 1)
                     self.assertEqual(summary["unmatched"], 0)
                 self.assertFalse(root.joinpath("out.safetensors").exists())
-                self.assertFalse(root.joinpath("out.txt").exists())
+                self.assertFalse(root.joinpath("out.safetensors.txt").exists())
 
     def test_real_bridge_forwards_protection(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,7 +129,7 @@ class TokenRefinerProtectionTests(unittest.TestCase):
                 self.assertIn(str(bridge), str(raised.exception))
                 self.assertIn("load the standalone conditioning bridge/module separately", str(raised.exception))
                 self.assertFalse(root.joinpath("out.safetensors").exists())
-                self.assertFalse(root.joinpath("out.txt").exists())
+                self.assertFalse(root.joinpath("out.safetensors.txt").exists())
                 self.assertFalse(root.joinpath("out.safetensors.tmp").exists())
 
     def test_mixed_extra_weights_reported_and_compose_does_not_protect_refiner(self):
@@ -155,7 +155,7 @@ class TokenRefinerProtectionTests(unittest.TestCase):
                     output = load_file(str(out))
                     self.assertEqual(len(output), 2)
                     self.assertTrue(all("token_refiner" in k for k in output))
-                    recipe = out.with_suffix(".txt").read_text()
+                    recipe = Path(str(out) + ".txt").read_text()
                     self.assertIn("fc1.weight", recipe)
                     self.assertIn("Unsupported/unhandled input tensors", recipe)
                 else:

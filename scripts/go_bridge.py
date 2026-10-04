@@ -77,7 +77,24 @@ def _watermark_context(payload):
 def cmd_inspect(args):
     path = os.path.realpath(os.path.expanduser(args.path))
     arch, is_full, log = inspect_checkpoint(path)
-    _emit({"architecture": arch, "full_checkpoint": is_full, "log": log})
+    result = {"architecture": arch, "full_checkpoint": is_full, "log": log}
+    if path.lower().endswith('.safetensors'):
+        from safetensors import safe_open
+        from core.h3_curve import inspect_h3_variant
+        with safe_open(path, framework='pt', device='cpu') as handle:
+            is_h3 = arch == 'MiniMax H3' or any(k.endswith(('adaln_t_table', 'adaln_proj.linear.weight')) for k in handle.keys())
+        if is_h3:
+            try:
+                result['h3'] = inspect_h3_variant(path)
+            except ValueError as exc:
+                result['h3'] = {'variant': 'unsupported', 'detail': str(exc)}
+    _emit(result)
+
+
+def cmd_capabilities(args):
+    from core.safetensors_engine import h3_ctq_capability
+    supported, detail = h3_ctq_capability()
+    _emit({'h3_ctq': {'supported': supported, 'detail': detail}})
 
 
 def cmd_metadata(args):
@@ -262,6 +279,8 @@ def cmd_quantize(args):
             optimizer,
             strategy,
             log_acc,
+            h3_quant_policy=payload.get("h3_quant_policy") or "preserve_structural",
+            verbose_level=payload.get("verbose_level") or None,
             low_vram=low_vram,
             is_full_checkpoint=is_full,
             custom_metadata=custom_metadata,
@@ -299,6 +318,20 @@ def cmd_quantize(args):
         ))
 
     _emit({"type": "done", "status": "Finished"})
+
+
+def cmd_h3_prune(args):
+    from core.h3_prune_engine import run_h3_prune
+    payload = _load_payload(args)
+    for event in run_h3_prune(payload):
+        _emit(event)
+
+
+def cmd_h3_adapter_convert(args):
+    from core.h3_adapter_convert_engine import run_h3_adapter_convert
+    payload = _load_payload(args)
+    for event in run_h3_adapter_convert(payload):
+        _emit(event)
 
 
 def cmd_lora_merge(args):
@@ -367,6 +400,9 @@ def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    p = sub.add_parser("capabilities")
+    p.set_defaults(func=cmd_capabilities)
+
     p = sub.add_parser("inspect")
     p.add_argument("path")
     p.set_defaults(func=cmd_inspect)
@@ -405,6 +441,14 @@ def main():
     p = sub.add_parser("quantize")
     p.add_argument("--json")
     p.set_defaults(func=cmd_quantize)
+
+    p = sub.add_parser("h3-prune", help="Fold a full floating H3 checkpoint into a pruned checkpoint.")
+    p.add_argument("--json", required=True)
+    p.set_defaults(func=cmd_h3_prune)
+
+    p = sub.add_parser("h3-adapter-convert", help="Convert a full H3 adapter into an exact target pruned gauge.")
+    p.add_argument("--json", required=True)
+    p.set_defaults(func=cmd_h3_adapter_convert)
 
     p = sub.add_parser("lora-merge")
     p.add_argument("--json")

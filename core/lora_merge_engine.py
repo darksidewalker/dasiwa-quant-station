@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
+from core.safetensors_stream import TensorSpool, destination, read_header
 
 from utils.lora_inspector import discover_lora_pairs, discover_diff_patches, read_safetensors_manifest
 from core.metadata_manager import merge_custom_metadata, read_source_metadata, reject_quantized_merge_source
@@ -80,6 +80,11 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     krea2_unchain = bool(payload.get("krea2_unchain", False))
     protect_token_refiner = bool(payload.get("protect_token_refiner", False))
     merge_algorithm = _normalize_merge_algorithm(payload.get("merge_algorithm"))
+    turbo_complete = bool(payload.get("h3_turbo_complete", False))
+    if turbo_complete and (architecture != "MiniMax H3" or merge_algorithm != "additive"):
+        raise ValueError("H3 Turbo complete requires MiniMax H3 and additive baking")
+    if turbo_complete and adaptive:
+        raise ValueError("H3 Turbo complete requires adaptive scaling disabled")
     consensus_settings = resolve_consensus_preset(payload.get("consensus_preset"), architecture)
     if merge_algorithm == "consensus" and len(loras) < 2:
         raise ValueError("consensus merge requires at least two LoRAs")
@@ -91,6 +96,10 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     _validate_lora_strengths(loras, global_strength)
 
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
+    if turbo_complete:
+        from utils.minimax_h3_layer_profiles import is_h3_turbo_update_key
+        default_preserved = is_preserved
+        is_preserved = lambda key: default_preserved(key) and not is_h3_turbo_update_key(key)
 
     yield _log(f"LoRA merge init\nBase: {base_path}\nArchitecture: {architecture}\nStrategy: {strategy}\nAlgorithm: {merge_algorithm}\nConsensus preset: {consensus_settings.name}\nAdaptive: {'yes' if adaptive else 'no'}\nDry run: {'yes' if dry_run else 'no'}\nMerge device: requested={merge_device} cuda_device={cuda_device} headroom={vram_headroom_mb}MB\n")
     yield _log(f"Protect Token Refiner: {'yes' if protect_token_refiner else 'no'} (checkpoint baking only)\n")
@@ -98,6 +107,15 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     base_metadata = read_source_metadata(base_path)
     base_manifest = read_safetensors_manifest(base_path)
     base_keys = set(base_manifest)
+    table_keys = [key for key in base_keys if key.split('.')[-1] == 'adaln_t_table']
+    base_gauge = None
+    if table_keys:
+        if len(table_keys) != 1:
+            raise ValueError("ambiguous H3 coordinate table")
+        import hashlib
+        with safe_open(base_path, framework='pt', device='cpu') as bf:
+            table = bf.get_tensor(table_keys[0]).to(torch.float32).contiguous()
+            base_gauge = hashlib.sha256(table.numpy().tobytes()).hexdigest()
     yield _status(f"Inspected base: {len(base_manifest)} tensors")
 
     reports: List[Dict[str, Any]] = []
@@ -116,12 +134,24 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         lora_manifest = read_safetensors_manifest(lora_path)
         pairs = discover_lora_pairs(lora_manifest)
         diff_patches = discover_diff_patches(lora_manifest)
+        if turbo_complete:
+            accounted = {key for pair in pairs for key in
+                         (pair.down_key, pair.up_key, pair.alpha_key) if key}
+            accounted.update(dp.diff_key for dp in diff_patches)
+            for key in sorted(set(lora_manifest) - accounted):
+                unmatched += 1
+                reports.append(_report(key, None, 'unhandled_source_tensor', lora_path))
         kind_counts: Dict[str, int] = {}
         for p in pairs:
             kind_counts[p.kind] = kind_counts.get(p.kind, 0) + 1
         kind_note = " | ".join(f"{k}={v}" for k, v in sorted(kind_counts.items()) if k != "lora")
         yield _log(f"LoRA: {os.path.basename(lora_path)} | strategy={lora_strategy} | tensors={len(lora_manifest)} | pairs={len(pairs)}{(' | ' + kind_note) if kind_note else ''} | diff_patches={len(diff_patches)}\n")
         with safe_open(lora_path, framework="pt", device="cpu") as lf:
+            adapter_gauge = (lf.metadata() or {}).get('adaln_coordinate_table_sha256')
+            if adapter_gauge and adapter_gauge != base_gauge:
+                raise ValueError("adapter gauge does not match base coordinate table")
+            if turbo_complete and base_gauge and adapter_gauge != base_gauge:
+                raise ValueError("pruned H3 complete baking requires converted adapter with matching gauge metadata")
             for pair in pairs:
                 if getattr(pair, "kind", "lora") == "lokr_decomposed":
                     # Factorized LoKr (lokr_w1_a/b, lokr_w2_a/b, optional t2):
@@ -158,7 +188,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     reports.append(_report(pair.base_name, target_key, "shape_mismatch", lora_path, base_shape=base_shape, delta_shape=delta_shape))
                     continue
                 category = classify_key(target_key)
-                raw_mult = strat_mult(lora_strategy, category)
+                raw_mult = 1.0 if turbo_complete else strat_mult(lora_strategy, category)
                 scale = global_strength * lora_strength * raw_mult
                 if raw_mult == 0.0:
                     # Strategy explicitly excluded this tensor — report as skipped, not matched.
@@ -184,6 +214,8 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
             # Process .diff patches (direct additive deltas, ComfyUI format)
             for dp in diff_patches:
+                if dp.target_kind == 'buffer':
+                    raise ValueError("table-changing patches cannot be baked as reusable adapters")
                 dp_candidates = [c for c in dp.target_candidates if c in base_keys]
                 if len(dp_candidates) == 0:
                     unmatched += 1
@@ -243,6 +275,16 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         else:
             yield _log(f"Skipping unchain: {unchain_target} not found in base checkpoint\n")
 
+    if turbo_complete:
+        omissions = [r for r in reports if r['status'] not in {'matched', 'matched_diff', 'skipped_token_refiner'}]
+        if strict and omissions:
+            raise ValueError("H3 Turbo complete required omissions: " + json.dumps(omissions))
+        yield _log(f"H3 Turbo application: {'partial' if omissions or token_refiner_skipped else 'complete'}; "
+                   f"omissions={len(omissions)} protected_refiner={token_refiner_skipped}\n")
+        payload = dict(payload, _h3_turbo_audit={'application': 'partial' if omissions or token_refiner_skipped else 'complete',
+                                               'omissions': omissions, 'protected_refiner': token_refiner_skipped})
+        if token_refiner_skipped:
+            yield _log("WARNING: partial Turbo bake: Protect Token Refiner is ON; runtime parity is not claimed.\n")
     if dry_run:
         # Build per-LoRA summary for dry run (computed but not yet displayed)
         from collections import Counter, defaultdict
@@ -305,7 +347,9 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         yield {"type": "done", "status": "no matches"}
         return
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_path = destination(dict(payload, output_path=output_path), 'lora_merged.safetensors',
+                              [base_path] + [spec['path'] for spec in loras])
+    source_header, source_data_start = read_header(base_path)
     ops_by_target: Dict[str, List[Dict[str, Any]]] = {}
     for op in matched_ops:
         ops_by_target.setdefault(op["target_key"], []).append(op)
@@ -337,24 +381,18 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         source_metadata=base_metadata,
         preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
     )
-    tmp_output_path = output_path + ".tmp"
     total_tensors = len(base_manifest)
     progress_every = max(1, total_tensors // 100)
-    with open(tmp_output_path, "wb") as out_f, ExitStack() as stack:
-        header = _build_safetensors_header(base_manifest, meta)
-        out_f.write(struct.pack("<Q", len(header)))
-        out_f.write(header)
+    with TensorSpool(output_path) as spool, ExitStack() as stack:
         lora_handles = {
             path: stack.enter_context(safe_open(path, framework="pt", device="cpu"))
             for path in sorted({op["lora_path"] for op in matched_ops if op["lora_path"] != "__builtin_unchain__"})
         }
         with safe_open(base_path, framework="pt", device="cpu") as bf:
             for index, key in enumerate(bf.keys(), 1):
-                base = bf.get_tensor(key)
                 ops = ops_by_target.get(key)
                 if not ops:
-                    _write_tensor_bytes(out_f, base)
-                    del base
+                    spool.copy(key, base_path, source_header[key], source_data_start)
                     if index % progress_every == 0 or index == total_tensors:
                         yield _progress(
                             f"LoRA merge: {index}/{total_tensors} tensors "
@@ -362,6 +400,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                             f"{merge_summary['target_tensors']} targets altered"
                         )
                     continue
+                base = bf.get_tensor(key)
                 tensor, used_device, fallback_reason = _merge_target_with_policy(
                     base, ops, lora_handles, adaptive, merge_device, cuda_device, vram_headroom_mb,
                     merge_algorithm, consensus_settings,
@@ -371,7 +410,7 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     merge_summary["altered_targets"] += 1
                 else:
                     merge_summary["unaltered_targets"] += 1
-                _write_tensor_bytes(out_f, tensor)
+                spool.tensor(key, tensor)
                 del base, tensor
                 if used_device == "cuda":
                     device_summary["cuda_tensors"] += 1
@@ -385,7 +424,12 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                         f"({index * 100 // total_tensors}%) · {merge_summary['altered_targets']}/"
                         f"{merge_summary['target_tensors']} targets altered"
                     )
-    os.replace(tmp_output_path, output_path)
+        recipe_text = _write_recipe(output_path, payload, loras, strategy,
+                                    global_strength, adaptive, matched_ops,
+                                    skipped, unmatched, ambiguous, device_summary, merge_summary,
+                                    strategy_skipped, decomposed_skipped, token_refiner_skipped,
+                                    render_only=True)
+        recipe_path = spool.publish(meta, recipe_text)
 
     yield _log(
         "LoRA merge device summary: "
@@ -404,12 +448,6 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         yield _log(f"WARNING: {merge_summary['unaltered_targets']} matched target tensor(s) were not altered. Check zero-strength LoRAs, zero deltas, or strategy multipliers.\n")
     yield _status(f"LoRA merge complete: {merge_summary['altered_targets']}/{merge_summary['target_tensors']} targets altered")
 
-    # Write merge recipe as .txt next to the checkpoint.
-    # Do NOT embed LoRA details in safetensors metadata — keep it clean.
-    recipe_path = _write_recipe(output_path, payload, loras, strategy,
-                                global_strength, adaptive, matched_ops,
-                                skipped, unmatched, ambiguous, device_summary, merge_summary,
-                                strategy_skipped, decomposed_skipped, token_refiner_skipped)
 
     yield _log(f"Wrote merged checkpoint: {output_path}\n")
     yield _log(f"Wrote merge recipe: {recipe_path}\n")
@@ -703,15 +741,26 @@ def _materialize_effective_delta(op: Dict[str, Any], lora_handles: Dict[str, Any
 
 
 def _merge_target_consensus(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handles: Dict[str, Any], settings: Any, device: str) -> torch.Tensor:
+    from core.consensus_merge import factor_delta_rows
     original_dtype = base.dtype
     shape = tuple(base.shape)
-    deltas = [_materialize_effective_delta(op, lora_handles, shape, device) for op in ops]
-    if len(deltas) == 1:
-        merged_delta = deltas[0]
-    else:
-        stacked = torch.stack([delta.reshape(shape[0], -1) for delta in deltas])
-        merged_delta = merge_consensus_rows(stacked, settings).reshape(shape)
-    return (base.to(device=device, dtype=torch.float32) + merged_delta).to(device="cpu", dtype=original_dtype)
+    result = torch.empty_like(base, device='cpu')
+    for start in range(0, shape[0], 256):
+        end = min(shape[0], start + 256)
+        deltas = []
+        for op in ops:
+            handle = lora_handles[op['lora_path']]
+            if op.get('is_diff'):
+                delta = handle.get_slice(op['diff_key'])[start:end].to(device=device, dtype=torch.float32) * op['scale']
+            else:
+                kind = op.get('kind', 'lora')
+                delta = factor_delta_rows(handle, op['down_key'], op['up_key'], start, end, kind, device)
+                delta *= op['scale'] * _alpha_scale(handle, op['alpha_key'], op['rank'], kind)
+            deltas.append(delta.reshape(end-start, -1))
+        merged_delta = deltas[0] if len(deltas) == 1 else merge_consensus_rows(torch.stack(deltas), settings)
+        result[start:end] = (base[start:end].to(device=device, dtype=torch.float32) +
+                            merged_delta.reshape(base[start:end].shape)).to(device='cpu', dtype=original_dtype)
+    return result
 
 
 def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handles: Dict[str, Any], adaptive: bool, policy: str, device: str, headroom_mb: int, algorithm: str = "additive", consensus_settings: Any = None) -> Tuple[torch.Tensor, str, str | None]:
@@ -785,7 +834,8 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
                   merge_summary: Dict[str, Any] | None = None,
                   strategy_skipped: int = 0,
                   decomposed_skipped: int = 0,
-                  token_refiner_skipped: int = 0) -> str:
+                  token_refiner_skipped: int = 0,
+                  *, render_only: bool = False) -> str:
     """Write a human-readable merge recipe .txt next to the checkpoint."""
     import datetime
 
@@ -816,6 +866,7 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         f"Strict matching:   {'yes' if strict else 'no'}",
         f"Krea2 unchain:     {'yes' if krea2_unchain else 'no'}",
         f"Protect Token Refiner: {'yes' if payload.get('protect_token_refiner', False) else 'no'}",
+        f"H3 Turbo complete: {'yes' if payload.get('h3_turbo_complete', False) else 'no'}",
         f"Preserve loader metadata: {'yes' if payload.get('preserve_loader_metadata', True) else 'no'}",
         "",
         "-" * 64,
@@ -883,7 +934,12 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         "=" * 64,
     ])
 
+    if payload.get('_h3_turbo_audit'):
+        lines.extend(['H3 Turbo source audit:', json.dumps(payload['_h3_turbo_audit'], indent=2)])
+    text = '\n'.join(lines) + '\n'
+    if render_only:
+        return text
     with open(recipe_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write(text)
 
     return recipe_path

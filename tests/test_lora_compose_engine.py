@@ -41,7 +41,7 @@ class LoraComposeEngineTests(unittest.TestCase):
             self.assertEqual(events[-1]["status"], "finished")
             progress = [event for event in events if event.get("type") == "progress"]
             self.assertEqual(progress[-1]["text"], "Merge adapters: 1/1 layers (100%) · writing LORA")
-            recipe = out.with_suffix(".txt").read_text()
+            recipe = Path(str(out) + ".txt").read_text()
             self.assertIn("Reconstruction recap (numerical estimate, not inference-verified)", recipe)
             self.assertIn("Requested energy: 100.0%", recipe)
             self.assertIn("Retained energy below target: 0/1", recipe)
@@ -89,7 +89,7 @@ class LoraComposeEngineTests(unittest.TestCase):
             self.assertIn("diffusion_model.blocks.0.attn.qkv_proj.lokr_w1", tensors)
             self.assertIn("diffusion_model.blocks.0.attn.qkv_proj.lokr_w2", tensors)
             self.assertFalse(any(key.endswith(".alpha") for key in tensors))
-            recap = out.with_suffix(".txt").read_text().split("Layer report:", 1)[0]
+            recap = Path(str(out) + ".txt").read_text().split("Layer report:", 1)[0]
             self.assertIn("LoKr: 1", recap)
             self.assertNotIn("Retained energy below target", recap)
             rebuilt = reconstruct_lokr(
@@ -165,3 +165,35 @@ class LoraComposeEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+def test_additive_composition_preserves_scaled_bias_and_alpha_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        paths = []
+        for name in ('a', 'b'):
+            path = root / (name + '.safetensors')
+            save_file({'diffusion_model.x.lora_A.weight': torch.ones(1, 3),
+                       'diffusion_model.x.lora_B.weight': torch.ones(2, 1),
+                       'diffusion_model.x.alpha': torch.tensor(2.),
+                       'diffusion_model.x.diff_b': torch.ones(2)}, str(path))
+            paths.append(str(path))
+        out = root / 'out.safetensors'
+        list(run_lora_compose(dict(loras=[dict(path=paths[0], strength=-1.), dict(path=paths[1], strength=0.)],
+                                   output_path=str(out), merge_algorithm='additive', merge_device='cpu')))
+        saved = load_file(str(out))
+        torch.testing.assert_close(saved['diffusion_model.x.diff_b'], -torch.ones(2))
+        torch.testing.assert_close(saved['diffusion_model.x.lora_B.weight'].float() @
+                                   saved['diffusion_model.x.lora_A.weight'].float(), -2 * torch.ones(2, 3), atol=.02, rtol=.01)
+        assert 'Merge algorithm: additive' in Path(str(out) + '.txt').read_text()
+def test_additive_standard_path_never_materializes_full_input_delta():
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        paths = []
+        for name in ('a', 'b'):
+            path = root / (name + '.safetensors')
+            save_file({'diffusion_model.x.lora_A.weight': torch.ones(1, 3),
+                       'diffusion_model.x.lora_B.weight': torch.ones(2, 1)}, str(path))
+            paths.append(str(path))
+        with patch('core.lora_compose_engine._full_delta', side_effect=AssertionError('dense input delta')):
+            list(run_lora_compose(dict(loras=[dict(path=p) for p in paths],
+                                       output_path=str(root / 'out.safetensors'), merge_algorithm='additive', merge_device='cpu')))

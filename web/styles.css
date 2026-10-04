@@ -398,6 +398,9 @@ input, select, textarea { padding: 8px 10px; }
   margin-bottom: 12px;
 }
 .section-title h3 { font-size: 14px; }
+.lora-card[data-workflow-panel="lora"] .section-title { margin-bottom: 8px; }
+.lora-card[data-workflow-panel="lora"] .section-title h3 { margin: 0; line-height: 1.4; }
+.lora-card[data-workflow-panel="lora"] .section-title p { line-height: 1.4; }
 .lora-card .section-title p {
   margin: 4px 0 0;
   color: var(--muted);
@@ -405,12 +408,55 @@ input, select, textarea { padding: 8px 10px; }
 }
 .lora-controls {
   display: grid;
-  grid-template-columns: 130px repeat(3, auto);
-  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px 12px;
   align-items: end;
 }
-.lora-controls .field { margin-bottom: 0; }
-.lora-controls .compact input { text-align: right; }
+.lora-controls .field { min-width: 0; margin-bottom: 0; gap: 4px; }
+.lora-controls .field > span { font-size: 11px; line-height: 1.3; }
+.lora-controls .field input, .lora-controls .field select {
+  min-width: 0;
+  height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+.lora-controls .compact input[type="number"] { text-align: right; }
+.lora-controls .adapter-output-indicator, .lora-controls .muted-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 11px;
+}
+.bake-options { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; }
+.merge-option-group { min-width: 0; margin: 0; padding: 0; border: 0; }
+.merge-option-group legend {
+  padding: 0;
+  margin-bottom: 5px;
+  line-height: 1.3;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.merge-option-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.merge-option-toggles {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.merge-option-toggles .checkline { min-height: 24px; margin: 0; gap: 6px; font-size: 12px; line-height: 1.3; }
+.merge-option-toggles input[type="checkbox"] { width: 16px; height: 16px; margin: 0; }
+@media (min-width: 981px) and (max-width: 1250px) {
+  .bake-options { grid-template-columns: 1fr; }
+  #compose-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .merge-option-fields { grid-template-columns: 1fr; }
+}
 .lora-list {
   display: grid;
   gap: 6px;
@@ -508,8 +554,13 @@ input, select, textarea { padding: 8px 10px; }
 
 .lora-row button[data-role="remove"] { padding: 5px 8px; font-size: 12px; white-space: nowrap; }
 .lora-actions {
-  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
+.lora-actions button { width: auto; margin: 0; padding: 6px 10px; font-size: 12px; line-height: 1.3; }
 .adapter-output-indicator {
   grid-column: 1 / -1;
   margin: -2px 0 2px;

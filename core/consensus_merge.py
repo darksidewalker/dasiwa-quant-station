@@ -44,14 +44,41 @@ def resolve_consensus_preset(name: str | None, architecture: str) -> ConsensusSe
         raise ValueError(f"consensus_preset must be one of {choices}; got {resolved!r}") from exc
 
 
+def factor_delta_rows(handle, down_key, up_key, start, end, kind, device):
+    """Bound factor reconstruction before allocating contributor deltas."""
+    first = handle.get_tensor(down_key).to(device=device, dtype=torch.float32)
+    if kind == 'lokr':
+        second = handle.get_tensor(up_key).to(device=device, dtype=torch.float32)
+        indices = torch.arange(start, end, device=device)
+        return (first[indices // second.shape[0], :, None] *
+                second[indices % second.shape[0], None, :]).reshape(end-start, -1)
+    second = handle.get_slice(up_key)[start:end].to(device=device, dtype=torch.float32)
+    if first.ndim != 2 or second.ndim != 2:
+        raise ValueError('Only 2D LoRA tensors are supported initially')
+    return second @ first
+
+
 def merge_consensus_rows(
     contributors: torch.Tensor,
     settings: ConsensusSettings,
     *,
     return_stats: bool = False,
+    row_batch_size: int = 0,
 ) -> torch.Tensor | tuple[torch.Tensor, ConsensusStats]:
     if contributors.ndim != 3 or contributors.shape[0] == 0:
         raise ValueError("contributors must have shape [contributors, rows, features]")
+    if row_batch_size < 0:
+        raise ValueError('row_batch_size must be non-negative')
+    if row_batch_size and contributors.shape[1] > row_batch_size:
+        result = torch.empty(contributors.shape[1:], device=contributors.device, dtype=torch.float32)
+        stats = ConsensusStats()
+        for start in range(0, contributors.shape[1], row_batch_size):
+            end = start + row_batch_size
+            batch, batch_stats = merge_consensus_rows(contributors[:, start:end], settings, return_stats=True)
+            result[start:end] = batch
+            for field in vars(stats):
+                setattr(stats, field, getattr(stats, field) + getattr(batch_stats, field))
+        return (result, stats) if return_stats else result
     work = contributors.to(torch.float32)
     stats = ConsensusStats(groups=int(work.shape[1]))
     if work.shape[0] == 1:
