@@ -1143,7 +1143,7 @@ function wireEvents() {
   $("mm-rank").addEventListener("change", saveSettings);
   $("mm-strength").addEventListener("change", saveSettings);
   $("mm-dry-run").addEventListener("change", saveSettings);
-  ["compose-preset", "compose-output-adapter", "compose-output-rank", "compose-energy", "compose-mismatch"]
+  ["compose-merge-algorithm", "compose-preset", "compose-output-adapter", "compose-output-rank", "compose-energy", "compose-mismatch"]
     .forEach((id) => $(id).addEventListener("change", saveSettings));
   $("extract-mode").addEventListener("change", () => {
     updateExtractRecipeVisibility();
