@@ -1262,7 +1262,20 @@ function updateH3Visibility() {
 }
 
 function setWorkflowMode(mode) {
+  const workflows = {
+    quantize: {title: "Quantize", description: "Reduce checkpoint size and memory usage by converting it to selected safetensors or GGUF formats.", action: "Start Batch", actionHint: "Start quantization for all selected formats"},
+    lora: {title: "LoRA Merge", description: "Bake one or more LoRA or LoKr adapters into a base checkpoint to create a merged checkpoint.", action: "Start Merge", actionHint: "Bake the selected adapters into the base checkpoint"},
+    compose: {title: "Merge LoRAs", description: "Combine adapters into a reusable LoRA or LoKr adapter without a base checkpoint, using consensus or additive merging.", action: "Merge Adapters", actionHint: "Merge the selected adapters into a reusable adapter"},
+    extract: {title: "LoRA Extract", description: "Extract a LoRA from the difference between a base and a compatible modified checkpoint; H3 also supports a pruned-target recipe.", action: "Start Extract", actionHint: "Extract an adapter from the selected checkpoint difference"},
+    "h3-prune": {title: "H3 Prune", description: "Create a pruned MiniMax H3 checkpoint from a full floating-point base, using compatible reference coordinates or advanced independent SVD.", action: "Start Prune", actionHint: "Prune the full MiniMax H3 checkpoint using the selected fold coordinates"},
+    "h3-adapter-convert": {title: "Convert Adapter", description: "Convert a full-width MiniMax H3 adapter for the exact pruned target checkpoint, using its fold coordinates.", action: "Convert Adapter", actionHint: "Convert the full H3 adapter for the selected pruned target"},
+    model: {title: "Model Merge", description: "Merge MiniMax H3 checkpoints with a hybrid AdaLN overlay or delta-fusion recipe, rather than applying LoRA adapters.", action: "Start Model Merge", actionHint: "Merge the base and second checkpoint using the selected recipe"},
+  };
+  const workflow = workflows[mode];
+  if (!workflow) return;
   state.workflowMode = mode;
+  $("workflow-title").textContent = workflow.title;
+  $("workflow-description").textContent = workflow.description;
   document.querySelectorAll("#workflow-mode button").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
@@ -1285,7 +1298,8 @@ function setWorkflowMode(mode) {
   // Show start button in all modes; label changes to match context.
   const startBtn = $("start");
   startBtn.classList.remove("hidden");
-  startBtn.textContent = mode === "lora" ? "Start Merge" : mode === "compose" ? "Merge Adapters" : mode === "extract" ? "Start Extract" : mode === "model" ? "Start Model Merge" : "Start Batch";
+  startBtn.textContent = workflow.action;
+  startBtn.title = workflow.actionHint;
   // Update checkpoint hint label per mode.
   const hint = $("source-label-hint");
   if (hint) {
@@ -1293,7 +1307,7 @@ function setWorkflowMode(mode) {
   }
   // Show Model Merge hint only when arch is MiniMax H3.
   updateModelMergeVisibility();
-  setStatus(mode === "quantize" ? "Quantize mode" : mode === "model" ? "Model merge mode" : "LoRA merge mode");
+  if (!state.jobId) setStatus("Ready");
   saveSettings();
 }
 

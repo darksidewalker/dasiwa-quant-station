@@ -63,7 +63,7 @@
       </section>
 
       <section class="panel mm-side-panel hidden" id="extract-side-panel">
-        <h2>LoRA Extract</h2>
+        <h2>Extraction options</h2>
         <label class="field"><span title="Extraction recipe">Recipe</span><select id="extract-mode" title="Generic factorizes the difference between two matching checkpoints; the H3 pruned recipe additionally rebases AdaLN"><option value="generic" selected>Any architecture — checkpoint difference</option><option value="h3_full">MiniMax H3 — full LoRA</option><option value="h3_pruned">MiniMax H3 — pruned adapter</option></select></label>
         <button id="extract-pick-merged" class="picker-button drop-target" type="button" title="Pick the modified or fine-tuned checkpoint"><span>Second checkpoint (modified)</span><strong id="extract-merged-label">Pick…</strong></button>
         <button id="extract-pick-pruned" class="picker-button drop-target" type="button" title="Pick the exact pruned checkpoint this H3 adapter will target"><span>Target pruned checkpoint</span><strong id="extract-pruned-label">Pick…</strong></button>
@@ -82,7 +82,7 @@
       </section>
 
       <section class="panel hidden" id="h3-side-panel">
-        <h2>H3 Workflow</h2>
+        <h2>H3 options</h2>
         <label class="field" id="h3-fold-label"><span>Fold coordinates</span><select id="h3-fold-mode" title="Reference uses the exact compatible pruned gauge; independent SVD is not portable to arbitrary ecosystem adapters"><option value="reference">Compatible reference (default)</option><option value="independent">Independent SVD (advanced)</option></select></label>
         <button id="h3-pick-reference" class="picker-button" type="button" title="Exact compatible pruned checkpoint supplying fold coordinates"><span>Pruned reference</span><strong id="h3-reference-label">Pick…</strong></button>
         <button id="h3-pick-target" class="picker-button" type="button" title="Exact pruned checkpoint the converted adapter will target"><span>Pruned target</span><strong id="h3-target-label">Pick…</strong></button>
@@ -93,7 +93,7 @@
       </section>
 
       <section class="panel mm-side-panel hidden" id="mm-side-panel">
-        <h2>Model Merge</h2>
+        <h2>Model merge options</h2>
         <label class="field">
           <span title="Merge recipe — determines which tensor roles come from which checkpoint">Recipe</span>
           <select id="mm-recipe">
@@ -223,6 +223,10 @@
             <button data-mode="h3-adapter-convert" type="button" title="Convert a full H3 adapter into an exact pruned target gauge">Convert Adapter</button>
             <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
           </div>
+          <div class="workflow-heading" aria-live="polite">
+            <h2 id="workflow-title">Quantize</h2>
+            <p id="workflow-description">Reduce checkpoint size and memory usage by converting it to selected safetensors or GGUF formats.</p>
+          </div>
           <p id="status">Idle</p>
         </div>
         <div id="hardware" class="hardware">
@@ -256,12 +260,6 @@
         </div>
 
         <section class="lora-card hidden" data-workflow-panel="lora">
-          <div class="section-title">
-            <div>
-              <h3>LoRA Merge / Compose</h3>
-              <p>Bake into a checkpoint · Compose a reusable adapter without a base</p>
-            </div>
-          </div>
           <div class="lora-controls" id="compose-controls" style="display:none">
             <label class="field compact"><span>Algorithm</span><select id="compose-merge-algorithm" title="Consensus blends directions; additive reproduces a weighted live adapter stack before compression"><option value="consensus">Consensus</option><option value="additive">Additive</option></select></label>
             <label class="field compact" title="Consensus weighting: Balanced adds diversity filtering and comfort bandpass; Conservative rejects weakly aligned rows; Neutral uses similarity weights without diversity."><span>Consensus preset</span><select id="compose-preset" title="Choose Balanced, Conservative, or Neutral consensus weighting"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
@@ -327,19 +325,6 @@
           <div class="lora-actions">
             <button id="add-lora" class="ghost drop-target" type="button" title="Add a LoRA to the merge list, or drop one or more LoRA files here">+ Add LoRA</button>
             <button id="load-recipe-btn" class="secondary ghost" type="button" title="Load a previously saved .txt recipe file into this form">⚙ Load Recipe</button>
-          </div>
-        </section>
-
-        <section class="lora-card hidden" data-workflow-panel="extract">
-          <div class="section-title"><div><h3>LoRA Extract</h3><p>Select a base checkpoint and a compatible modified checkpoint. The generic recipe SVD-factorizes their changed 2-D weights into a standard LoRA; MiniMax H3 also offers its specialized pruned AdaLN recipe.</p></div></div>
-        </section>
-
-        <section class="lora-card hidden" data-workflow-panel="model" id="model-merge-card">
-          <div class="section-title">
-            <div>
-              <h3>Model Merge</h3>
-              <p>Model-level tensor merge (not LoRA). Base reuses the Source panel; overlay and recipe live in the sidebar.</p>
-            </div>
           </div>
         </section>
 

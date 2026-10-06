@@ -280,6 +280,7 @@ input, select, textarea { padding: 8px 10px; }
 }
 .mode-switch {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -374,6 +375,9 @@ input, select, textarea { padding: 8px 10px; }
 .meter[data-meter="vram"] .bar i {
   background: linear-gradient(90deg, var(--blue), var(--green));
 }
+
+.workflow-heading h2 { font-size: 18px; line-height: 1.4; }
+.workflow-heading p { margin-top: 4px; line-height: 1.5; }
 
 .workspace {
   display: grid;
