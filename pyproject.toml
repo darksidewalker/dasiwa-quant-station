@@ -1,10 +1,10 @@
 [project]
 name = "dasiwa-quant-station"
-version = "0.0.0"
+version = "0.1.0"
 description = "Python runtime dependencies for DaSiWa Quant Station"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "comfy-kitchen",
+    "comfy-kitchen>=0.2.37",
     "convert-to-quant",
     "cryptography",
     "gguf",

@@ -2,7 +2,7 @@
 
 Back to [README](../README.md)
 
-Ten format families are available. The safetensors formats run through
+Eleven format families are available. The safetensors formats run through
 `convert_to_quant` / `comfy-kitchen`; the GGUF formats run through `ggufy`.
 
 | Format | Best Use | Notes |
@@ -14,6 +14,7 @@ Ten format families are available. The safetensors formats run through
 | Hybrid MXFP8 | Ada + Blackwell compatibility | Two-pass: MXFP8 quantize then hybrid conversion with tensorwise FP8 fallback |
 | INT4 ConvRot | Maximum compression | w4a4 ConvRot via comfy-kitchen TensorCore layout. Supports LTX-2.3, WAN 2.2, Krea 2, MiniMax H3. Requires BF16/FP16 source (refuses lossy sources) |
 | W4A8 | MiniMax H3 reference low-bit | asym_w4a8_int8 ConvRot via comfy-kitchen AsymW4A8Int8Layout (packed INT8 + 16-value codebook + FP8 group scales, ConvRot group 256). MiniMax H3 only; packs the heavy linears, preserves structural layers. Requires BF16/FP16 source, Simple strategy |
+| W6A8 | MiniMax H3 compression/quality balance | w6a8_int8, uniform symmetric INT6 weights and INT8 activations; group 32, ConvRot 256, FP8 group scales, FP32 channel scales, upstream scale search, no codebook. Simple only; unquantized BF16/FP16/FP32 source. Preserves structural and final layers; requires comfy-kitchen >=0.2.37 and W6-capable ComfyUI. Native `.comfy_quant` tensors; no-clobber staged output and recipe |
 | INT8 Tensor-wise | Safer INT8 path | Recommended INT8 choice for broad ComfyUI compatibility |
 | INT8 Row-wise ConvRot Runtime | Experimental/runtime-specific INT8 | Requires inference code that reads ConvRot metadata and rotates activations |
 | GGUF Q formats | llama.cpp-style deployment | Uses `ggufy` plus sensitivity maps for verified video tensors |
@@ -29,6 +30,6 @@ Ten format families are available. The safetensors formats run through
   not required.
 - MXFP8 requires SM >= 10.0 (Blackwell); use Hybrid MXFP8 for Ada
   compatibility.
-- W4A8 and NVFP4 HQ are MiniMax H3 only. NVFP4 HQ is a quality variant of
+- W4A8, W6A8 and NVFP4 HQ are MiniMax H3 only. NVFP4 HQ is a quality variant of
   NVFP4 — the same packed NVFP4 layout plus a verified per-block BF16
   retention plan (30 heavy linears kept at source precision).

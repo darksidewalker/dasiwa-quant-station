@@ -19,6 +19,7 @@ const {
 const capabilities = {
   FP8: {strategies: ['Optimizer-driven', 'Simple']},
   W4A8: {architectures: ['MiniMax H3'], strategies: ['Simple']},
+  W6A8: {architectures: ['MiniMax H3'], strategies: ['Simple']},
   'INT4 ConvRot Runtime': {architectures: ['WAN 2.2', 'LTX-2.3', 'Krea 2', 'MiniMax H3'], strategies: ['Simple']},
 };
 
@@ -34,6 +35,11 @@ test('normalizes stale quant selections after architecture changes', () => {
   assert.deepEqual(normalizeQuantSelection({
     formats: ['FP8', 'W4A8'], architecture: 'MiniMax H3', strategy: 'Optimizer-driven',
   }, capabilities), {formats: ['FP8', 'W4A8'], strategy: 'Simple'});
+});
+
+test('W6A8 is H3-only and selects Simple', () => {
+  assert.equal(formatAllowed('W6A8', 'WAN 2.2', capabilities), false);
+  assert.deepEqual(normalizeQuantSelection({formats: ['W6A8'], architecture: 'MiniMax H3', strategy: 'Optimizer-driven'}, capabilities), {formats: ['W6A8'], strategy: 'Simple'});
 });
 
 test('fails closed for unknown formats', () => {

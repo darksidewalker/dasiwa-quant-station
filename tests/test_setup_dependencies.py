@@ -1,6 +1,7 @@
 import pathlib
 import tomllib
 import unittest
+from packaging.requirements import Requirement
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -10,7 +11,7 @@ class SetupDependencyTests(unittest.TestCase):
     def test_runtime_dependencies_have_one_uv_source_of_truth(self):
         config = tomllib.loads((ROOT / "pyproject.toml").read_text())
         dependencies = config["project"]["dependencies"]
-        names = {dependency.split("[", 1)[0].split("=", 1)[0].lower() for dependency in dependencies}
+        names = {Requirement(dependency).name.lower() for dependency in dependencies}
 
         self.assertIn("torch", names)
         self.assertIn("comfy-kitchen", names)

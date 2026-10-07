@@ -34,7 +34,7 @@ Detailed reference material lives in the [doc/](doc/) folder — linked from eac
 
 | Area | What it does |
 |------|-------------|
-| Safetensors quantization | FP8, NVFP4, **NVFP4 HQ** (H3 per-block mixed profile), MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot** and **W4A8 (asym_w4a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
+| Safetensors quantization | FP8, NVFP4, **NVFP4 HQ** (H3 per-block mixed profile), MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot**, **W4A8 (asym_w4a8_int8)** and **W6A8 (w6a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
 | LoRA merge | Architecture-aware additive or consensus checkpoint baking plus base-free LoRA-to-LoRA composition with standard LoRA or direct LoKr output; MiniMax H3, LTX-2.3, WAN 2.2, and Krea 2 profiles, per-adapter strength, dry-run, and strict matching |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
@@ -87,6 +87,7 @@ Models are loaded from `$DASIWA_MODELS_DIR` (if set), `~/models`, or `<project-r
 | Hybrid MXFP8 | Ada + Blackwell compatibility |
 | INT4 ConvRot | Maximum compression (LTX-2.3, WAN 2.2, Krea 2, MiniMax H3) |
 | W4A8 | MiniMax H3 reference low-bit (asym_w4a8_int8) |
+| W6A8 | MiniMax H3 uniform 6-bit weights / INT8 activations, group 32, ConvRot 256 |
 | INT8 Tensor-wise | Safer INT8 path for broad ComfyUI compatibility |
 | INT8 Row-wise ConvRot Runtime | Runtime-specific INT8 (requires matching activation rotation) |
 | GGUF Q formats | llama.cpp-style deployment |
@@ -97,25 +98,27 @@ Full per-format details (notes, strategy/source requirements) are in [doc/choosi
 
 An architecture marked with 🔒 has locally verified preserve/rescue tables. Others rely on upstream `convert_to_quant` preset skip rules. GGUF always applies sensitivity maps for 🔒 architectures; Q1_0 is disabled.
 
-| Architecture | FP8 | NVFP4 | NVFP4 HQ | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | W4A8 | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
-|-------------|:---:|:-----:|:--------:|:-----:|:------------:|:------------:|:----:|:----------------:|:---------------:|:----:|
-| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Krea 2 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
-| Flux.2 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Hunyuan Video | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Qwen Image | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Z-Image | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Z-Image Refiner | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Anima | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Radiance | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Distillation Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| Distillation Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| NeRF Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
-| NeRF Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Architecture | FP8 | NVFP4 | NVFP4 HQ | MXFP8 | Hybrid MXFP8 | INT4 ConvRot | W4A8 | W6A8 | INT8 Tensor-wise | INT8 ConvRot RT | GGUF |
+|-------------|:---:|:-----:|:--------:|:-----:|:------------:|:------------:|:----:|:----:|:----------------:|:---------------:|:----:|
+| WAN 2.2 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| LTX-2.3 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Krea 2 🔒 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| MiniMax H3 🔒 | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; | &#x2705; |
+| Flux.2 | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Hunyuan Video | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Qwen Image | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Z-Image Refiner | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Anima | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Radiance | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| Distillation Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
+| NeRF Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 
-If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. W4A8 and NVFP4 HQ are MiniMax H3 only.
+If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. W4A8, W6A8 and NVFP4 HQ are MiniMax H3 only.
+
+W6A8 requires `comfy-kitchen>=0.2.37` and a W6-capable ComfyUI runtime. It uses upstream symmetric uniform INT6 with scale search, FP8 group scales (32), FP32 channel scales and ConvRot 256. Only block qkv/out/fc1/fc2 weights are packed; AdaLN, norms, conditioning, token refiner, final layers and baked VAE/text/audio companions stay unchanged. Sources must be unquantized BF16/FP16 (FP32 is accepted); packed/FP8 sources are rejected. Outputs contain native `.comfy_quant` tensors and a companion recipe; existing outputs are never overwritten. This conservative final-layer policy differs from Kijai’s reference, which also packs `final_layer.video_out`. W6 inference quality is not implied by weight reconstruction tests.
 
 ### Optimizer vs Simple by format
 
@@ -132,9 +135,10 @@ This table describes the **Quantize** tab (not the separate LoRA/Model Merge str
 | INT8 Row-wise ConvRot Runtime | Yes | Yes | Any listed architecture |
 | INT4 ConvRot Runtime | No | Yes | WAN 2.2, LTX-2.3, Krea 2, MiniMax H3 |
 | W4A8 | No | Yes | MiniMax H3 only |
+| W6A8 | No | Yes | MiniMax H3 only |
 | GGUF F32/BF16/F16 and Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K | Accepted, ignored | Accepted, ignored | Any listed architecture |
 
-For safetensors formats using `convert_to_quant`, **Optimizer-driven** enables its optimizer-based rounding; **Simple** uses its deterministic `--simple` path. INT4 ConvRot and W4A8 have separate deterministic backends and require **Simple**. GGUF uses `ggufy --datatype`, not either strategy; its output is the same regardless of the mode selection. In a batch with several formats, the selected strategy must be accepted by **every** format (so adding INT4 ConvRot or W4A8 requires Simple). These are request/implementation capabilities, not a guarantee that every checkpoint or inference runtime is compatible; see [format requirements](doc/choosing-formats.md).
+For safetensors formats using `convert_to_quant`, **Optimizer-driven** enables its optimizer-based rounding; **Simple** uses its deterministic `--simple` path. INT4 ConvRot, W4A8 and W6A8 have separate deterministic backends and require **Simple**. GGUF uses `ggufy --datatype`, not either strategy; its output is the same regardless of the mode selection. In a batch with several formats, the selected strategy must be accepted by **every** format (so adding INT4 ConvRot, W4A8 or W6A8 requires Simple). These are request/implementation capabilities, not a guarantee that every checkpoint or inference runtime is compatible; see [format requirements](doc/choosing-formats.md).
 
 ---
 

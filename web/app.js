@@ -605,6 +605,7 @@ function compactFormatLabel(label) {
     .replace("INT8 Row-wise ConvRot (runtime)", "INT8 ConvRot")
     .replace("INT4 ConvRot (LTX/WAN/Krea/H3 experimental)", "INT4 ConvRot")
     .replace("W4A8 asymmetric ConvRot (MiniMax H3)", "W4A8 ConvRot")
+    .replace("W6A8 ConvRot (MiniMax H3, group 32)", "W6A8 ConvRot")
     .replace("INT8 Tensor-wise", "INT8 Tensor")
     .replace("GGUF ", "");
 }
@@ -619,6 +620,7 @@ const FORMAT_TITLES = {
   "INT8 Row-wise ConvRot Runtime": "INT8 ConvRot (Row-wise) — Per-row scaling with Hadamard rotation at runtime. Best INT8 fidelity; requires ConvRot support in the loader (e.g., ComfyUI).",
   "INT4 ConvRot Runtime": "INT4 ConvRot — Experimental LTX-2.3, WAN 2.2 MoE High/Low, Krea 2, and MiniMax H3 ComfyUI format. Requires a current ComfyUI ConvRot runtime and an Ampere-or-newer NVIDIA GPU. Uses ConvRot group 256 and INT4 group 64.",
   "W4A8": "W4A8 asymmetric ConvRot — MiniMax H3 low-bit format (asym_w4a8_int8): packed 4-bit INT8 weights with a 16-value codebook, FP8 group scales, and ConvRot group 256. Only the heavy linears (qkv/out/fc1/fc2) are packed; structural layers stay at source precision. Output matches the reference MiniMax w4a8 quants and loads in ComfyUI with a ConvRot-capable runtime on Ampere-or-newer GPUs.",
+  "W6A8": "W6A8 ConvRot — MiniMax H3, Simple only. Uniform symmetric 6-bit weights, INT8 activations, FP8 group scales (group 32), FP32 channel scales, ConvRot 256 and scale search. Only block qkv/out/fc1/fc2 weights are packed; structural and final layers stay at source precision. Requires unquantized BF16/FP16 weights and W6-capable ComfyUI/comfy-kitchen.",
   "GGUF_F32":       "GGUF F32 — Full FP32 precision stored in GGUF format. Largest file size, maximum compatibility.",
   "GGUF_BF16":      "GGUF BF16 — Bfloat16 quantization (one bit less than FP16). Negligible quality loss vs full FP16; good for modern GPUs.",
   "GGUF_F16":       "GGUF F16 — Float16. Good compatibility across GGUF-based runners like llama.cpp, Ollama, etc.",
@@ -2185,6 +2187,27 @@ async function resolveRecipeModelPath(name, kind) {
 }
 
 async function parseRecipeAndApply(recipeText, fileName) {
+  if (recipeText.startsWith("DaSiWa Quantization Recipe") && /^Format:\s*W6A8 \(w6a8_int8\)\s*$/m.test(recipeText)) {
+    const read = (label) => recipeText.split("\n").find((line) => line.startsWith(label + ":"))?.slice(label.length + 1).trim() || "";
+    const source = read("Source path");
+    if (!source || read("Architecture") !== "MiniMax H3" || read("Strategy") !== "Simple") throw new Error("Invalid W6A8 recipe");
+    await selectSource(await resolveRecipeModelPath(source, "source checkpoint"));
+    state.architecture = "MiniMax H3";
+    $("architecture").value = state.architecture;
+    state.formats = new Set(["W6A8"]);
+    state.strategy = "Simple";
+    $("quant-strategy").value = "Simple";
+    $("model-name").value = read("Model name");
+    $("full-checkpoint").checked = read("Full checkpoint") === "yes";
+    const output = read("Output path");
+    state.outputDir = output.slice(0, output.lastIndexOf("/"));
+    $("preserve-loader-metadata").checked = read("Preserve loader metadata") !== "no";
+    updateArchDependentUI();
+    setWorkflowMode("quantize");
+    saveSettings();
+    log(`Loaded W6A8 recipe "${fileName}"; existing outputs will not be overwritten.\n`);
+    return;
+  }
   if (recipeText.includes("DaSiWa Quant Station LoRA Extract Recipe")) {
     const read = (label) => {
       const line = recipeText.split("\n").find((line) => line.startsWith(label + ":"));

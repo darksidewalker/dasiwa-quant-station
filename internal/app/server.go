@@ -156,6 +156,7 @@ var quantCapabilities = map[string]quantCapability{
 	"INT8 Row-wise ConvRot Runtime": {Strategies: []string{"Optimizer-driven", "Simple"}},
 	"INT4 ConvRot Runtime":          {Architectures: []string{"WAN 2.2", "LTX-2.3", "Krea 2", "MiniMax H3"}, Strategies: []string{"Simple"}},
 	"W4A8":                          {Architectures: []string{"MiniMax H3"}, Strategies: []string{"Simple"}},
+	"W6A8":                          {Architectures: []string{"MiniMax H3"}, Strategies: []string{"Simple"}},
 	"GGUF_F32":                      {Strategies: []string{"Optimizer-driven", "Simple"}},
 	"GGUF_BF16":                     {Strategies: []string{"Optimizer-driven", "Simple"}},
 	"GGUF_F16":                      {Strategies: []string{"Optimizer-driven", "Simple"}},
@@ -239,6 +240,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			{"label": "INT8 Row-wise ConvRot (runtime)", "value": "INT8 Row-wise ConvRot Runtime"},
 			{"label": "INT4 ConvRot (LTX/WAN/Krea/H3 experimental)", "value": "INT4 ConvRot Runtime"},
 			{"label": "W4A8 asymmetric ConvRot (MiniMax H3)", "value": "W4A8"},
+			{"label": "W6A8 ConvRot (MiniMax H3, group 32)", "value": "W6A8"},
 			{"label": "GGUF F32", "value": "GGUF_F32"},
 			{"label": "GGUF BF16", "value": "GGUF_BF16"},
 			{"label": "GGUF F16", "value": "GGUF_F16"},
@@ -885,6 +887,10 @@ func (s *Server) handleQuantize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if containsString(req.Formats, "W6A8") && (filepath.Base(req.ModelName) != req.ModelName || strings.ContainsAny(req.ModelName, `/\`) || req.ModelName == "." || req.ModelName == "..") {
+		writeError(w, http.StatusBadRequest, "W6A8 model name must be a filename without path separators")
+		return
+	}
 	req.SourcePath = cleanPath(req.SourcePath, s.modelsDir)
 	req.ModelsDir = cleanPath(req.ModelsDir, s.modelsDir)
 	if req.OutputDir == "" {
@@ -1349,6 +1355,24 @@ func (s *Server) runQuantizeJob(ctx context.Context, job *Job, req QuantizeReque
 	cmd := exec.CommandContext(ctx, s.python, filepath.Join(s.rootDir, "scripts", "go_bridge.py"), "quantize", "--json", string(payload))
 	cmd.Dir = s.rootDir
 	cmd.Env = s.commandEnv()
+	if containsString(req.Formats, "W6A8") {
+		output := filepath.Join(req.OutputDir, req.ModelName+"_w6a8.safetensors")
+		job.setStatus("running")
+		err := os.MkdirAll(req.OutputDir, 0755)
+		if err == nil {
+			err = s.runH3Command(ctx, cmd, job, req.OutputDir, output)
+		}
+		status := "finished"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			status = "stopped"
+		} else if err != nil {
+			status = "failed"
+			job.Emit(Event{Type: "error", Text: err.Error()})
+		}
+		job.setStatus(status)
+		job.Emit(Event{Type: "done", Status: status})
+		return
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		job.Emit(Event{Type: "error", Text: err.Error()})

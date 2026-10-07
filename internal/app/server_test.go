@@ -184,6 +184,8 @@ func TestFormatSupportedFor(t *testing.T) {
 		want   bool
 	}{
 		{"W4A8", "MiniMax H3", true},
+		{"W6A8", "MiniMax H3", true},
+		{"W6A8", "WAN 2.2", false},
 		{"W4A8", "LTX-2.3", false},
 		{"W4A8", "WAN 2.2", false},
 		{"NVFP4 HQ", "MiniMax H3", true},
@@ -211,6 +213,9 @@ func TestQuantCapabilityAllows(t *testing.T) {
 		{"FP8", "LTX-2.3", "Optimizer-driven", true},
 		{"FP8", "LTX-2.3", "Simple", true},
 		{"W4A8", "MiniMax H3", "Simple", true},
+		{"W6A8", "MiniMax H3", "Simple", true},
+		{"W6A8", "MiniMax H3", "Optimizer-driven", false},
+		{"W6A8", "LTX-2.3", "Simple", false},
 		{"W4A8", "MiniMax H3", "Optimizer-driven", false},
 		{"W4A8", "WAN 2.2", "Simple", false},
 		{"NVFP4 HQ", "MiniMax H3", "Optimizer-driven", true},

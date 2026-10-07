@@ -154,6 +154,10 @@ print(f"✅ Torch {torch.__version__} (CUDA {torch.version.cuda or 'not availabl
 print(f"✅ convert-to-quant {version('convert-to-quant')}")
 print(f"✅ comfy-kitchen {version('comfy-kitchen')}")
 print("✅ INT4/W4A8 layouts:", TensorCoreConvRotW4A4Layout.__name__, AsymW4A8Int8Layout.__name__)
+from core.w6a8_engine import quantize_weight
+probe = quantize_weight(torch.zeros(1, 256, dtype=torch.bfloat16))
+assert tuple(probe[""].shape) == (1, 192), "comfy-kitchen did not produce W6 packing"
+print("✅ W6A8: verified 6-bit packing, group 32, ConvRot 256")
 PY
 
 # --- 4. LAUNCH ---

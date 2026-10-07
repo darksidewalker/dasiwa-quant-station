@@ -30,6 +30,7 @@ from core.lora_compose_engine import run_lora_compose
 from core.lora_extract_engine import checkpoint_blocks, run_lora_extract
 from core.int4_convrot_engine import run_int4_convrot_conversion
 from core.w4a8_engine import run_w4a8_conversion
+from core.w6a8_engine import run_w6a8_conversion
 from core.safetensors_engine import run_safe_conversion
 from core.watermark import verify_watermark as wm_verify, save_key as wm_save_key, watermark_status as wm_status
 from utils.arch_detector import inspect_checkpoint
@@ -303,6 +304,20 @@ def cmd_quantize(args):
             custom_metadata=custom_metadata,
             preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
         ))
+        log_acc = last_log or log_acc
+
+    if "W6A8" in formats:
+        for log, status in run_w6a8_conversion(
+            output_dir, source_path, model_name, model_type, strategy, is_full,
+            custom_metadata=custom_metadata,
+            preserve_loader_metadata=payload.get("preserve_loader_metadata", True),
+        ):
+            if log:
+                _emit({"type": "log", "text": log})
+            _emit({"type": "status", "status": status})
+            if status.startswith("Aborted"):
+                _emit({"type": "error", "text": log})
+                raise SystemExit(1)
         log_acc = last_log or log_acc
 
     if gguf_fmts:
