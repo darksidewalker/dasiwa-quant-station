@@ -303,6 +303,23 @@ def test_bad_request_and_architecture_mismatch_do_not_stage():
         assert not list(Path(tmp).glob('.h3_stage_*'))
 
 
+def test_bf16_merged_source_is_accepted_without_weakening_tensor_guards():
+    from core.w6a8_engine import validate_unquantized_source
+    metadata = {"quantization.bits": "BF16 merged"}
+    header = {"__metadata__": metadata,
+              "blocks.0.mlp.fc1.weight": {"dtype": "BF16"}}
+    assert validate_unquantized_source(header) is None
+    for dtype in ("I8", "U8", "F8_E4M3", "F8_E5M2"):
+        packed = {**header, "blocks.0.mlp.fc1.weight": {"dtype": dtype}}
+        assert validate_unquantized_source(packed)
+    for marker in ("blocks.0.mlp.fc1.comfy_quant", "blocks.0.mlp.fc1.weight_s_rel"):
+        assert validate_unquantized_source({**header, marker: {"dtype": "U8"}})
+    with tempfile.TemporaryDirectory() as tmp:
+        events = _convert(tmp, {"blocks.0.mlp.fc1.weight": torch.ones(2, 256, dtype=torch.bfloat16)}, metadata)
+        assert events[-1][1] == "W6A8 complete", events
+        assert (Path(tmp) / "output_w6a8.safetensors").exists()
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(unittest.FunctionTestCase(value) for name, value in globals().items()
                               if name.startswith("test_") and callable(value))

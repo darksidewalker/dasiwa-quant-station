@@ -136,7 +136,7 @@ def validate_unquantized_source(header: dict) -> Optional[str]:
                 "int8", "fp8", "gguf", "gptq", "awq"}:
             return f"Quantized source format: {value}"
         if key == "quantization.bits" and str(value).upper() not in {
-                "BF16", "FP16", "F16", "FP32", "F32", "FP64", "F64", "16", "32", "64"}:
+                "BF16", "BF16 MERGED", "FP16", "F16", "FP32", "F32", "FP64", "F64", "16", "32", "64"}:
             return f"Quantized source precision: {value}"
     for key, spec in header.items():
         if key == "__metadata__":
