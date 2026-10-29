@@ -45,6 +45,23 @@ def test_pruned_complete_requires_exact_gauge(metadata):
         assert not out.exists()
 
 
+def test_pruned_complete_accepts_coordinate_independent_adapter_without_gauge():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        base, adapter, out = [root / (s + '.safetensors') for s in ('base', 'adapter', 'out')]
+        table = torch.ones(5, 2)
+        save_file({'adaln_t_table': table, 'blocks.0.mlp.fc1.weight': torch.zeros(4, 3)}, str(base))
+        save_file({'blocks.0.mlp.fc1.lora_A.weight': torch.ones(1, 3),
+                   'blocks.0.mlp.fc1.lora_B.weight': torch.ones(4, 1)}, str(adapter))
+        events = list(run_lora_merge(dict(base_path=str(base), output_path=str(out),
+                      architecture='MiniMax H3', loras=[dict(path=str(adapter))],
+                      h3_turbo_complete=True, merge_device='cpu')))
+        assert events[-1]['status'] == 'finished'
+        saved = load_file(str(out))
+        torch.testing.assert_close(saved['blocks.0.mlp.fc1.weight'].float(), torch.ones(4, 3))
+        torch.testing.assert_close(saved['adaln_t_table'], table)
+
+
 def test_table_patch_rejected_before_baking():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

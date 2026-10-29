@@ -150,7 +150,13 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             adapter_gauge = (lf.metadata() or {}).get('adaln_coordinate_table_sha256')
             if adapter_gauge and adapter_gauge != base_gauge:
                 raise ValueError("adapter gauge does not match base coordinate table")
-            if turbo_complete and base_gauge and adapter_gauge != base_gauge:
+            # Only AdaLN updates depend on the pruned curve coordinates.
+            # Ordinary attention/MLP/refiner adapters need no table provenance.
+            touches_adaln = any(
+                re.search(r"(?:^|[._])adaln(?:_proj)?(?:[._]|$)", key)
+                for key in lora_manifest
+            )
+            if turbo_complete and base_gauge and touches_adaln and adapter_gauge != base_gauge:
                 raise ValueError("pruned H3 complete baking requires converted adapter with matching gauge metadata")
             for pair in pairs:
                 if getattr(pair, "kind", "lora") == "lokr_decomposed":
