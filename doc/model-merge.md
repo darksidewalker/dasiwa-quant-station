@@ -79,6 +79,31 @@ geodesic rotation.
 **Order-dependent**: base (Source panel) = A, second checkpoint = B —
 unlike hybrid/delta there is no fl2va/ref2va filename auto-swap.
 
+### Quantized inputs (W6A8, opt-in)
+
+`allow_quantized_inputs` accepts **only QuantStation's own W6A8 contract**
+(I8 packed `.weight` + F8E4M3 `.weight_s_rel` + F32 `.weight_s_channel` +
+per-layer `.comfy_quant` JSON) on either side, recognized from the header —
+never dtype heuristics. Dequantization calls comfy_kitchen's
+`AsymW4A8Int8Layout.dequantize` itself, so ConvRot and the nibble-plane
+packing stay exactly on-contract. Effects in the merge:
+
+- the GD threshold gains a **Marchenko-Pastur noise floor**
+  `tau = max(omega*sigma_med, (sqrt(m)+sqrt(n))*sigma_q)` with
+  `sigma_q^2 = mean(scale^2)/12` summed over both sources — singular
+  components below the quantization noise floor are not real signal;
+- the halo gamma is capped at **0.15** so dequantization staircases in the
+  diffuse residual never enter the merged weights;
+- fixed rank is overridden to GD-auto (the floor needs the full spectrum);
+- **output is always float (BF16)** — a completed run tells you to follow
+  with a W6A8 conversion job for a packed result. Output header/offsets are
+  rebuilt from the logical (unpacked) layout; companion keys never leak.
+
+Any other quantized format (GPTQ/qzeros, generic int8 rowwise, ad-hoc
+6-bit bitstreams) stays fail-closed: dequantize upstream or merge float
+parents. A run reports per-layer GD-vs-effective keep percentages in the
+log and in `h3_graviton_quant_diag`.
+
 Per tensor, by family:
 
 - **Trunk 2-D matrices (attn / mlp / out / proj)** — full pipeline,

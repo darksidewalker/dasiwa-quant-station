@@ -830,6 +830,10 @@ type ModelMergeRequest struct {
 	// Rank 0 = exact delta; Rank N = SVD rank cap on SVD-eligible matrices.
 	// Strength scales the delta (0 → treated as 1.0).
 	Rank     int     `json:"rank"`
+	// h3_graviton: Rank -1 = Gavish-Donoho auto threshold. AllowQuantizedInputs
+	// accepts QuantStation W6A8-packed inputs (dequantized in-engine, merged
+	// output stays float). Ignored by other recipes.
+	AllowQuantizedInputs bool `json:"allow_quantized_inputs,omitempty"`
 	Strength float64 `json:"strength"`
 	// h3_hybrid recipe options (ignored by delta recipes):
 	// Block range for adaln_proj overlay (0-indexed, inclusive).

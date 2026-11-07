@@ -43,7 +43,7 @@ Recipes:
   h3_graviton
     Base   : A (Source panel)   — order-dependent, no filename roles
     Overlay: B (second checkpoint)
-    Any two unquantized (F16/BF16/F32) H3 checkpoints with identical
+    Any two H3 checkpoints with identical
     key sets. Community recipe (OliviaRossi HF card, no paper):
     trunk 2-D matrices get spectral denoise (randomized SVD, rank<=N,
     γ=1−0.08·c on the remainder), per-row SLERP direction + geometric
@@ -59,12 +59,13 @@ All merges stream tensor-by-tensor (no full model in memory).
 """
 
 import json
+import math
 import os
 import re
 import struct
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import torch
 from safetensors import safe_open
@@ -737,11 +738,11 @@ def _run_h3_delta(
 
 
 def _graviton_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
-                        polar: bool = True,
-                        ) -> Tuple[torch.Tensor, float, float]:
+                           polar: bool = True, noise_var: float = 0.0,
+                           ) -> Tuple[torch.Tensor, float, float, Optional[Dict[str, Any]]]:
     """
     GRAVITON pipeline for one 2-D SVD-eligible matrix (fp32 in, fp32 out).
-    Geodesic Rank-Adaptive Vector Interpolation & Tangential Orthogonal
+    Geodesic Rank-Adaptive Variance-Isolated Tensor Orthogonal
     Normalization — extended reimplementation of the community PRISM card.
     Order here: spectral denoise → sign mediation → polar geodesic →
     re-anchor. Mediation runs on the DENOISED overlay before the SLERP
@@ -773,18 +774,23 @@ def _graviton_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int
        ||A_row||^(1-t) * ||B_row||^t using the ORIGINAL B norms
        (RegMean-style norm preservation).
 
-    Returns (merged, captured_energy_fraction, gamma).
+    Returns (merged, captured_energy_fraction, gamma, gd_stats or None).
     """
     d = b - a
-    if rank < 0:
-        approx, cap_frac = _gd_auto_lowrank(d)
+    gd_stats: Optional[Dict[str, Any]] = None
+    if rank < 0 or noise_var > 0.0:
+        # quantized inputs always take the GD path: the Marchenko-Pastur
+        # floor needs the full spectrum and fixed rank cannot express it
+        approx, cap_frac, gd_stats = _gd_auto_lowrank(d, noise_var)
         gamma = 1.0 - 0.08 * cap_frac
+        if noise_var > 0.0:
+            gamma = min(gamma, 0.15)  # suppress dequant staircases in R
     else:
         approx, cap_frac, _ = _randomized_svd_cap(d, rank)
         gamma = 1.0 - 0.08 * cap_frac
     bp = a + approx + gamma * (d - approx)
     if not polar:
-        return a + t * (bp - a), cap_frac, gamma
+        return a + t * (bp - a), cap_frac, gamma, gd_stats
 
     # --- sign-conflict mediation, BEFORE the geodesic ---
     dbp = bp - a
@@ -822,7 +828,7 @@ def _graviton_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int
                        + t * b.norm(dim=1, keepdim=True).clamp_min(eps).log())
     scale = torch.where(cur > eps, target / cur.clamp_min(eps), torch.ones_like(cur))
     merged = merged * scale
-    return merged, cap_frac, gamma
+    return merged, cap_frac, gamma, gd_stats
 
 
 # GD unknown-noise coefficient omega_tilde(beta), arXiv:1305.5870 Eq (5).
@@ -837,11 +843,15 @@ def _gd_omega(beta: float) -> float:
 _GD_MAX_SPECTRUM = 8192
 
 
-def _gd_auto_lowrank(d: torch.Tensor) -> Tuple[torch.Tensor, float]:
+def _gd_auto_lowrank(d: torch.Tensor, noise_var: float = 0.0) -> Tuple[torch.Tensor, float, Dict[str, Any]]:
     """
     Gavish-Donoho optimal hard thresholding of the delta spectrum:
     keep every singular component with sigma > omega(beta) * sigma_med
-    (unknown-noise rule). Returns (L, captured_energy_fraction).
+    (unknown-noise rule). noise_var (if > 0) adds the analytical
+    Marchenko-Pastur bulk edge of the dequantization noise as a second
+    floor: tau = max(omega*sigma_med, (sqrt(m)+sqrt(n))*sigma_q) —
+    components below the quantization noise floor are not real signal.
+    Returns (L, captured_energy_fraction, stats).
     Computed via eigh of the smaller Gram matrix, projection
     L = D V_k V_k^T — no full SVD. Falls back to fixed rank 64 for
     spectra wider than _GD_MAX_SPECTRUM.
@@ -850,7 +860,7 @@ def _gd_auto_lowrank(d: torch.Tensor) -> Tuple[torch.Tensor, float]:
     s = min(m, n)
     if s > _GD_MAX_SPECTRUM:
         approx, cap, _ = _randomized_svd_cap(d, 64)
-        return approx, cap
+        return approx, cap, {"sv": s, "kept_gd": min(64, s), "kept_eff": min(64, s), "floor_hit": False}
     beta = s / max(m, n)
     d32 = d.to(torch.float32)
     if n <= m:
@@ -860,22 +870,103 @@ def _gd_auto_lowrank(d: torch.Tensor) -> Tuple[torch.Tensor, float]:
     lam, vecs = torch.linalg.eigh(gram)
     lam = lam.flip(0).clamp_min(0.0)  # descending eigenvalues
     sig = lam.sqrt()
-    tau = _gd_omega(beta) * float(sig.median())
+    tau_gd = _gd_omega(beta) * float(sig.median())
+    tau_q = (math.sqrt(m) + math.sqrt(n)) * math.sqrt(noise_var) if noise_var > 0.0 else 0.0
+    tau = max(tau_gd, tau_q)
     total = float(sig.pow(2).sum())
+    stats = {
+        "sv": s,
+        "kept_gd": int((sig > tau_gd).sum()),
+        "kept_eff": int((sig > tau).sum()),
+        "floor_hit": tau_q > tau_gd > 0.0,
+    }
     if tau <= 0.0:
-        return torch.zeros_like(d32), 0.0
+        return torch.zeros_like(d32), 0.0, stats
     keep = int((sig > tau).sum())
     if keep == 0:
-        return torch.zeros_like(d32), 0.0
+        return torch.zeros_like(d32), 0.0, stats
     captured = float(sig[:keep].pow(2).sum() / total) if total > 0 else 1.0
     if keep == s:
-        return d32.clone(), captured
+        return d32.clone(), captured, stats
     v = vecs.flip(1)[:, :keep]        # right (or left) singular vectors
     if n <= m:
         approx = (d32 @ v) @ v.t()    # m x k @ k x n
     else:
         approx = v @ (v.t() @ d32)
-    return approx, captured
+    return approx, captured, stats
+
+
+# ---------------------------------------------------------------------------
+# W6A8 quantized-input support (h3_graviton only)
+# ---------------------------------------------------------------------------
+# QuantStation's own H3 W6A8 layout (core/w6a8_engine.py): packed I8
+# `.weight`, F8E4M3 `.weight_s_rel`, F32 `.weight_s_channel`, per-layer
+# U8 JSON `.comfy_quant`. Dequantization runs through the SAME
+# comfy_kitchen layout class that produced the packing, so ConvRot and
+# the nibble-plane packing stay exactly on-contract. Any other quantized
+# format (GPTQ g_idx/qzeros, ad-hoc 6-bit bitstreams, int8 rowwise
+# without this contract) stays fail-closed. Merged output is float;
+# requantization remains a downstream W6A8 conversion job.
+
+_W6A8_FORMAT_ID = "w6a8_int8"
+
+
+def _w6a8_companion_keys(key: str) -> Optional[Tuple[str, str, str]]:
+    if not key.endswith(".weight"):
+        return None
+    base = key[: -len(".weight")]
+    return (key + "_s_rel", key + "_s_channel", base + ".comfy_quant")
+
+
+def _w6a8_recognized(key: str, info: Any, all_keys: Set[str]) -> bool:
+    """Header-only recognition: I8 weight + all three companions present."""
+    comp = _w6a8_companion_keys(key)
+    if comp is None or info.dtype != "I8" or len(info.shape) != 2:
+        return False
+    return all(c in all_keys for c in comp)
+
+
+def _w6a8_aux_keys(keys: Set[str], manifest: Dict[str, Any]) -> Set[str]:
+    """Companion keys of recognized W6A8 layers (skipped by the merge loop)."""
+    aux: Set[str] = set()
+    for k in keys:
+        comp = _w6a8_companion_keys(k)
+        if comp and _w6a8_recognized(k, manifest[k], keys):
+            aux.update(comp)
+    return aux
+
+
+def _logical_shape(info: Any, recognized_w6a8: bool) -> Tuple[int, ...]:
+    if recognized_w6a8 and len(info.shape) == 2:
+        return (info.shape[0], info.shape[1] * 4 // 3)
+    return tuple(info.shape)
+
+
+def _dequant_w6a8(handle: Any, key: str) -> Tuple[torch.Tensor, float]:
+    """Dequantize a recognized W6A8 layer via comfy_kitchen's own layout.
+    Returns (fp32 canonical weight, per-element quant noise variance)."""
+    from comfy_kitchen.tensor import AsymW4A8Int8Layout
+    rel_k, chan_k, cq_k = _w6a8_companion_keys(key) or (None, None, None)
+    if rel_k is None:
+        raise ValueError(f"{key!r} is not a W6A8 main weight")
+    md = json.loads(bytes(handle.get_tensor(cq_k).tolist()).decode("utf-8"))
+    if md.get("format") != _W6A8_FORMAT_ID:
+        raise ValueError(
+            f"layer {key!r} has W6A8-shaped companions but comfy_quant format "
+            f"{md.get('format')!r} — unsupported, refusing to guess")
+    w = handle.get_tensor(key)
+    rel = handle.get_tensor(rel_k).to(torch.float32)
+    chan = handle.get_tensor(chan_k).to(torch.float32)
+    out_dim, packed = w.shape
+    in_dim = packed * 4 // 3
+    params = AsymW4A8Int8Layout.Params(
+        scale=rel, orig_dtype=torch.float32, orig_shape=(out_dim, in_dim),
+        s_channel=chan, group_size=int(md.get("group_size", 32)),
+        convrot_groupsize=int(md.get("convrot_groupsize", 256)))
+    w_fp32 = AsymW4A8Int8Layout.dequantize(w, params).to(torch.float32)
+    # uniform quantization noise: E[q^2] = E[s^2]/12 over all groups
+    noise_var = float((rel * chan.view(-1, 1)).pow(2).mean()) / 12.0
+    return w_fp32, noise_var
 
 
 def _run_h3_graviton(
@@ -887,13 +978,21 @@ def _run_h3_graviton(
     strength: float,
     dry_run: bool,
     meta: Dict[str, str],
-) -> Iterable[Dict[str, str]]:
+    allow_quantized: bool = False,
+    overlay_manifest: Optional[Dict[str, Any]] = None,
+) -> Iterable[Dict[str, Any]]:
     """
     GRAVITON merge (Geodesic Rank-Adaptive Variance-Isolated Tensor
     Orthogonal Normalization), streamed tensor-by-tensor:
     W = GRAVITON(A, B) with strength = weight of B. Derived from the
     OliviaRossi PRISM community recipe (HF card, no paper), with
     Gavish-Donoho auto rank and pre-geodesic sign mediation added.
+
+    allow_quantized: accept QuantStation W6A8-packed layers (I8 +
+    weight_s_rel/weight_s_channel/comfy_quant companions) on either side;
+    dequantized via comfy_kitchen's layout, Marchenko-Pastur noise floor
+    on top of the GD threshold, halo gamma capped at 0.15. Output stays
+    float (BF16) — requantize downstream with the W6A8 job.
 
     SVD-eligible 2-D trunk matrices get the full 4-step pipeline
     (_graviton_merge_matrix); the exact families (timestep conditioning,
@@ -903,16 +1002,33 @@ def _run_h3_graviton(
     Single streaming pass; energy report finalized in the header via
     the same spacer trick as h3_delta.
     """
-    keys = list(base_manifest.keys())
+    from utils.lora_inspector import TensorInfo  # type: ignore[attr-defined]
     rank = max(-1, int(rank))  # -1 = Gavish-Donoho auto threshold
     t = min(1.0, max(0.0, float(strength)))
+
+    base_keys = set(base_manifest)
+    aux_keys = _w6a8_aux_keys(base_keys, base_manifest)
+    if overlay_manifest is not None:
+        aux_keys |= _w6a8_aux_keys(set(overlay_manifest), overlay_manifest)
+    # rewrite W6A8 entries in the base manifest to their float logical
+    # layout so the output header/offsets describe the merged file
+    manifest_out: Dict[str, Any] = {}
+    for k, info in base_manifest.items():
+        if k in aux_keys:
+            continue
+        if allow_quantized and _w6a8_recognized(k, info, base_keys):
+            manifest_out[k] = TensorInfo(
+                key=k, shape=_logical_shape(info, True), dtype="BF16")
+        else:
+            manifest_out[k] = info
+    keys = list(manifest_out.keys())
     total_keys = len(keys)
 
     if dry_run:
         yield _log(
             f"h3_graviton dry run: {total_keys} tensors, rank={rank}"
             f"{' (Gavish-Donoho auto)' if rank < 0 else ''}, "
-            f"strength={t}, variant={_h3_variant(base_manifest)} "
+            f"strength={t}, variant={_h3_variant(manifest_out)} "
             f"(A={os.path.basename(a_path)}, B={os.path.basename(b_path)})\n"
         )
         yield {"type": "done", "status": "dry-run complete"}
@@ -920,15 +1036,16 @@ def _run_h3_graviton(
 
     meta["h3_graviton_rank"] = str(rank)
     meta["h3_graviton_strength"] = f"{t:.6f}"
-    meta["h3_graviton_variant"] = _h3_variant(base_manifest)
+    meta["h3_graviton_variant"] = _h3_variant(manifest_out)
     if "__spacer" not in meta:
         meta["__spacer"] = " " * 4096
 
     svd_counts = 0
     exact_family_counts: Dict[str, int] = {}
     scratch: Dict[str, Dict[str, float]] = {}
+    quant_diag: Dict[str, Dict[str, Any]] = {}
 
-    header_bytes = _build_safetensors_header(base_manifest, meta)
+    header_bytes = _build_safetensors_header(manifest_out, meta)
     header_size = len(header_bytes)
 
     tmp_output_path = output_path + ".tmp"
@@ -943,28 +1060,50 @@ def _run_h3_graviton(
         with safe_open(a_path, framework="pt", device="cpu") as bf, \
              safe_open(b_path, framework="pt", device="cpu") as of:
             for i, key in enumerate(keys):
-                base_t = bf.get_tensor(key)
-                other_t = of.get_tensor(key)
-                a32 = base_t.to(torch.float32)
-                b32 = other_t.to(torch.float32)
+                noise_var = 0.0
+                a_w6 = allow_quantized and _w6a8_recognized(key, base_manifest[key], base_keys)
+                b_w6 = (allow_quantized and overlay_manifest is not None
+                        and _w6a8_recognized(key, overlay_manifest[key], set(overlay_manifest)))
+                if a_w6:
+                    a32, var_a = _dequant_w6a8(bf, key)
+                    noise_var += var_a
+                else:
+                    a32 = bf.get_tensor(key).to(torch.float32)
+                if b_w6:
+                    b32, var_b = _dequant_w6a8(of, key)
+                    noise_var += var_b
+                else:
+                    b32 = of.get_tensor(key).to(torch.float32)
+                if a_w6 or b_w6:
+                    d = quant_diag.setdefault("w6a8", {"layers": 0, "sv": 0, "kept_gd": 0,
+                                                       "kept_eff": 0, "floor_hits": 0})
+                    d["layers"] += 1
 
-                if a32.ndim == 2 and _is_svd_eligible(key, tuple(base_t.shape)):
+                if a32.ndim == 2 and _is_svd_eligible(key, tuple(a32.shape)):
                     fam = _classify_h3_family(key)
-                    merged, cap_frac, gamma = _graviton_merge_matrix(
-                        a32, b32, t, rank, polar=(fam != "ada"))
+                    merged, cap_frac, gamma, gd_stats = _graviton_merge_matrix(
+                        a32, b32, t, rank, polar=(fam != "ada"), noise_var=noise_var)
                     svd_counts += 1
                     rec = scratch.setdefault(fam, {"cap": 0.0, "gam": 0.0, "n": 0})
                     rec["cap"] += cap_frac
                     rec["gam"] += gamma
                     rec["n"] += 1
+                    if gd_stats is not None and (a_w6 or b_w6):
+                        d = quant_diag["w6a8"]
+                        d["sv"] += gd_stats["sv"]
+                        d["kept_gd"] += gd_stats["kept_gd"]
+                        d["kept_eff"] += gd_stats["kept_eff"]
+                        d["floor_hits"] += int(gd_stats["floor_hit"])
                 else:
                     exact_family_counts[_classify_h3_family(key)] = \
                         exact_family_counts.get(_classify_h3_family(key), 0) + 1
                     merged = a32 + t * (b32 - a32)
 
-                out = merged.to(base_t.dtype)
+                src_dtype = base_manifest[key].dtype
+                out = merged.to({"F16": torch.float16, "BF16": torch.bfloat16,
+                                 "F32": torch.float32}.get(src_dtype, torch.bfloat16))
                 _write_tensor_bytes(out_f, out)
-                del out, base_t, other_t, a32, b32, merged
+                del out, a32, b32, merged
 
                 done = i + 1
                 if done % progress_every == 0 or done == total_keys:
@@ -985,19 +1124,33 @@ def _run_h3_graviton(
         }
         for fam, rec in scratch.items()
     }
+    if quant_diag:
+        meta["h3_graviton_inputs"] = "w6a8_dequantized"
+        meta["h3_graviton_quant_diag"] = json.dumps(quant_diag, sort_keys=True)
     _finalize_svd_report_header(
-        tmp_output_path, base_manifest, meta, header_size,
+        tmp_output_path, manifest_out, meta, header_size,
         "h3_graviton_energy", report, "h3_graviton",
     )
 
     os.replace(tmp_output_path, output_path)
     elapsed_total = time.monotonic() - t0
+    quant_note = ""
+    if quant_diag:
+        parts = [
+            f"{fmt}: {d['layers']} layers, GD-kept {100.0 * d['kept_gd'] / max(d['sv'], 1):.1f}% "
+            f"-> eff {100.0 * d['kept_eff'] / max(d['sv'], 1):.1f}%, MP-floor hits {d['floor_hits']}"
+            for fmt, d in sorted(quant_diag.items())
+        ]
+        quant_note = " | quant bridge: " + "; ".join(parts)
     yield _log(
         f"h3_graviton complete: {total_keys} tensors "
         f"(graviton-svd={svd_counts}, exact-families={sum(exact_family_counts.values())}), "
         f"rank={rank}, strength={t}, elapsed {_format_duration(elapsed_total)}, "
-        f"output={output_path}\n"
+        f"output={output_path}{quant_note}\n"
     )
+    if quant_diag:
+        yield _log("h3_graviton: merged output is FLOAT; run a W6A8 conversion job "
+                   "afterwards for a packed result.\n")
     yield {"type": "done", "status": "finished"}
 
 
@@ -1160,8 +1313,13 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     # Full-keyset recipes (h3_delta, h3_graviton): every base tensor must
     # exist in the overlay with the same shape + dtype.
     # ------------------------------------------------------------------
+    allow_quantized = payload.get("allow_quantized_inputs") in (True, 1, "1", "true", "True")
     if recipe.kind in ("delta", "graviton"):
-        missing = base_keys - overlay_keys_available
+        allow_q = bool(allow_quantized and recipe.kind == "graviton")
+        aux_b = _w6a8_aux_keys(base_keys, base_manifest) if allow_q else set()
+        aux_o = _w6a8_aux_keys(overlay_keys_available, overlay_manifest) if allow_q else set()
+        logical_b = base_keys - aux_b
+        missing = logical_b - (overlay_keys_available - aux_o)
         if missing:
             yield _log(
                 f"ERROR: delta recipe needs every base tensor in the overlay; "
@@ -1170,12 +1328,15 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             )
             yield {"type": "done", "status": "failed"}
             return
-        mismatched = [
-            k for k in sorted(base_keys)
-            if (base_manifest[k].shape, base_manifest[k].dtype) != (
-                overlay_manifest[k].shape, overlay_manifest[k].dtype,
-            )
-        ]
+        mismatched = []
+        for k in sorted(logical_b):
+            bi, oi = base_manifest[k], overlay_manifest[k]
+            b_w6 = allow_q and _w6a8_recognized(k, bi, base_keys)
+            o_w6 = allow_q and _w6a8_recognized(k, oi, overlay_keys_available)
+            if _logical_shape(bi, b_w6) != _logical_shape(oi, o_w6):
+                mismatched.append(k)
+            elif not (b_w6 or o_w6) and bi.dtype != oi.dtype:
+                mismatched.append(k)
         if mismatched:
             k = mismatched[0]
             yield _log(
@@ -1186,20 +1347,36 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             yield {"type": "done", "status": "failed"}
             return
         if recipe.kind == "graviton":
-            # SVD/SLERP math needs floating-point weights; quantized or
-            # integer sources would silently corrupt the spectral steps.
-            quantized = [
-                k for k in sorted(base_keys)
-                if base_manifest[k].dtype not in ("BF16", "F16", "F32")
+            # SVD/SLERP math needs floating-point weights; unrecognized
+            # quantized sources would silently corrupt the spectral steps.
+            # allow_quantized_inputs accepts ONLY the QuantStation W6A8
+            # contract (I8 + weight_s_rel/s_channel/comfy_quant), which is
+            # dequantized by comfy_kitchen's own layout class.
+            def _bad_side(manifest: Dict[str, Any], keys: Set[str], k: str) -> bool:
+                info = manifest.get(k)
+                if info is None:
+                    return False
+                if allow_q and _w6a8_recognized(k, info, keys):
+                    return False
+                return info.dtype not in ("BF16", "F16", "F32")
+            unsupported = [
+                k for k in sorted((base_keys | overlay_keys_available) - aux_b - aux_o)
+                if _bad_side(base_manifest, base_keys, k)
+                or _bad_side(overlay_manifest, overlay_keys_available, k)
             ]
-            if quantized:
+            if unsupported:
                 yield _log(
-                    f"ERROR: h3_graviton requires unquantized F16/BF16/F32 checkpoints; "
-                    f"non-float dtype on {len(quantized)} key(s), e.g. "
-                    f"{quantized[0]!r} = {base_manifest[quantized[0]].dtype}\n"
+                    f"ERROR: h3_graviton needs unquantized (F16/BF16/F32) or "
+                    f"QuantStation-W6A8 layers; {len(unsupported)} key(s) unsupported, e.g. "
+                    f"{unsupported[0]!r} = {base_manifest[unsupported[0]].dtype if base_manifest.get(unsupported[0]) else overlay_manifest[unsupported[0]].dtype} "
+                    f"(other quantized formats: dequantize first or run the merge on float parents)\n"
                 )
                 yield {"type": "done", "status": "failed"}
                 return
+        if allow_q:
+            yield _status("h3_graviton: quantized-input mode ON — W6A8 layers are "
+                          "dequantized via comfy_kitchen (Marchenko-Pastur floor + "
+                          "gamma cap applied); merged output will be FLOAT.")
 
         rank_raw = payload.get("rank", 0 if recipe.kind == "delta" else 64)
         rank_default = 0 if recipe.kind == "delta" else 64
@@ -1263,12 +1440,17 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             events = _run_h3_graviton(
                 fl2va_path, ref2va_path, base_manifest,
                 output_path, rank, strength, dry_run, delta_meta,
+                allow_quantized=allow_quantized, overlay_manifest=overlay_manifest,
             )
             sidecar_details = [
                 f"GRAVITON rank: {rank if rank >= 0 else 'auto (Gavish-Donoho)'}",
                 f"GRAVITON strength (weight of B): {strength}",
                 "GRAVITON steps: spectral denoise, sign mediation (pre-geodesic), polar rows, re-anchor",
             ]
+            if allow_quantized:
+                sidecar_details.append(
+                    "Quantized inputs: accepted W6A8 only (comfy_kitchen dequant, "
+                    "MP noise floor, gamma<=0.15); output is FLOAT - requantize via W6A8 job")
         for event in events:
             if event.get("type") == "done" and event.get("status") == "finished":
                 try:

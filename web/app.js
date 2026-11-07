@@ -104,6 +104,7 @@ function currentSettings() {
       recipe: $("mm-recipe").value,
       rank: $("mm-rank").value,
       strength: $("mm-strength").value,
+      allowQuant: $("mm-allow-quant").checked,
       blockRangeStart: $("mm-block-start").value,
       blockRangeEnd: $("mm-block-end").value,
       blockSelection: $("mm-block-selection").value,
@@ -221,6 +222,7 @@ function loadSettings() {
   $("mm-recipe").value = modelMerge.recipe || s.mmRecipe || "h3_hybrid";
   $("mm-rank").value = modelMerge.rank ?? s.mmRank ?? 1024;
   $("mm-strength").value = modelMerge.strength ?? s.mmStrength ?? 1;
+  $("mm-allow-quant").checked = modelMerge.allowQuant ?? s.mmAllowQuant ?? false;
   $("mm-block-start").value = modelMerge.blockRangeStart ?? 30;
   $("mm-block-end").value = modelMerge.blockRangeEnd ?? 49;
   $("mm-block-selection").value = modelMerge.blockSelection === "custom" ? "custom" : "range";
@@ -694,7 +696,9 @@ function refreshModelMergeHint() {
       "per-row SLERP (geodesic stays final), geometric magnitudes and row-norm re-anchor on " +
       "trunk matrices; norms/biases/timestep conditioning stay exact linear fusion. " +
       "Order matters: base = A, second checkpoint = B; strength is B's weight (0..1, 0 → 0.5). " +
-      "Requires unquantized F16/BF16/F32 sources with identical key sets. Auto rank costs one " +
+      "Requires unquantized F16/BF16/F32 sources with identical key sets - or QuantStation W6A8 "
+      "packs via the Allow W6A8 inputs checkbox (dequantized in-engine, merged output stays float). "
+      "Auto rank costs one " +
       "Gram eigh per tensor (slower on CPU). Research recipe — compare renders against both parents.";
   } else {
     const split = $("mm-modality-mode").value === "split";
@@ -762,6 +766,8 @@ function updateDeltaOptionsVisibility() {
   const deltaWrap = $("mm-delta-options");
   if (hybridWrap) hybridWrap.style.display = $("mm-recipe").value === "h3_hybrid" ? "" : "none";
   if (deltaWrap) deltaWrap.style.display = ["h3_delta", "h3_graviton"].includes($("mm-recipe").value) ? "" : "none";
+  const allowQuantWrap = $("mm-allow-quant-wrap");
+  if (allowQuantWrap) allowQuantWrap.style.display = $("mm-recipe").value === "h3_graviton" ? "" : "none";
 }
 
 function updateModelMergeVisibility() {
@@ -864,6 +870,7 @@ async function startModelMerge() {
   let audioBlocks = "all";
   let textBlocks = "all";
   let audioOutFromOverlay = false;
+  const allowQuantized = recipe === "h3_graviton" && $("mm-allow-quant").checked;
   if (recipe === "h3_delta" || recipe === "h3_graviton") {
     const r = parseInt($("mm-rank").value, 10);
     const minRank = recipe === "h3_graviton" ? -1 : 0;
@@ -908,6 +915,7 @@ async function startModelMerge() {
         recipe,
         rank,
         strength,
+        allow_quantized_inputs: allowQuantized,
         block_range_start: blockRangeStart,
         block_range_end: blockRangeEnd,
         ...(overlayBlocks !== undefined ? {overlay_blocks: overlayBlocks} : {}),

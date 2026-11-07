@@ -10,6 +10,7 @@ Covers:
 """
 
 import json
+import shutil
 import os
 import struct
 import tempfile
@@ -20,7 +21,11 @@ from pathlib import Path
 import torch
 from safetensors.torch import save_file
 
+from safetensors import safe_open
+from safetensors.torch import save_file
+from utils.lora_inspector import read_safetensors_manifest
 from core.model_merge_engine import (
+    _dequant_w6a8,
     run_model_merge,
     list_recipes,
     _classify_h3_family,
@@ -1012,7 +1017,8 @@ class H3GravitonRecipeTests(unittest.TestCase):
         torch.manual_seed(0)
         sig = (torch.randn(64, 2) @ torch.randn(2, 128)) * 5.0
         noisy = sig + torch.randn(64, 128) * 0.3
-        low, cap = _gd_auto_lowrank(noisy)
+        low, cap, stats = _gd_auto_lowrank(noisy)
+        self.assertEqual(stats["sv"], 64)
         spec = torch.linalg.eigvalsh(noisy @ noisy.t()).clamp_min(0).sqrt()
         kept = int((spec > _gd_omega(64 / 128) * spec.median()).sum())
         self.assertTrue(1 <= kept <= 8, f"kept={kept}")
@@ -1037,5 +1043,110 @@ class H3GravitonRecipeTests(unittest.TestCase):
         self.assertIn("auto (Gavish-Donoho)", body)
 
 
+class H3GravitonW6A8InputTests(unittest.TestCase):
+    """Quantized W6A8 inputs for h3_graviton (allow_quantized_inputs flag)."""
+
+    def _a_tensors(self):
+        torch.manual_seed(7)
+        return {
+            "blocks.0.attn.qkv_proj.weight": torch.randn(96, 512).to(torch.bfloat16),
+            "blocks.0.mlp.fc1.weight": torch.randn(512, 512).to(torch.bfloat16),
+            "blocks.0.attn.out_proj.weight": torch.randn(512, 512).to(torch.bfloat16),
+            "blocks.0.norm1.weight": torch.randn(512).to(torch.bfloat16),
+            "adaln_t_table": torch.randn(96, 8).to(torch.bfloat16),
+        }
+
+    def _b_tensors(self, a):
+        torch.manual_seed(11)
+        return {k: (v.float() * 0.5 + torch.randn_like(v.float()) * 0.1).to(torch.bfloat16)
+                for k, v in a.items()}
+
+    def _w6a8_file(self, path, tensors, quant_keys):
+        from core.w6a8_engine import quantize_weight, build_w6a8_layer_metadata
+        out = {}
+        native = json.dumps(build_w6a8_layer_metadata(), separators=(",", ":")).encode("utf-8")
+        for key, tensor in tensors.items():
+            if key in quant_keys:
+                packed = quantize_weight(tensor.float())
+                out[key] = packed[""]
+                out[key + "_s_rel"] = packed["_s_rel"]
+                out[key + "_s_channel"] = packed["_s_channel"]
+                base = key[: -len(".weight")]
+                out[base + ".comfy_quant"] = torch.tensor(list(native), dtype=torch.uint8)
+            else:
+                out[key] = tensor
+        save_file(out, str(path))
+
+    def _payload(self, base, overlay, **kw):
+        payload = {"base_path": base, "overlay_path": overlay,
+                   "architecture": "MiniMax H3", "recipe": "h3_graviton",
+                   "output_dir": self.dir, "output_name": "out_wq.safetensors",
+                   "rank": -1, "strength": 0.5, "watermark": False}
+        payload.update(kw)
+        return payload
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        a = self._a_tensors()
+        b = self._w6a8_tensors = self._b_tensors(a)
+        self.quant_keys = ["blocks.0.attn.qkv_proj.weight", "blocks.0.mlp.fc1.weight",
+                           "blocks.0.attn.out_proj.weight"]
+        self.float_a = str(Path(self.dir) / "float_a.safetensors")
+        self.w6a8_b = str(Path(self.dir) / "w6a8_b.safetensors")
+        save_file(a, self.float_a)
+        self._w6a8_file(self.w6a8_b, b, self.quant_keys)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_dequant_roundtrip_unit(self):
+        with safe_open(self.w6a8_b, framework="pt", device="cpu") as handle:
+            w32, noise_var = _dequant_w6a8(handle, "blocks.0.mlp.fc1.weight")
+        self.assertEqual(tuple(w32.shape), (512, 512))
+        self.assertGreater(noise_var, 0.0)
+        orig = self._w6a8_tensors["blocks.0.mlp.fc1.weight"].float()
+        self.assertLess(float((w32 - orig).norm() / orig.norm()), 0.1)
+
+    def test_float_base_w6a8_overlay_merged(self):
+        events = list(run_model_merge(self._payload(
+            self.float_a, self.w6a8_b, allow_quantized_inputs=True)))
+        self.assertEqual(events[-1], {"type": "done", "status": "finished"},
+                         msg="".join(e.get("text", "") for e in events if e["type"] == "log"))
+        out = Path(self.dir) / "out_wq.safetensors"
+        manifest = read_safetensors_manifest(str(out))
+        # companions must NOT leak into the float output; logical layout restored
+        self.assertFalse([k for k in manifest if k.endswith(("_s_rel", "_s_channel")) or k.endswith(".comfy_quant")])
+        self.assertEqual(manifest["blocks.0.mlp.fc1.weight"].dtype, "BF16")
+        self.assertEqual(manifest["blocks.0.mlp.fc1.weight"].shape, (512, 512))
+        with open(out, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            md = json.loads(f.read(n))["__metadata__"]
+        self.assertEqual(md["h3_graviton_inputs"], "w6a8_dequantized")
+        diag = json.loads(md["h3_graviton_quant_diag"])
+        self.assertEqual(diag["w6a8"]["layers"], 3)
+        body = (Path(self.dir) / "out_wq.txt").read_text()
+        self.assertIn("output is FLOAT", body)
+        self.assertIn("quantized-input mode ON", "".join(
+            e.get("text", e.get("status", "")) for e in events))
+
+    def test_quantized_input_without_flag_fails_closed(self):
+        events = list(run_model_merge(self._payload(self.float_a, self.w6a8_b)))
+        self.assertEqual(events[-1]["status"], "failed")
+        text = "".join(e.get("text", "") for e in events if e.get("type") == "log")
+        self.assertTrue("unsupported" in text or "mismatch" in text)
+
+    def test_w6a8_base_merged_too(self):
+        events = list(run_model_merge(self._payload(
+            self.w6a8_b, self.w6a8_b, allow_quantized_inputs=True)))
+        # identical inputs: pure A output, GD keeps nothing above MP floor
+        self.assertEqual(events[-1], {"type": "done", "status": "finished"},
+                         msg="".join(e.get("text", "") for e in events if e["type"] == "log"))
+        manifest = read_safetensors_manifest(str(Path(self.dir) / "out_wq.safetensors"))
+        self.assertEqual(manifest["blocks.0.attn.qkv_proj.weight"].shape, (96, 512))
+        self.assertEqual(manifest["blocks.0.attn.qkv_proj.weight"].dtype, "BF16")
+
+
 if __name__ == "__main__":
+
     unittest.main()

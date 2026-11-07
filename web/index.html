@@ -181,6 +181,7 @@
           <label class="field">
             <span title="Spectral denoise rank cap (PRISM/Delta): N = randomized-SVD cap on trunk deltas. GRAVITON: -1 = auto via Gavish-Donoho optimal hard threshold (adapts per tensor to aspect ratio + spectrum), 0 = no spectral filter (pure polar), 64 = community PRISM default. Delta: 0 = exact full delta.">Delta rank (0 = exact)</span>
             <input id="mm-rank" type="number" min="-1" max="4096" step="64" value="1024">
+            <label class="checkline mm-allow-quant-wrap" id="mm-allow-quant-wrap"><input id="mm-allow-quant" type="checkbox"> <span title="h3_graviton only: accept QuantStation W6A8-packed checkpoints (I8 + weight_s_rel/s_channel/comfy_quant). Dequantized via comfy_kitchen's own layout, GD threshold gets a Marchenko-Pastur noise floor, halo gamma capped at 0.15. Output is FLOAT - requantize afterwards with a W6A8 job.">Allow W6A8 inputs (GRAVITON, float output)</span></label>
           </label>
           <label class="field">
             <span title="Scales the delta before fusing (1.0 = full delta; 0.5 blends halfway back toward the base). 0 is treated as 1.0.">Delta strength</span>
