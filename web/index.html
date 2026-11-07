@@ -99,7 +99,7 @@
           <select id="mm-recipe">
             <option value="h3_hybrid">Hybrid MiniMax H3</option>
             <option value="h3_delta">Delta-fused MiniMax H3</option>
-            <option value="h3_prism">PRISM spectral/polar MiniMax H3</option>
+            <option value="h3_graviton">GRAVITON MiniMax H3</option>
           </select>
         </label>
         <button id="mm-pick-overlay" class="picker-button drop-target" type="button" title="Pick the second (ref2va) checkpoint — hybrid overlays its mid-block adaln_proj layers; delta fuses the full ref2va − fl2va weight delta into the base">
@@ -179,8 +179,8 @@
         </div>
         <div id="mm-delta-options" style="display:none">
           <label class="field">
-            <span title="Delta mode: 0 = exact full delta (≈ ref2va-equivalent, ~38 GB). A rank cap N compresses the trunk attention/MLP deltas to a randomized-SVD approximation while keeping the non-compressible families (RMSNorm, biases, timestep table, rope) exact. Higher rank = closer to exact = larger file + slower.">Delta rank (0 = exact)</span>
-            <input id="mm-rank" type="number" min="0" max="4096" step="64" value="1024">
+            <span title="Spectral denoise rank cap (PRISM/Delta): N = randomized-SVD cap on trunk deltas. GRAVITON: -1 = auto via Gavish-Donoho optimal hard threshold (adapts per tensor to aspect ratio + spectrum), 0 = no spectral filter (pure polar), 64 = community PRISM default. Delta: 0 = exact full delta.">Delta rank (0 = exact)</span>
+            <input id="mm-rank" type="number" min="-1" max="4096" step="64" value="1024">
           </label>
           <label class="field">
             <span title="Scales the delta before fusing (1.0 = full delta; 0.5 blends halfway back toward the base). 0 is treated as 1.0.">Delta strength</span>

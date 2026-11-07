@@ -65,30 +65,43 @@ W = fl2va + strength · Δ, with Δ = ref2va − fl2va:
 the base; 0 is treated as unset → 1.0). Cap it at ±3.0 like LoRA
 merges.
 
-## PRISM MiniMax H3 (`h3_prism`)
+## GRAVITON MiniMax H3 (`h3_graviton`)
 
-Spectral/polar merge of any two **unquantized** (F16/BF16/F32) H3
-checkpoints with identical key sets — community recipe after
-`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM` (HF model card;
-no published paper), reimplemented from its four described steps.
+**GRAVITON** — Geodesic Rank-Adaptive Vector Interpolation &
+Tangential Orthogonal Normalization. Spectral/polar merge of any two
+**unquantized** (F16/BF16/F32) H3 checkpoints with identical key sets.
+Derived from the community PRISM recipe
+(`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM`, HF model
+card; no published paper) and extended beyond it: per-tensor
+Gavish-Donoho rank selection and sign mediation applied before the
+geodesic rotation.
+
 **Order-dependent**: base (Source panel) = A, second checkpoint = B —
 unlike hybrid/delta there is no fl2va/ref2va filename auto-swap.
 
 Per tensor, by family:
 
-- **Trunk 2-D matrices (attn / mlp / out / proj)** — full four-step
-  pipeline:
-  1. *Spectral denoise*: `D = B − A` split by randomized SVD (Halko et
-     al. 2011) into structured `L` (rank ≤ N, default 64) and diffuse
-     remainder `R`; `B' = A + L + γ·R`, `γ = 1 − 0.08·c` with `c` the
-     energy L captures (γ∈[0.92,1]; soft analogue of DARE's rescale,
-     arXiv:2311.03099).
-  2. *Polar geodesic*: per output row, SLERP direction (short path, as
+- **Trunk 2-D matrices (attn / mlp / out / proj)** — full pipeline,
+  order: denoise → mediate → polar → re-anchor:
+  1. *Spectral denoise*: `D = B − A` split into structured `L` and
+     diffuse remainder `R`; `B' = A + L + γ·R`, `γ = 1 − 0.08·c` with
+     `c` the energy L captures (γ∈[0.92,1]; soft analogue of DARE's
+     rescale, arXiv:2311.03099). **Rank N** via randomized SVD (Halko
+     et al. 2011) — or **rank `-1` = auto**: singular components above
+     the Gavish-Donoho optimal hard threshold `τ = ω(β)·σ_med`
+     (arXiv:1305.5870, unknown-noise form), per-tensor data-adaptive
+     instead of a fixed 64. Auto costs one Gram `eigh` per tensor —
+     slower on CPU, spectra wider than 8192 fall back to rank 64.
+  2. *Sign-conflict mediation*: salient (|B'−A| ≥ row median)
+     opposite-sign (A vs B') elements take the weighted winner
+     (TIES/EMR logic, arXiv:2306.01708 / 2405.17461). Runs **before**
+     the rotation, not after: flipping elements post-SLERP knocks the
+     row off the geodesic the polar step just computed. (The upstream
+     card lists mediation after the polar step; this order is the
+     self-consistent variant.)
+  3. *Polar geodesic*: per output row, SLERP direction (short path, as
      in mergekit arXiv:2403.13257) + geometric magnitude
      `‖A_row‖^(1−s)·‖B'_row‖^s` in the log domain.
-  3. *Sign-conflict mediation*: salient (|D| ≥ row median |D|)
-     opposite-sign elements take the weighted winner (TIES/EMR logic,
-     arXiv:2306.01708 / 2405.17461).
   4. *Magnitude re-anchor*: rows rescaled to the geometric target norm
      using the **original** B row norms (RegMean-style norm
      preservation).
@@ -101,11 +114,11 @@ Per tensor, by family:
   `W = A + s·(B − A)`, same as h3_delta.
 
 **Strength** = weight of B, clamped to (0, 1]; 0 is treated as unset →
-0.5 balanced mix. PRISM interpolates; it never extrapolates.
-**Rank N** (default 64, per the community recipe) caps `L`; N ≥ min
-(shape) degrades to a pure polar merge. Output carries
-`minimax_h3_prism=baked`, `h3_prism_{rank,strength,variant}` and an
-`h3_prism_energy` per-family report (avg captured energy + avg γ), plus
+0.5 balanced mix. GRAVITON interpolates; it never extrapolates.
+**Rank N** (default 64, per the community recipe) caps `L`; `-1` =
+Gavish-Donoho auto threshold; N ≥ min(shape) degrades to a pure polar
+merge. Output carries `minimax_h3_graviton=baked`,
+`h3_graviton_{rank,strength,variant}` and an `h3_graviton_energy` per-family report (avg captured energy + avg γ), plus
 the companion `.txt`. Quantized sources fail closed — dequantize first.
 
 This is a **research recipe**: the upstream author claims quality

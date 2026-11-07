@@ -26,6 +26,8 @@ from core.model_merge_engine import (
     _classify_h3_family,
     _is_svd_eligible,
     _randomized_svd_cap,
+    _gd_auto_lowrank,
+    _gd_omega,
     _commutator_conflict,
     _larv_tier_scales,
     _larv_block_scales,
@@ -838,8 +840,8 @@ class H3FamilyClassificationTests(unittest.TestCase):
         self.assertTrue(_is_svd_eligible("token_refiner.blocks.0.attn.qkv_proj.weight", (512, 512)))
 
 
-class H3PrismRecipeTests(unittest.TestCase):
-    """h3_prism: order-dependent A×B spectral/polar merge."""
+class H3GravitonRecipeTests(unittest.TestCase):
+    """h3_graviton: order-dependent A×B spectral/polar merge."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -865,7 +867,7 @@ class H3PrismRecipeTests(unittest.TestCase):
 
     @staticmethod
     def _b_tensors():
-        t = H3PrismRecipeTests._a_tensors()
+        t = H3GravitonRecipeTests._a_tensors()
         for i in range(2):
             # different direction AND magnitude on trunk matrices
             t[f"blocks.{i}.attn.qkv_proj.weight"] = torch.arange(16, dtype=torch.float32).flip(0).reshape(4, 4) * 0.5 + 100.0 * i + 50
@@ -880,7 +882,7 @@ class H3PrismRecipeTests(unittest.TestCase):
             "base_path": str(self.a),
             "overlay_path": str(self.b),
             "architecture": "MiniMax H3",
-            "recipe": "h3_prism",
+            "recipe": "h3_graviton",
             "output_dir": self.dir,
             "output_name": out_name,
             "watermark": False,
@@ -892,7 +894,7 @@ class H3PrismRecipeTests(unittest.TestCase):
         return events
 
     def test_recipes_listed(self):
-        self.assertIn("h3_prism", [r["id"] for r in list_recipes()])
+        self.assertIn("h3_graviton", [r["id"] for r in list_recipes()])
 
     def test_order_dependent_no_filename_role_detection(self):
         # Filenames carry no fl2va/ref2va markers — prism must still run,
@@ -953,12 +955,12 @@ class H3PrismRecipeTests(unittest.TestCase):
             n = struct.unpack("<Q", f.read(8))[0]
             header = json.loads(f.read(n))
         md = header["__metadata__"]
-        self.assertEqual(md.get("minimax_h3_prism"), "baked")
-        self.assertEqual(md.get("h3_prism_rank"), "4")
-        self.assertEqual(md.get("h3_prism_strength"), "0.600000")
+        self.assertEqual(md.get("minimax_h3_graviton"), "baked")
+        self.assertEqual(md.get("h3_graviton_rank"), "4")
+        self.assertEqual(md.get("h3_graviton_strength"), "0.600000")
         self.assertEqual(md.get("base_model"), "model_a.safetensors")
         self.assertEqual(md.get("overlay_model"), "model_b.safetensors")
-        energy = json.loads(md["h3_prism_energy"])
+        energy = json.loads(md["h3_graviton_energy"])
         self.assertIn("attn", energy)
         for fam in energy.values():
             self.assertGreaterEqual(fam["avg_gamma"], 0.92)
@@ -969,8 +971,8 @@ class H3PrismRecipeTests(unittest.TestCase):
         txt = Path(self.dir) / "out_prism.txt"
         self.assertTrue(txt.exists())
         body = txt.read_text()
-        self.assertIn("Recipe: h3_prism", body)
-        self.assertIn("PRISM rank: 64", body)
+        self.assertIn("Recipe: h3_graviton", body)
+        self.assertIn("GRAVITON rank: 64", body)
 
     def test_dry_run_writes_nothing(self):
         self._run(dry_run=True)
@@ -1002,6 +1004,37 @@ class H3PrismRecipeTests(unittest.TestCase):
         out = list(run_model_merge(self._payload(overlay_path=str(partial))))
         self.assertTrue(any(e.get("status") == "failed" for e in out))
         self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
+
+
+    def test_gd_auto_lowrank_unit(self):
+        # rank-2 signal + iid noise: GD threshold must keep few
+        # components, capture most energy, and beat the raw delta.
+        torch.manual_seed(0)
+        sig = (torch.randn(64, 2) @ torch.randn(2, 128)) * 5.0
+        noisy = sig + torch.randn(64, 128) * 0.3
+        low, cap = _gd_auto_lowrank(noisy)
+        spec = torch.linalg.eigvalsh(noisy @ noisy.t()).clamp_min(0).sqrt()
+        kept = int((spec > _gd_omega(64 / 128) * spec.median()).sum())
+        self.assertTrue(1 <= kept <= 8, f"kept={kept}")
+        self.assertGreater(cap, 0.9)
+        self.assertLess((low - sig).norm(), (noisy - sig).norm())
+
+    def test_gd_auto_recipe_end_to_end(self):
+        self._run(rank=-1, strength=0.5)
+        out = Path(self.dir) / "out_prism.safetensors"
+        with open(out, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            md = json.loads(f.read(n))["__metadata__"]
+        self.assertEqual(md["h3_graviton_rank"], "-1")
+        self.assertIn("h3_graviton_energy", md)
+        # re-anchor must still land every polar row on the geometric target
+        a = self._a_tensors()["blocks.0.attn.qkv_proj.weight"]
+        b = self._b_tensors()["blocks.0.attn.qkv_proj.weight"]
+        got = _read_safetensors_tensor(out, "blocks.0.attn.qkv_proj.weight")
+        target = (a.norm(dim=1) ** 0.5) * (b.norm(dim=1) ** 0.5)
+        self.assertTrue(torch.allclose(got.norm(dim=1), target, rtol=1e-4))
+        body = (Path(self.dir) / "out_prism.txt").read_text()
+        self.assertIn("auto (Gavish-Donoho)", body)
 
 
 if __name__ == "__main__":

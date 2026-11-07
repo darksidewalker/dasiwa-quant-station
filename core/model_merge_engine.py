@@ -40,7 +40,7 @@ Recipes:
               h3_delta_{mode,rank,strength} + h3_delta_energy
               (per-family captured-energy JSON) + base/overlay names.
 
-  h3_prism
+  h3_graviton
     Base   : A (Source panel)   — order-dependent, no filename roles
     Overlay: B (second checkpoint)
     Any two unquantized (F16/BF16/F32) H3 checkpoints with identical
@@ -52,8 +52,8 @@ Recipes:
     (anti-aligned rows must not be SLERP-interpolated — h3_hybrid
     black-video lesson). Exact families stay W = A + s*(B − A).
     Strength = weight of B, clamped (0,1], 0 → 0.5.
-    Metadata: minimax_h3_prism=baked + h3_prism_{rank,strength,variant}
-              + h3_prism_energy (per-family energy + avg-γ JSON).
+    Metadata: minimax_h3_graviton=baked + h3_graviton_{rank,strength,variant}
+              + h3_graviton_energy (per-family energy + avg-γ JSON).
 
 All merges stream tensor-by-tensor (no full model in memory).
 """
@@ -125,16 +125,16 @@ RECIPES: Dict[str, _Recipe] = {
         label="Delta-fused MiniMax H3 (fl2va + ref2va)",
         kind="delta",
     ),
-    "h3_prism": _Recipe(
-        name="h3_prism",
+    "h3_graviton": _Recipe(
+        name="h3_graviton",
         architecture="MiniMax H3",
         overlay_key_pattern=r".*",
         extra_meta_static={
-            "minimax_h3_prism": "baked",
+            "minimax_h3_graviton": "baked",
         },
-        label="PRISM spectral/polar MiniMax H3 (A × B)",
+        label="GRAVITON MiniMax H3 (A × B)",
         # Order-dependent: base = A (Source panel), overlay = B.
-        kind="prism",
+        kind="graviton",
     ),
 }
 
@@ -736,11 +736,19 @@ def _run_h3_delta(
     yield {"type": "done", "status": "finished"}
 
 
-def _prism_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
+def _graviton_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
                         polar: bool = True,
                         ) -> Tuple[torch.Tensor, float, float]:
     """
-    PRISM steps 1-4 for one 2-D SVD-eligible matrix (fp32 in, fp32 out).
+    GRAVITON pipeline for one 2-D SVD-eligible matrix (fp32 in, fp32 out).
+    Geodesic Rank-Adaptive Vector Interpolation & Tangential Orthogonal
+    Normalization — extended reimplementation of the community PRISM card.
+    Order here: spectral denoise → sign mediation → polar geodesic →
+    re-anchor. Mediation runs on the DENOISED overlay before the SLERP
+    (deviation from the upstream card's order): flipping elements after
+    the spherical rotation knocks the row off the geodesic the polar
+    step just computed; resolving sign conflicts between A and B' first
+    keeps the rotation final (TIES resolves signs before combining).
 
     polar=False limits the step to the linear denoised delta
     W = A + t*(L + gamma*R): used for the 'ada' family because H3
@@ -748,30 +756,43 @@ def _prism_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
     SLERP on them reproduced the h3_hybrid black-video failure
     (linear delta is the h3_delta-proven treatment).
 
-    1. Spectral denoise: D = B - A split by randomized SVD (Halko et al.
-       2011) into structured L (rank <= r) and diffuse remainder R;
-       B' = A + L + gamma*R with gamma = 1 - 0.08*c (c = L energy capture).
-       Heuristic mirror of the published recipe (gamma in [0.92, 1],
-       OliviaRossi HF card): the more energy L alone carries, the more R
-       is noise and the harder it is damped. Soft analogue of DARE's
-       rescale (arXiv:2311.03099).
-    2. Polar geodesic: per output row, SLERP direction (short path,
-       arXiv:2403.13257 / 2406.16768) + geometric magnitude
-       ||a||^(1-t) * ||b'||^t (log domain).
-    3. Sign-conflict mediation: salient (|D| >= row median |D|)
-       opposite-sign (A vs original B) elements take the weighted winner
+    1. Spectral denoise: D = B - A split into structured L and diffuse
+       remainder R; B' = A + L + gamma*R, gamma = 1 - 0.08*c (c = L
+       energy capture; gamma in [0.92, 1], soft DARE analogue,
+       arXiv:2311.03099). rank >= 0: top-rank N via randomized SVD
+       (Halko et al. 2011). rank < 0: L = singular components above the
+       Gavish-Donoho optimal hard threshold tau = omega(beta)*sigma_med
+       (arXiv:1305.5870, unknown-noise form; adapts per tensor to
+       aspect ratio and spectrum instead of a fixed 64).
+    2. Sign-conflict mediation: salient (|B'-A| >= row median)
+       opposite-sign (A vs B') elements take the weighted winner
        (TIES/EMR logic, arXiv:2306.01708 / 2405.17461).
+    3. Polar geodesic: per output row, SLERP direction (short path,
+       arXiv:2403.13257 / 2406.16768) + geometric magnitude.
     4. Magnitude re-anchor: rows rescaled to the geometric target norm
-       ||A_row||^(1-t) * ||B_row||^t (RegMean-style norm preservation).
+       ||A_row||^(1-t) * ||B_row||^t using the ORIGINAL B norms
+       (RegMean-style norm preservation).
 
     Returns (merged, captured_energy_fraction, gamma).
     """
     d = b - a
-    approx, cap_frac, _ = _randomized_svd_cap(d, rank)
-    gamma = 1.0 - 0.08 * cap_frac
+    if rank < 0:
+        approx, cap_frac = _gd_auto_lowrank(d)
+        gamma = 1.0 - 0.08 * cap_frac
+    else:
+        approx, cap_frac, _ = _randomized_svd_cap(d, rank)
+        gamma = 1.0 - 0.08 * cap_frac
     bp = a + approx + gamma * (d - approx)
     if not polar:
         return a + t * (bp - a), cap_frac, gamma
+
+    # --- sign-conflict mediation, BEFORE the geodesic ---
+    dbp = bp - a
+    dbp_abs = dbp.abs()
+    row_med = dbp_abs.median(dim=1, keepdim=True).values
+    conflict = (a.sign() != bp.sign()) & (dbp_abs >= row_med) & (dbp_abs > 0)
+    winner_is_b = (t * bp.abs()) >= ((1.0 - t) * a.abs())
+    bp = torch.where(conflict, torch.where(winner_is_b, bp, a), bp)
 
     # --- polar geodesic (vectorized over rows) ---
     eps = 1e-12
@@ -795,13 +816,6 @@ def _prism_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
     zero_side = (na <= eps) | (nb <= eps)  # one side zero: linear fallback
     merged = torch.where(zero_side, a + t * (bp - a), u * mag)
 
-    # --- sign-conflict mediation ---
-    dabs = d.abs()
-    row_med = dabs.median(dim=1, keepdim=True).values
-    conflict = (a.sign() != b.sign()) & (dabs >= row_med) & (dabs > 0)
-    winner_is_b = (t * b.abs()) >= ((1.0 - t) * a.abs())
-    merged = torch.where(conflict, torch.where(winner_is_b, b, a), merged)
-
     # --- magnitude re-anchor to the geometric target norm ---
     cur = merged.norm(dim=1, keepdim=True)
     target = torch.exp((1.0 - t) * na.clamp_min(eps).log()
@@ -811,7 +825,60 @@ def _prism_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
     return merged, cap_frac, gamma
 
 
-def _run_h3_prism(
+# GD unknown-noise coefficient omega_tilde(beta), arXiv:1305.5870 Eq (5).
+# beta = min(m, n) / max(m, n).
+def _gd_omega(beta: float) -> float:
+    return 0.56 * beta**3 - 0.95 * beta**2 + 1.82 * beta + 1.43
+
+
+# Exact eigh cost guard: spectra wider than this fall back to the
+# fixed-rank path (shortcut: < the spectrum median estimator needs
+# the full Gram; upgrade when a batched GPU eigh is available).
+_GD_MAX_SPECTRUM = 8192
+
+
+def _gd_auto_lowrank(d: torch.Tensor) -> Tuple[torch.Tensor, float]:
+    """
+    Gavish-Donoho optimal hard thresholding of the delta spectrum:
+    keep every singular component with sigma > omega(beta) * sigma_med
+    (unknown-noise rule). Returns (L, captured_energy_fraction).
+    Computed via eigh of the smaller Gram matrix, projection
+    L = D V_k V_k^T — no full SVD. Falls back to fixed rank 64 for
+    spectra wider than _GD_MAX_SPECTRUM.
+    """
+    m, n = d.shape
+    s = min(m, n)
+    if s > _GD_MAX_SPECTRUM:
+        approx, cap, _ = _randomized_svd_cap(d, 64)
+        return approx, cap
+    beta = s / max(m, n)
+    d32 = d.to(torch.float32)
+    if n <= m:
+        gram = d32.t() @ d32          # n x n (smaller side)
+    else:
+        gram = d32 @ d32.t()          # m x m
+    lam, vecs = torch.linalg.eigh(gram)
+    lam = lam.flip(0).clamp_min(0.0)  # descending eigenvalues
+    sig = lam.sqrt()
+    tau = _gd_omega(beta) * float(sig.median())
+    total = float(sig.pow(2).sum())
+    if tau <= 0.0:
+        return torch.zeros_like(d32), 0.0
+    keep = int((sig > tau).sum())
+    if keep == 0:
+        return torch.zeros_like(d32), 0.0
+    captured = float(sig[:keep].pow(2).sum() / total) if total > 0 else 1.0
+    if keep == s:
+        return d32.clone(), captured
+    v = vecs.flip(1)[:, :keep]        # right (or left) singular vectors
+    if n <= m:
+        approx = (d32 @ v) @ v.t()    # m x k @ k x n
+    else:
+        approx = v @ (v.t() @ d32)
+    return approx, captured
+
+
+def _run_h3_graviton(
     a_path: str,
     b_path: str,
     base_manifest: Dict[str, Any],
@@ -822,11 +889,14 @@ def _run_h3_prism(
     meta: Dict[str, str],
 ) -> Iterable[Dict[str, str]]:
     """
-    PRISM merge (OliviaRossi HF recipe, no published paper) streamed
-    tensor-by-tensor: W = PRISM(A, B) with strength = weight of B.
+    GRAVITON merge (Geodesic Rank-Adaptive Vector Interpolation &
+    Tangential Orthogonal Normalization), streamed tensor-by-tensor:
+    W = GRAVITON(A, B) with strength = weight of B. Derived from the
+    OliviaRossi PRISM community recipe (HF card, no paper), with
+    Gavish-Donoho auto rank and pre-geodesic sign mediation added.
 
     SVD-eligible 2-D trunk matrices get the full 4-step pipeline
-    (_prism_merge_matrix); the exact families (timestep conditioning,
+    (_graviton_merge_matrix); the exact families (timestep conditioning,
     norms, biases, rope, 1-D) get the h3_delta-proven linear fusion
     W = A + s*(B - A) — per-row SLERP on anti-aligned AdaLN rows is
     exactly what produced black videos under h3_hybrid blending.
@@ -834,22 +904,23 @@ def _run_h3_prism(
     the same spacer trick as h3_delta.
     """
     keys = list(base_manifest.keys())
-    rank = max(0, int(rank))
+    rank = max(-1, int(rank))  # -1 = Gavish-Donoho auto threshold
     t = min(1.0, max(0.0, float(strength)))
     total_keys = len(keys)
 
     if dry_run:
         yield _log(
-            f"h3_prism dry run: {total_keys} tensors, rank={rank}, "
+            f"h3_graviton dry run: {total_keys} tensors, rank={rank}"
+            f"{' (Gavish-Donoho auto)' if rank < 0 else ''}, "
             f"strength={t}, variant={_h3_variant(base_manifest)} "
             f"(A={os.path.basename(a_path)}, B={os.path.basename(b_path)})\n"
         )
         yield {"type": "done", "status": "dry-run complete"}
         return
 
-    meta["h3_prism_rank"] = str(rank)
-    meta["h3_prism_strength"] = f"{t:.6f}"
-    meta["h3_prism_variant"] = _h3_variant(base_manifest)
+    meta["h3_graviton_rank"] = str(rank)
+    meta["h3_graviton_strength"] = f"{t:.6f}"
+    meta["h3_graviton_variant"] = _h3_variant(base_manifest)
     if "__spacer" not in meta:
         meta["__spacer"] = " " * 4096
 
@@ -879,7 +950,7 @@ def _run_h3_prism(
 
                 if a32.ndim == 2 and _is_svd_eligible(key, tuple(base_t.shape)):
                     fam = _classify_h3_family(key)
-                    merged, cap_frac, gamma = _prism_merge_matrix(
+                    merged, cap_frac, gamma = _graviton_merge_matrix(
                         a32, b32, t, rank, polar=(fam != "ada"))
                     svd_counts += 1
                     rec = scratch.setdefault(fam, {"cap": 0.0, "gam": 0.0, "n": 0})
@@ -900,8 +971,8 @@ def _run_h3_prism(
                     elapsed = time.monotonic() - t0
                     eta = elapsed * (total_keys - done) / done
                     yield _progress(
-                        f"h3_prism {done}/{total_keys} tensors "
-                        f"(prism-svd={svd_counts}, exact={sum(exact_family_counts.values())}, "
+                        f"h3_graviton {done}/{total_keys} tensors "
+                        f"(graviton-svd={svd_counts}, exact={sum(exact_family_counts.values())}, "
                         f"elapsed {_format_duration(elapsed)}, "
                         f"eta {_format_duration(eta)})"
                     )
@@ -916,14 +987,14 @@ def _run_h3_prism(
     }
     _finalize_svd_report_header(
         tmp_output_path, base_manifest, meta, header_size,
-        "h3_prism_energy", report, "h3_prism",
+        "h3_graviton_energy", report, "h3_graviton",
     )
 
     os.replace(tmp_output_path, output_path)
     elapsed_total = time.monotonic() - t0
     yield _log(
-        f"h3_prism complete: {total_keys} tensors "
-        f"(prism-svd={svd_counts}, exact-families={sum(exact_family_counts.values())}), "
+        f"h3_graviton complete: {total_keys} tensors "
+        f"(graviton-svd={svd_counts}, exact-families={sum(exact_family_counts.values())}), "
         f"rank={rank}, strength={t}, elapsed {_format_duration(elapsed_total)}, "
         f"output={output_path}\n"
     )
@@ -940,7 +1011,7 @@ def _finalize_svd_report_header(
     label: str,
 ) -> None:
     """Rewrite the header in place so the JSON report lands at the
-    reserved spacer size (shared by h3_delta and h3_prism)."""
+    reserved spacer size (shared by h3_delta and h3_graviton)."""
     meta[report_key] = json.dumps(report, sort_keys=True)
     final_header = _build_safetensors_header(base_manifest, meta)
     for _ in range(2):
@@ -1043,8 +1114,8 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         return
 
     # Resolve fl2va/ref2va roles (order-agnostic for splice/delta).
-    # h3_prism is order-dependent: base = A (Source panel), overlay = B.
-    if recipe.kind == "prism":
+    # h3_graviton is order-dependent: base = A (Source panel), overlay = B.
+    if recipe.kind == "graviton":
         fl2va_path, ref2va_path = base_path, overlay_path
     else:
         try:
@@ -1086,10 +1157,10 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     yield _status(f"Inspected checkpoints: base {len(base_keys)} tensors, overlay {len(overlay_keys_available)} tensors")
 
     # ------------------------------------------------------------------
-    # Full-keyset recipes (h3_delta, h3_prism): every base tensor must
+    # Full-keyset recipes (h3_delta, h3_graviton): every base tensor must
     # exist in the overlay with the same shape + dtype.
     # ------------------------------------------------------------------
-    if recipe.kind in ("delta", "prism"):
+    if recipe.kind in ("delta", "graviton"):
         missing = base_keys - overlay_keys_available
         if missing:
             yield _log(
@@ -1114,7 +1185,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             )
             yield {"type": "done", "status": "failed"}
             return
-        if recipe.kind == "prism":
+        if recipe.kind == "graviton":
             # SVD/SLERP math needs floating-point weights; quantized or
             # integer sources would silently corrupt the spectral steps.
             quantized = [
@@ -1123,7 +1194,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             ]
             if quantized:
                 yield _log(
-                    f"ERROR: h3_prism requires unquantized F16/BF16/F32 checkpoints; "
+                    f"ERROR: h3_graviton requires unquantized F16/BF16/F32 checkpoints; "
                     f"non-float dtype on {len(quantized)} key(s), e.g. "
                     f"{quantized[0]!r} = {base_manifest[quantized[0]].dtype}\n"
                 )
@@ -1131,8 +1202,10 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 return
 
         rank_raw = payload.get("rank", 0 if recipe.kind == "delta" else 64)
-        rank = int(rank_raw) if str(rank_raw).lstrip("-").isdigit() else (
-            0 if recipe.kind == "delta" else 64)
+        rank_default = 0 if recipe.kind == "delta" else 64
+        rank = int(rank_raw) if str(rank_raw).lstrip("-").isdigit() else rank_default
+        if recipe.kind == "delta" and rank < 0:
+            rank = 0
         strength_raw = payload.get("strength", 1.0)
         try:
             strength = float(strength_raw)
@@ -1144,7 +1217,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         else:
             if strength <= 0.0:  # 0 is treated as unset → balanced mix
                 strength = 0.5
-            if strength > 1.0:   # PRISM interpolates, never extrapolates
+            if strength > 1.0:   # GRAVITON interpolates, never extrapolates
                 strength = 1.0
 
         # Build metadata before the header (the runner writes it in).
@@ -1182,19 +1255,19 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             ]
         else:
             yield _log(
-                f"h3_prism init: rank={rank}, strength={strength} (weight of B), "
+                f"h3_graviton init: rank={rank}, strength={strength} (weight of B), "
                 f"order A=base({os.path.basename(fl2va_path)}) B=overlay"
                 f"({os.path.basename(ref2va_path)}), "
                 f"variant auto-detect from base\n"
             )
-            events = _run_h3_prism(
+            events = _run_h3_graviton(
                 fl2va_path, ref2va_path, base_manifest,
                 output_path, rank, strength, dry_run, delta_meta,
             )
             sidecar_details = [
-                f"PRISM rank: {max(0, rank)}",
-                f"PRISM strength (weight of B): {strength}",
-                "PRISM steps: spectral denoise, polar geodesic, sign mediation, re-anchor",
+                f"GRAVITON rank: {rank if rank >= 0 else 'auto (Gavish-Donoho)'}",
+                f"GRAVITON strength (weight of B): {strength}",
+                "GRAVITON steps: spectral denoise, sign mediation (pre-geodesic), polar rows, re-anchor",
             ]
         for event in events:
             if event.get("type") == "done" and event.get("status") == "finished":
