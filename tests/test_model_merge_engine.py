@@ -838,5 +838,171 @@ class H3FamilyClassificationTests(unittest.TestCase):
         self.assertTrue(_is_svd_eligible("token_refiner.blocks.0.attn.qkv_proj.weight", (512, 512)))
 
 
+class H3PrismRecipeTests(unittest.TestCase):
+    """h3_prism: order-dependent A×B spectral/polar merge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.a = Path(self.dir) / "model_a.safetensors"
+        self.b = Path(self.dir) / "model_b.safetensors"
+        save_file(self._a_tensors(), self.a)
+        save_file(self._b_tensors(), self.b)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _a_tensors():
+        t = {}
+        for i in range(2):
+            t[f"blocks.{i}.attn.qkv_proj.weight"] = torch.arange(16, dtype=torch.float32).reshape(4, 4) + 10.0 * i + 1
+            t[f"blocks.{i}.adaln_proj.linear.weight"] = torch.full((8, 4), 1.0 + i)
+            t[f"blocks.{i}.adaln_proj.linear.bias"] = torch.full((8,), 1.0)
+            t[f"blocks.{i}.norm1.weight"] = torch.full((4,), 2.0)
+        t["adaln_t_table"] = torch.full((32, 8), 0.5)
+        return t
+
+    @staticmethod
+    def _b_tensors():
+        t = H3PrismRecipeTests._a_tensors()
+        for i in range(2):
+            # different direction AND magnitude on trunk matrices
+            t[f"blocks.{i}.attn.qkv_proj.weight"] = torch.arange(16, dtype=torch.float32).flip(0).reshape(4, 4) * 0.5 + 100.0 * i + 50
+            t[f"blocks.{i}.adaln_proj.linear.weight"] = torch.full((8, 4), -3.0 - i)
+            t[f"blocks.{i}.adaln_proj.linear.bias"] = torch.full((8,), -7.0)
+            t[f"blocks.{i}.norm1.weight"] = torch.full((4,), 4.0)
+        t["adaln_t_table"] = torch.full((32, 8), 1.5)
+        return t
+
+    def _payload(self, out_name="out_prism.safetensors", **extra):
+        return {
+            "base_path": str(self.a),
+            "overlay_path": str(self.b),
+            "architecture": "MiniMax H3",
+            "recipe": "h3_prism",
+            "output_dir": self.dir,
+            "output_name": out_name,
+            "watermark": False,
+            **extra,
+        }
+
+    def _run(self, **extra):
+        events = list(run_model_merge(self._payload(**extra)))
+        return events
+
+    def test_recipes_listed(self):
+        self.assertIn("h3_prism", [r["id"] for r in list_recipes()])
+
+    def test_order_dependent_no_filename_role_detection(self):
+        # Filenames carry no fl2va/ref2va markers — prism must still run,
+        # and swapping A/B must change the trunk result (order matters).
+        self._run()
+        swapped = list(run_model_merge(self._payload(
+            base_path=str(self.b), overlay_path=str(self.a),
+            output_name="out_swapped.safetensors")))
+        assert any("finished" in str(e.get("status", "")) for e in swapped)
+        out_ab = _read_safetensors_tensor(Path(self.dir) / "out_prism.safetensors",
+                                          "blocks.0.attn.qkv_proj.weight")
+        out_ba = _read_safetensors_tensor(Path(self.dir) / "out_swapped.safetensors",
+                                          "blocks.0.attn.qkv_proj.weight")
+        self.assertFalse(torch.allclose(out_ab, out_ba))
+
+    def test_exact_families_are_linear(self):
+        # norms/biases/timestep-table: W = A + t*(B - A), untouched by SVD/polar
+        self._run(rank=2, strength=0.5)
+        out = Path(self.dir) / "out_prism.safetensors"
+        expected_norm = 2.0 + 0.5 * (4.0 - 2.0)
+        got = _read_safetensors_tensor(out, "blocks.0.norm1.weight")
+        self.assertTrue(torch.allclose(got, torch.full((4,), expected_norm)))
+        got_bias = _read_safetensors_tensor(out, "blocks.0.adaln_proj.linear.bias")
+        self.assertTrue(torch.allclose(got_bias, torch.full((8,), 1.0 + 0.5 * (-7.0 - 1.0))))
+        got_table = _read_safetensors_tensor(out, "adaln_t_table")
+        self.assertTrue(torch.allclose(got_table, torch.full((32, 8), 1.0)))
+
+    def test_reanchor_targets_geometric_row_norm(self):
+        # Every polar row must end at ||A_row||^(1-t) * ||B_row||^t (step 4),
+        # using the ORIGINAL B norms.
+        self._run(rank=2, strength=0.5)
+        a = self._a_tensors()["blocks.0.attn.qkv_proj.weight"]
+        b = self._b_tensors()["blocks.0.attn.qkv_proj.weight"]
+        out = _read_safetensors_tensor(Path(self.dir) / "out_prism.safetensors",
+                                       "blocks.0.attn.qkv_proj.weight")
+        target = (a.norm(dim=1) ** 0.5) * (b.norm(dim=1) ** 0.5)
+        self.assertTrue(torch.allclose(out.norm(dim=1), target, rtol=1e-4))
+
+    def test_sign_conflict_takes_weighted_winner(self):
+        a = Path(self.dir) / "conf_a.safetensors"
+        b = Path(self.dir) / "conf_b.safetensors"
+        base = self._a_tensors()
+        base["blocks.0.attn.qkv_proj.weight"] = torch.tensor([[2.0, 2.0, 2.0, 2.0]] * 4)
+        other = dict(base)
+        other["blocks.0.attn.qkv_proj.weight"] = torch.tensor([[-3.0, -1.0, 1.0, 3.0]] * 4)
+        save_file(base, a)
+        save_file(other, b)
+        list(run_model_merge(self._payload(base_path=str(a), overlay_path=str(b), strength=0.5)))
+        out = _read_safetensors_tensor(Path(self.dir) / "out_prism.safetensors",
+                                       "blocks.0.attn.qkv_proj.weight")
+        # |D|=[5,3,1,1], median=2 → cols 0,1 salient conflicts; winners: B(-3), A(+2)
+        self.assertLess(out[0, 0].item(), 0)
+        self.assertGreater(out[0, 1].item(), 0)
+
+    def test_metadata_and_energy_report(self):
+        self._run(rank=4, strength=0.6)
+        with open(Path(self.dir) / "out_prism.safetensors", "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            header = json.loads(f.read(n))
+        md = header["__metadata__"]
+        self.assertEqual(md.get("minimax_h3_prism"), "baked")
+        self.assertEqual(md.get("h3_prism_rank"), "4")
+        self.assertEqual(md.get("h3_prism_strength"), "0.600000")
+        self.assertEqual(md.get("base_model"), "model_a.safetensors")
+        self.assertEqual(md.get("overlay_model"), "model_b.safetensors")
+        energy = json.loads(md["h3_prism_energy"])
+        self.assertIn("attn", energy)
+        for fam in energy.values():
+            self.assertGreaterEqual(fam["avg_gamma"], 0.92)
+            self.assertLessEqual(fam["avg_gamma"], 1.0)
+
+    def test_companion_recipe_written(self):
+        self._run(rank=64, strength=0.5)
+        txt = Path(self.dir) / "out_prism.txt"
+        self.assertTrue(txt.exists())
+        body = txt.read_text()
+        self.assertIn("Recipe: h3_prism", body)
+        self.assertIn("PRISM rank: 64", body)
+
+    def test_dry_run_writes_nothing(self):
+        self._run(dry_run=True)
+        self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
+        self.assertFalse((Path(self.dir) / "out_prism.txt").exists())
+
+    def test_quantized_source_rejected(self):
+        # Same int8 key in BOTH files so the keyset-shape gate passes and
+        # the float-dtype gate is what rejects the source.
+        base_a = Path(self.dir) / "quant_a.safetensors"
+        q = Path(self.dir) / "quant_b.safetensors"
+        ta = self._a_tensors()
+        tb = self._b_tensors()
+        for t in (ta, tb):
+            t["blocks.0.attn.qkv_proj.weight"] = torch.zeros((4, 4), dtype=torch.int8)
+        save_file(ta, base_a)
+        save_file(tb, q)
+        out = list(run_model_merge(self._payload(
+            base_path=str(base_a), overlay_path=str(q))))
+        text = " ".join(e.get("text", "") for e in out)
+        self.assertIn("unquantized", text)
+        self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
+
+    def test_missing_key_fails_closed(self):
+        partial = Path(self.dir) / "partial_b.safetensors"
+        tensors = dict(self._b_tensors())
+        del tensors["adaln_t_table"]
+        save_file(tensors, partial)
+        out = list(run_model_merge(self._payload(overlay_path=str(partial))))
+        self.assertTrue(any(e.get("status") == "failed" for e in out))
+        self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

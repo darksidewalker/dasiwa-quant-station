@@ -2,7 +2,7 @@
 
 Back to [README](../README.md)
 
-Model-level recipes — not LoRA math. Currently two, both MiniMax H3.
+Model-level recipes — not LoRA math. Currently three, all MiniMax H3.
 
 ## Hybrid MiniMax H3 (`h3_hybrid`)
 
@@ -61,9 +61,58 @@ W = fl2va + strength · Δ, with Δ = ref2va − fl2va:
   deltas keep ~0.8 of their energy — the load-bearing bulk, with the
   exact families carrying the rest (matches the upstream r1024 recipe).
 
-**Strength** scales the delta (1.0 = full delta; 0.5 blends halfway back
-to the base; 0 is treated as unset → 1.0). Cap it at ±3.0 like LoRA
+**Strength** scales the delta (1.0 = full delta; 0.5 blends halfway back to
+the base; 0 is treated as unset → 1.0). Cap it at ±3.0 like LoRA
 merges.
+
+## PRISM MiniMax H3 (`h3_prism`)
+
+Spectral/polar merge of any two **unquantized** (F16/BF16/F32) H3
+checkpoints with identical key sets — community recipe after
+`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM` (HF model card;
+no published paper), reimplemented from its four described steps.
+**Order-dependent**: base (Source panel) = A, second checkpoint = B —
+unlike hybrid/delta there is no fl2va/ref2va filename auto-swap.
+
+Per tensor, by family:
+
+- **Trunk 2-D matrices (attn / mlp / out / proj)** — full four-step
+  pipeline:
+  1. *Spectral denoise*: `D = B − A` split by randomized SVD (Halko et
+     al. 2011) into structured `L` (rank ≤ N, default 64) and diffuse
+     remainder `R`; `B' = A + L + γ·R`, `γ = 1 − 0.08·c` with `c` the
+     energy L captures (γ∈[0.92,1]; soft analogue of DARE's rescale,
+     arXiv:2311.03099).
+  2. *Polar geodesic*: per output row, SLERP direction (short path, as
+     in mergekit arXiv:2403.13257) + geometric magnitude
+     `‖A_row‖^(1−s)·‖B'_row‖^s` in the log domain.
+  3. *Sign-conflict mediation*: salient (|D| ≥ row median |D|)
+     opposite-sign elements take the weighted winner (TIES/EMR logic,
+     arXiv:2306.01708 / 2405.17461).
+  4. *Magnitude re-anchor*: rows rescaled to the geometric target norm
+     using the **original** B row norms (RegMean-style norm
+     preservation).
+- **AdaLN weights (`ada`)** — spectral denoise + **linear** delta only
+  (no per-row SLERP): fl2va/ref2va AdaLN rows are strongly
+  anti-aligned, and interpolating them is the documented h3_hybrid
+  black-video failure mode. The linear delta is the h3_delta-proven
+  treatment.
+- **Exact families (timestep table, norms, biases, rope, 1-D)** — plain
+  `W = A + s·(B − A)`, same as h3_delta.
+
+**Strength** = weight of B, clamped to (0, 1]; 0 is treated as unset →
+0.5 balanced mix. PRISM interpolates; it never extrapolates.
+**Rank N** (default 64, per the community recipe) caps `L`; N ≥ min
+(shape) degrades to a pure polar merge. Output carries
+`minimax_h3_prism=baked`, `h3_prism_{rank,strength,variant}` and an
+`h3_prism_energy` per-family report (avg captured energy + avg γ), plus
+the companion `.txt`. Quantized sources fail closed — dequantize first.
+
+This is a **research recipe**: the upstream author claims quality
+gains for skin texture/detail, but there are no published ablations.
+Compare renders against both parents under identical conditioning,
+prompt, seed and sampler before trusting any setting — the same rule as
+hybrid and delta.
 
 Both files must share the same key set (same shape + dtype per key); the
 delta recipe fails closed otherwise. Output keeps the base key/shape/dtype

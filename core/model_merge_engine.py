@@ -40,6 +40,21 @@ Recipes:
               h3_delta_{mode,rank,strength} + h3_delta_energy
               (per-family captured-energy JSON) + base/overlay names.
 
+  h3_prism
+    Base   : A (Source panel)   — order-dependent, no filename roles
+    Overlay: B (second checkpoint)
+    Any two unquantized (F16/BF16/F32) H3 checkpoints with identical
+    key sets. Community recipe (OliviaRossi HF card, no paper):
+    trunk 2-D matrices get spectral denoise (randomized SVD, rank<=N,
+    γ=1−0.08·c on the remainder), per-row SLERP direction + geometric
+    magnitude, sign-conflict mediation (weighted winner), row-norm
+    re-anchor. AdaLN weights: spectral denoise + linear delta only
+    (anti-aligned rows must not be SLERP-interpolated — h3_hybrid
+    black-video lesson). Exact families stay W = A + s*(B − A).
+    Strength = weight of B, clamped (0,1], 0 → 0.5.
+    Metadata: minimax_h3_prism=baked + h3_prism_{rank,strength,variant}
+              + h3_prism_energy (per-family energy + avg-γ JSON).
+
 All merges stream tensor-by-tensor (no full model in memory).
 """
 
@@ -109,6 +124,17 @@ RECIPES: Dict[str, _Recipe] = {
         },
         label="Delta-fused MiniMax H3 (fl2va + ref2va)",
         kind="delta",
+    ),
+    "h3_prism": _Recipe(
+        name="h3_prism",
+        architecture="MiniMax H3",
+        overlay_key_pattern=r".*",
+        extra_meta_static={
+            "minimax_h3_prism": "baked",
+        },
+        label="PRISM spectral/polar MiniMax H3 (A × B)",
+        # Order-dependent: base = A (Source panel), overlay = B.
+        kind="prism",
     ),
 }
 
@@ -710,6 +736,237 @@ def _run_h3_delta(
     yield {"type": "done", "status": "finished"}
 
 
+def _prism_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int,
+                        polar: bool = True,
+                        ) -> Tuple[torch.Tensor, float, float]:
+    """
+    PRISM steps 1-4 for one 2-D SVD-eligible matrix (fp32 in, fp32 out).
+
+    polar=False limits the step to the linear denoised delta
+    W = A + t*(L + gamma*R): used for the 'ada' family because H3
+    fl2va/ref2va AdaLN rows are strongly anti-aligned and per-row
+    SLERP on them reproduced the h3_hybrid black-video failure
+    (linear delta is the h3_delta-proven treatment).
+
+    1. Spectral denoise: D = B - A split by randomized SVD (Halko et al.
+       2011) into structured L (rank <= r) and diffuse remainder R;
+       B' = A + L + gamma*R with gamma = 1 - 0.08*c (c = L energy capture).
+       Heuristic mirror of the published recipe (gamma in [0.92, 1],
+       OliviaRossi HF card): the more energy L alone carries, the more R
+       is noise and the harder it is damped. Soft analogue of DARE's
+       rescale (arXiv:2311.03099).
+    2. Polar geodesic: per output row, SLERP direction (short path,
+       arXiv:2403.13257 / 2406.16768) + geometric magnitude
+       ||a||^(1-t) * ||b'||^t (log domain).
+    3. Sign-conflict mediation: salient (|D| >= row median |D|)
+       opposite-sign (A vs original B) elements take the weighted winner
+       (TIES/EMR logic, arXiv:2306.01708 / 2405.17461).
+    4. Magnitude re-anchor: rows rescaled to the geometric target norm
+       ||A_row||^(1-t) * ||B_row||^t (RegMean-style norm preservation).
+
+    Returns (merged, captured_energy_fraction, gamma).
+    """
+    d = b - a
+    approx, cap_frac, _ = _randomized_svd_cap(d, rank)
+    gamma = 1.0 - 0.08 * cap_frac
+    bp = a + approx + gamma * (d - approx)
+    if not polar:
+        return a + t * (bp - a), cap_frac, gamma
+
+    # --- polar geodesic (vectorized over rows) ---
+    eps = 1e-12
+    na = a.norm(dim=1, keepdim=True)
+    nb = bp.norm(dim=1, keepdim=True)
+    cos = (a * bp).sum(dim=1, keepdim=True) / (na * nb).clamp_min(eps)
+    flip = cos < 0  # SLERP short path (mergekit convention)
+    a_p = torch.where(flip, -a, a)
+    cos_c = cos.abs().clamp(-1.0, 1.0)
+    theta = torch.acos(cos_c)
+    sin_t = torch.sin(theta)
+    degenerate = sin_t < 1e-4  # near-parallel rows: normalized lerp instead
+    denom = sin_t.clamp_min(1e-4)
+    u = (torch.sin((1.0 - t) * theta) * a_p + torch.sin(t * theta) * bp) / denom
+    lin = a_p + t * (bp - a_p)
+    lin_n = lin.norm(dim=1, keepdim=True).clamp_min(eps)
+    u = torch.where(degenerate, lin / lin_n, u)
+    u = u / u.norm(dim=1, keepdim=True).clamp_min(eps)
+    # geometric magnitude via log domain (exp of weighted log-norms)
+    mag = torch.exp((1.0 - t) * na.clamp_min(eps).log() + t * nb.clamp_min(eps).log())
+    zero_side = (na <= eps) | (nb <= eps)  # one side zero: linear fallback
+    merged = torch.where(zero_side, a + t * (bp - a), u * mag)
+
+    # --- sign-conflict mediation ---
+    dabs = d.abs()
+    row_med = dabs.median(dim=1, keepdim=True).values
+    conflict = (a.sign() != b.sign()) & (dabs >= row_med) & (dabs > 0)
+    winner_is_b = (t * b.abs()) >= ((1.0 - t) * a.abs())
+    merged = torch.where(conflict, torch.where(winner_is_b, b, a), merged)
+
+    # --- magnitude re-anchor to the geometric target norm ---
+    cur = merged.norm(dim=1, keepdim=True)
+    target = torch.exp((1.0 - t) * na.clamp_min(eps).log()
+                       + t * b.norm(dim=1, keepdim=True).clamp_min(eps).log())
+    scale = torch.where(cur > eps, target / cur.clamp_min(eps), torch.ones_like(cur))
+    merged = merged * scale
+    return merged, cap_frac, gamma
+
+
+def _run_h3_prism(
+    a_path: str,
+    b_path: str,
+    base_manifest: Dict[str, Any],
+    output_path: str,
+    rank: int,
+    strength: float,
+    dry_run: bool,
+    meta: Dict[str, str],
+) -> Iterable[Dict[str, str]]:
+    """
+    PRISM merge (OliviaRossi HF recipe, no published paper) streamed
+    tensor-by-tensor: W = PRISM(A, B) with strength = weight of B.
+
+    SVD-eligible 2-D trunk matrices get the full 4-step pipeline
+    (_prism_merge_matrix); the exact families (timestep conditioning,
+    norms, biases, rope, 1-D) get the h3_delta-proven linear fusion
+    W = A + s*(B - A) — per-row SLERP on anti-aligned AdaLN rows is
+    exactly what produced black videos under h3_hybrid blending.
+    Single streaming pass; energy report finalized in the header via
+    the same spacer trick as h3_delta.
+    """
+    keys = list(base_manifest.keys())
+    rank = max(0, int(rank))
+    t = min(1.0, max(0.0, float(strength)))
+    total_keys = len(keys)
+
+    if dry_run:
+        yield _log(
+            f"h3_prism dry run: {total_keys} tensors, rank={rank}, "
+            f"strength={t}, variant={_h3_variant(base_manifest)} "
+            f"(A={os.path.basename(a_path)}, B={os.path.basename(b_path)})\n"
+        )
+        yield {"type": "done", "status": "dry-run complete"}
+        return
+
+    meta["h3_prism_rank"] = str(rank)
+    meta["h3_prism_strength"] = f"{t:.6f}"
+    meta["h3_prism_variant"] = _h3_variant(base_manifest)
+    if "__spacer" not in meta:
+        meta["__spacer"] = " " * 4096
+
+    svd_counts = 0
+    exact_family_counts: Dict[str, int] = {}
+    scratch: Dict[str, Dict[str, float]] = {}
+
+    header_bytes = _build_safetensors_header(base_manifest, meta)
+    header_size = len(header_bytes)
+
+    tmp_output_path = output_path + ".tmp"
+    os.makedirs(os.path.dirname(tmp_output_path) or ".", exist_ok=True)
+
+    progress_every = max(1, total_keys // 100)
+    t0 = time.monotonic()
+
+    with open(tmp_output_path, "wb") as out_f:
+        out_f.write(struct.pack("<Q", header_size))
+        out_f.write(header_bytes)
+        with safe_open(a_path, framework="pt", device="cpu") as bf, \
+             safe_open(b_path, framework="pt", device="cpu") as of:
+            for i, key in enumerate(keys):
+                base_t = bf.get_tensor(key)
+                other_t = of.get_tensor(key)
+                a32 = base_t.to(torch.float32)
+                b32 = other_t.to(torch.float32)
+
+                if a32.ndim == 2 and _is_svd_eligible(key, tuple(base_t.shape)):
+                    fam = _classify_h3_family(key)
+                    merged, cap_frac, gamma = _prism_merge_matrix(
+                        a32, b32, t, rank, polar=(fam != "ada"))
+                    svd_counts += 1
+                    rec = scratch.setdefault(fam, {"cap": 0.0, "gam": 0.0, "n": 0})
+                    rec["cap"] += cap_frac
+                    rec["gam"] += gamma
+                    rec["n"] += 1
+                else:
+                    exact_family_counts[_classify_h3_family(key)] = \
+                        exact_family_counts.get(_classify_h3_family(key), 0) + 1
+                    merged = a32 + t * (b32 - a32)
+
+                out = merged.to(base_t.dtype)
+                _write_tensor_bytes(out_f, out)
+                del out, base_t, other_t, a32, b32, merged
+
+                done = i + 1
+                if done % progress_every == 0 or done == total_keys:
+                    elapsed = time.monotonic() - t0
+                    eta = elapsed * (total_keys - done) / done
+                    yield _progress(
+                        f"h3_prism {done}/{total_keys} tensors "
+                        f"(prism-svd={svd_counts}, exact={sum(exact_family_counts.values())}, "
+                        f"elapsed {_format_duration(elapsed)}, "
+                        f"eta {_format_duration(eta)})"
+                    )
+
+    report = {
+        fam: {
+            "avg_captured": round(rec["cap"] / rec["n"], 6),
+            "avg_gamma": round(rec["gam"] / rec["n"], 6),
+            "tensors": rec["n"],
+        }
+        for fam, rec in scratch.items()
+    }
+    _finalize_svd_report_header(
+        tmp_output_path, base_manifest, meta, header_size,
+        "h3_prism_energy", report, "h3_prism",
+    )
+
+    os.replace(tmp_output_path, output_path)
+    elapsed_total = time.monotonic() - t0
+    yield _log(
+        f"h3_prism complete: {total_keys} tensors "
+        f"(prism-svd={svd_counts}, exact-families={sum(exact_family_counts.values())}), "
+        f"rank={rank}, strength={t}, elapsed {_format_duration(elapsed_total)}, "
+        f"output={output_path}\n"
+    )
+    yield {"type": "done", "status": "finished"}
+
+
+def _finalize_svd_report_header(
+    tmp_output_path: str,
+    base_manifest: Dict[str, Any],
+    meta: Dict[str, str],
+    header_size: int,
+    report_key: str,
+    report: Dict[str, Any],
+    label: str,
+) -> None:
+    """Rewrite the header in place so the JSON report lands at the
+    reserved spacer size (shared by h3_delta and h3_prism)."""
+    meta[report_key] = json.dumps(report, sort_keys=True)
+    final_header = _build_safetensors_header(base_manifest, meta)
+    for _ in range(2):
+        align = header_size - len(final_header)
+        if align == 0:
+            break
+        spacer = meta["__spacer"]
+        if align > 0:
+            spacer = spacer + " " * align
+        else:
+            if len(spacer) + align < 0:
+                raise RuntimeError(f"Could not align {label} header size via spacer")
+            spacer = spacer[: len(spacer) + align]
+        meta["__spacer"] = spacer
+        final_header = _build_safetensors_header(base_manifest, meta)
+    if len(final_header) != header_size:
+        raise RuntimeError(
+            f"{label} header finalization misaligned "
+            f"({len(final_header)} vs {header_size})"
+        )
+    with open(tmp_output_path, "r+b") as f:
+        f.seek(0)
+        f.write(struct.pack("<Q", header_size))
+        f.write(final_header)
+
+
 def _write_model_merge_recipe(
     output_path: str,
     recipe_name: str,
@@ -785,13 +1042,17 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         yield {"type": "done", "status": "failed"}
         return
 
-    # Resolve fl2va/ref2va roles (order-agnostic)
-    try:
-        fl2va_path, ref2va_path = _resolve_roles(base_path, overlay_path)
-    except ValueError as exc:
-        yield _log(f"ERROR: {exc}\n")
-        yield {"type": "done", "status": "failed"}
-        return
+    # Resolve fl2va/ref2va roles (order-agnostic for splice/delta).
+    # h3_prism is order-dependent: base = A (Source panel), overlay = B.
+    if recipe.kind == "prism":
+        fl2va_path, ref2va_path = base_path, overlay_path
+    else:
+        try:
+            fl2va_path, ref2va_path = _resolve_roles(base_path, overlay_path)
+        except ValueError as exc:
+            yield _log(f"ERROR: {exc}\n")
+            yield {"type": "done", "status": "failed"}
+            return
 
     overlay_re = re.compile(recipe.overlay_key_pattern)
 
@@ -825,11 +1086,10 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     yield _status(f"Inspected checkpoints: base {len(base_keys)} tensors, overlay {len(overlay_keys_available)} tensors")
 
     # ------------------------------------------------------------------
-    # Delta recipe (h3_delta): W = fl + s * (ref - fl) over every tensor.
-    # Both files must carry the same key set (shape + dtype) because the
-    # delta is computed for all base tensors; no overlay-key subset.
+    # Full-keyset recipes (h3_delta, h3_prism): every base tensor must
+    # exist in the overlay with the same shape + dtype.
     # ------------------------------------------------------------------
-    if recipe.kind == "delta":
+    if recipe.kind in ("delta", "prism"):
         missing = base_keys - overlay_keys_available
         if missing:
             yield _log(
@@ -854,18 +1114,40 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             )
             yield {"type": "done", "status": "failed"}
             return
+        if recipe.kind == "prism":
+            # SVD/SLERP math needs floating-point weights; quantized or
+            # integer sources would silently corrupt the spectral steps.
+            quantized = [
+                k for k in sorted(base_keys)
+                if base_manifest[k].dtype not in ("BF16", "F16", "F32")
+            ]
+            if quantized:
+                yield _log(
+                    f"ERROR: h3_prism requires unquantized F16/BF16/F32 checkpoints; "
+                    f"non-float dtype on {len(quantized)} key(s), e.g. "
+                    f"{quantized[0]!r} = {base_manifest[quantized[0]].dtype}\n"
+                )
+                yield {"type": "done", "status": "failed"}
+                return
 
-        rank_raw = payload.get("rank", 0)
-        rank = int(rank_raw) if str(rank_raw).lstrip("-").isdigit() else 0
+        rank_raw = payload.get("rank", 0 if recipe.kind == "delta" else 64)
+        rank = int(rank_raw) if str(rank_raw).lstrip("-").isdigit() else (
+            0 if recipe.kind == "delta" else 64)
         strength_raw = payload.get("strength", 1.0)
         try:
             strength = float(strength_raw)
         except (TypeError, ValueError):
             strength = 1.0
-        if strength == 0.0:  # 0 is treated as unset → full delta
-            strength = 1.0
+        if recipe.kind == "delta":
+            if strength == 0.0:  # 0 is treated as unset → full delta
+                strength = 1.0
+        else:
+            if strength <= 0.0:  # 0 is treated as unset → balanced mix
+                strength = 0.5
+            if strength > 1.0:   # PRISM interpolates, never extrapolates
+                strength = 1.0
 
-        # Build metadata before the header (delta runner writes it in).
+        # Build metadata before the header (the runner writes it in).
         base_meta = _read_base_metadata(fl2va_path, preserve_loader_metadata)
         delta_meta: Dict[str, str] = dict(base_meta)
         delta_meta.update(recipe.extra_meta_static)
@@ -883,25 +1165,47 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         if "__spacer" not in delta_meta:
             delta_meta["__spacer"] = " " * 2048
 
-        yield _log(
-            f"h3_delta init: mode=rank {rank} "
-            f"({'exact' if rank == 0 else 'SVD-capped'}), strength={strength}, "
-            f"variant auto-detect from base\n"
-        )
-        for event in _run_h3_delta(
-            fl2va_path, ref2va_path, base_manifest,
-            output_path, rank, strength, dry_run, delta_meta,
-        ):
+        if recipe.kind == "delta":
+            yield _log(
+                f"h3_delta init: mode=rank {rank} "
+                f"({'exact' if rank == 0 else 'SVD-capped'}), strength={strength}, "
+                f"variant auto-detect from base\n"
+            )
+            events = _run_h3_delta(
+                fl2va_path, ref2va_path, base_manifest,
+                output_path, rank, strength, dry_run, delta_meta,
+            )
+            sidecar_details = [
+                f"Delta rank: {max(0, rank)}",
+                f"Delta mode: {'exact' if rank <= 0 else f'svd-r{rank}'}",
+                f"Delta strength: {strength}",
+            ]
+        else:
+            yield _log(
+                f"h3_prism init: rank={rank}, strength={strength} (weight of B), "
+                f"order A=base({os.path.basename(fl2va_path)}) B=overlay"
+                f"({os.path.basename(ref2va_path)}), "
+                f"variant auto-detect from base\n"
+            )
+            events = _run_h3_prism(
+                fl2va_path, ref2va_path, base_manifest,
+                output_path, rank, strength, dry_run, delta_meta,
+            )
+            sidecar_details = [
+                f"PRISM rank: {max(0, rank)}",
+                f"PRISM strength (weight of B): {strength}",
+                "PRISM steps: spectral denoise, polar geodesic, sign mediation, re-anchor",
+            ]
+        for event in events:
             if event.get("type") == "done" and event.get("status") == "finished":
                 try:
                     recipe_path = _write_model_merge_recipe(
                         output_path, recipe_name, architecture, fl2va_path, ref2va_path,
                         preserve_loader_metadata, do_watermark,
-                        [f"Delta rank: {max(0, rank)}",
-                         f"Delta mode: {'exact' if rank <= 0 else f'svd-r{rank}'}",
-                         f"Delta strength: {strength}",
-                         f"Model variant: {_h3_variant(base_manifest)}",
-                         f"Output tensors: {len(base_manifest)}"],
+                        sidecar_details + [
+                            f"Model variant: {_h3_variant(base_manifest)}",
+                            f"Output tensors: {len(base_manifest)}",
+                        ],
                     )
                 except OSError as exc:
                     yield _log(f"ERROR: checkpoint created but could not write merge recipe: {exc}\n")

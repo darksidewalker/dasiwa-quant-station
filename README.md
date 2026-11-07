@@ -213,7 +213,7 @@ For **LoRA Merge** (checkpoint baking), choose **Additive** to sum scaled deltas
 
 ## Model Merge (model-level)
 
-A model-level merge — not LoRA math. The current recipe is the **Hybrid MiniMax H3** merge (fl2va base + ref2va overlay, roles auto-detected). Full details: [doc/model-merge.md](doc/model-merge.md).
+A model-level merge — not LoRA math. Three recipes: **Hybrid MiniMax H3** (fl2va base + ref2va overlay, roles auto-detected), **Delta-fused MiniMax H3** (full ref2va − fl2va delta fused, rank-cappable), and **PRISM MiniMax H3** (spectral denoise + polar per-row interpolation + sign mediation, order-dependent A×B, unquantized sources only). Full details: [doc/model-merge.md](doc/model-merge.md).
 
 ---
 

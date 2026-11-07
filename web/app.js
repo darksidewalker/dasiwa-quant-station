@@ -685,6 +685,13 @@ function refreshModelMergeHint() {
         ? "(exact mode — output ≈ ref2va-equivalent, largest file)."
         : `(SVD rank ${rank} — trunk deltas compressed, norms/biases/timestep exact).`) +
       " Works on pruned and full key sets (auto-detected).";
+  } else if (recipe === "h3_prism") {
+    const rank = parseInt($("mm-rank").value, 10) || 64;
+    text = "PRISM: spectral denoise (rank " + rank + "), per-row SLERP direction + " +
+      "geometric magnitude, sign-conflict mediation and row-norm re-anchor on trunk matrices; " +
+      "norms/biases/timestep conditioning stay exact linear fusion. Order matters: base = A, " +
+      "second checkpoint = B; strength is B's weight (0..1, 0 → 0.5). Requires unquantized " +
+      "F16/BF16/F32 sources with identical key sets. Research recipe — compare renders against both parents.";
   } else {
     const split = $("mm-modality-mode").value === "split";
     text = split
@@ -750,7 +757,7 @@ function updateDeltaOptionsVisibility() {
   const hybridWrap = $("mm-hybrid-options");
   const deltaWrap = $("mm-delta-options");
   if (hybridWrap) hybridWrap.style.display = $("mm-recipe").value === "h3_hybrid" ? "" : "none";
-  if (deltaWrap) deltaWrap.style.display = $("mm-recipe").value === "h3_delta" ? "" : "none";
+  if (deltaWrap) deltaWrap.style.display = ["h3_delta", "h3_prism"].includes($("mm-recipe").value) ? "" : "none";
 }
 
 function updateModelMergeVisibility() {
@@ -853,11 +860,12 @@ async function startModelMerge() {
   let audioBlocks = "all";
   let textBlocks = "all";
   let audioOutFromOverlay = false;
-  if (recipe === "h3_delta") {
+  if (recipe === "h3_delta" || recipe === "h3_prism") {
     const r = parseInt($("mm-rank").value, 10);
-    rank = Number.isFinite(r) && r >= 0 ? r : 0;
+    rank = Number.isFinite(r) && r >= 0 ? r : (recipe === "h3_prism" ? 64 : 0);
     const s = parseFloat($("mm-strength").value);
-    strength = Number.isFinite(s) && s > 0 ? s : 1.0;
+    strength = Number.isFinite(s) && s > 0 ? s : (recipe === "h3_prism" ? 0.5 : 1.0);
+    if (recipe === "h3_prism" && strength > 1) strength = 1;
   } else if (recipe === "h3_hybrid") {
     const bs = parseInt($("mm-block-start").value, 10);
     blockRangeStart = Number.isFinite(bs) && bs >= 0 ? bs : 30;
@@ -880,7 +888,7 @@ async function startModelMerge() {
   $("start").disabled = true;
   $("stop").disabled = false;
   setStatus(dryRun ? "Starting model merge dry run" : "Starting model merge");
-  log(`\nStarting ${dryRun ? "model merge dry run" : "model merge"} (recipe ${recipe}${recipe === "h3_delta" ? `, rank ${rank}, strength ${strength}` : ""}, output "${outputName || "(dry run)"}")...\n`);
+  log(`\nStarting ${dryRun ? "model merge dry run" : "model merge"} (recipe ${recipe}${["h3_delta", "h3_prism"].includes(recipe) ? `, rank ${rank}, strength ${strength}` : ""}, output "${outputName || "(dry run)"}")...\n`);
 
   try {
     const data = await api("/api/model-merge", {
