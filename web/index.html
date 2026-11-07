@@ -181,16 +181,23 @@
           <label class="field">
             <span class="field-label">Delta rank (0 = exact) <button type="button" id="mm-rank-info" class="info-hint-btn" aria-label="Rank recommendations" title="Show rank recommendations from the docs">i</button></span>
             <input id="mm-rank" type="number" min="-1" max="4096" step="64" value="1024">
-            <p class="hint hidden" id="mm-rank-hint"></p>
             <label class="checkline mm-allow-quant-wrap" id="mm-allow-quant-wrap"><input id="mm-allow-quant" type="checkbox"> <span title="h3_graviton only: accept QuantStation W6A8-packed checkpoints (I8 + weight_s_rel/s_channel/comfy_quant). Dequantized via comfy_kitchen's own layout, GD threshold gets a Marchenko-Pastur noise floor, halo gamma capped at 0.15. Output is FLOAT - requantize afterwards with a W6A8 job.">Allow W6A8 inputs (GRAVITON, float output)</span></label>
           </label>
           <label class="field">
             <span class="field-label">Delta strength <button type="button" id="mm-str-info" class="info-hint-btn" aria-label="Strength recommendations" title="Show strength recommendations from the docs">i</button></span>
             <input id="mm-strength" type="number" min="0" max="3" step="0.05" value="1">
-            <p class="hint hidden" id="mm-str-hint"></p>
           </label>
         </div>
         <p class="hint" id="mm-hint"></p>
+        <dialog id="mm-info-dialog" aria-label="Field recommendations">
+          <div class="dialog-card">
+            <header><strong id="mm-info-title">Recommendations</strong>
+              <button type="button" id="mm-info-close" aria-label="Close">×</button>
+            </header>
+            <div id="mm-info-body"></div>
+            <p class="hint">Esc or click outside to close.</p>
+          </div>
+        </dialog>
       </section>
 
       <section class="panel" id="h3-quant-options" data-workflow-panel="quantize">

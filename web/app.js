@@ -782,40 +782,74 @@ function applyMmRecipeDefaults(recipe) {
   $("mm-rank").value = d.rank;
   $("mm-strength").value = d.strength;
   if ($("mm-allow-quant")) $("mm-allow-quant").checked = false;
-  refreshMmInfoHints();
 }
 
-const MM_INFO_TEXTS = {
+const MM_INFO_CONTENT = {
   rank: {
-    h3_graviton: "Rank: -1 = Gavish-Donoho auto threshold per tensor (recommended; adapts cutoff to aspect ratio + spectrum, docs recommend it; forced for W6A8 inputs). 64 = community default. 0 = no spectral filter (pure polar merge). Higher N keeps more of the delta.",
-    h3_delta: "Rank: 0 = exact full delta (recommended; ref2va-equivalent, ~full size). N = randomized-SVD rank cap on trunk deltas - approximation, smaller and faster; norms/biases/timestep stay exact either way.",
+    title: "Delta rank — recommendations",
+    sections: {
+      h3_graviton: [
+        ["-1", "Gavish-Donoho auto threshold per tensor — RECOMMENDED (docs). Adapts the cutoff to each layer's aspect ratio and spectrum; forced automatically for W6A8 inputs."],
+        ["64", "Community default from the original recipe card. Fixed randomized-SVD cap; independent of layer geometry."],
+        ["0", "No spectral filter - pure polar geodesic merge (direction + magnitude only)."],
+      ],
+      h3_delta: [
+        ["0", "Exact full delta - RECOMMENDED. ref2va-equivalent behavior, full output size."],
+        ["N", "Randomized-SVD rank cap on trunk deltas: approximation, smaller + faster. Norms, biases and timestep conditioning stay exact either way."],
+      ],
+    },
+    note: "Higher N keeps more of the delta. GRAVITON detail: doc/graviton-whitepaper.md (Stage 1).",
   },
   strength: {
-    h3_graviton: "Strength t = weight of B (clamped to 0-1; 0 = unset -> 0.5). Docs guidance: Base+Turbo 0.45-0.55 | Turbo+Base (8-step lock) 0.20-0.30 | Base+Base 0.30-0.70 | Turbo+Turbo 0.40-0.60 | Float+W6A8 0.35-0.50. Guidance only - A/B renders against BOTH parents are the acceptance test.",
-    h3_delta: "Strength scales the fused delta (1.0 = full delta; 0.5 blends halfway back to base; 0 counts as 1.0). Values above 1.0 extrapolate the delta - not recommended (AdaLN/timestep over-scaling caused black-video regressions).",
+    title: "Delta strength — recommendations",
+    sections: {
+      h3_graviton: [
+        ["t", "Weight of the second checkpoint (overlay). Clamped to 0-1; 0 counts as unset -> 0.5 balanced mix."],
+        ["0.45-0.55", "Base + Turbo, balanced (optimal around 12-14 steps)"],
+        ["0.20-0.30", "Turbo + Base, 8-step lock (keeps turbo schedule, injects base textures)"],
+        ["0.30-0.70", "Base + Base (two finetunes)"],
+        ["0.40-0.60", "Turbo + Turbo"],
+        ["0.35-0.50", "Float + W6A8 (quantization floor handles grid noise)"],
+      ],
+      h3_delta: [
+        ["1.0", "Full delta - RECOMMENDED (0 counts as 1.0)."],
+        ["0.5", "Blends halfway back toward the base."],
+        [">1.0", "Delta extrapolation - NOT recommended: AdaLN/timestep over-scaling caused black-video regressions."],
+      ],
+    },
+    note: "Ranges are guidance, not measured optima - A/B renders against BOTH parents are the acceptance test. Source: doc/graviton-whitepaper.md.",
   },
 };
 
-function refreshMmInfoHints() {
+function openMmInfoDialog(key) {
+  const content = MM_INFO_CONTENT[key];
+  if (!content) return;
   const recipe = $("mm-recipe").value;
-  for (const [key, hintId] of [["rank", "mm-rank-hint"], ["strength", "mm-str-hint"]]) {
-    const el = $(hintId);
-    if (el) el.textContent = MM_INFO_TEXTS[key][recipe] || MM_INFO_TEXTS[key].h3_graviton;
+  const rows = content.sections[recipe] || content.sections.h3_graviton;
+  $("mm-info-title").textContent = content.title;
+  const body = $("mm-info-body");
+  body.replaceChildren();
+  const h4 = document.createElement("h4");
+  h4.textContent = recipe;
+  body.appendChild(h4);
+  for (const [value, meaning] of rows) {
+    const row = document.createElement("div");
+    row.className = "info-row";
+    const code = document.createElement("code");
+    code.textContent = value;
+    const span = document.createElement("span");
+    span.textContent = meaning;
+    row.append(code, span);
+    body.appendChild(row);
   }
-}
-
-function toggleMmInfoHint(btnId, hintId) {
-  const btn = $(btnId), hint = $(hintId);
-  if (!btn || !hint) return;
-  refreshMmInfoHints();
-  const show = hint.classList.contains("hidden");
-  hint.classList.toggle("hidden", !show);
-  btn.classList.toggle("active", show);
+  const note = document.createElement("p");
+  note.textContent = content.note;
+  body.appendChild(note);
+  $("mm-info-dialog").showModal();
 }
 
 function updateModelMergeVisibility() {
   refreshModelMergeHint();
-  refreshMmInfoHints();
 }
 
 function updateExtractRecipeVisibility() {
@@ -1175,8 +1209,10 @@ function wireEvents() {
   // Model Merge (model-level) — base reuses the Source panel; only overlay is picked here
   $("mm-pick-overlay").addEventListener("click", () => openBrowser("mm-overlay"));
   wireDropTarget($("mm-pick-overlay"), "mm-overlay");
-  $("mm-rank-info").addEventListener("click", () => toggleMmInfoHint("mm-rank-info", "mm-rank-hint"));
-  $("mm-str-info").addEventListener("click", () => toggleMmInfoHint("mm-str-info", "mm-str-hint"));
+  $("mm-rank-info").addEventListener("click", () => openMmInfoDialog("rank"));
+  $("mm-str-info").addEventListener("click", () => openMmInfoDialog("strength"));
+  $("mm-info-close").addEventListener("click", () => $("mm-info-dialog").close());
+  $("mm-info-dialog").addEventListener("click", (e) => { if (e.target.id === "mm-info-dialog") $("mm-info-dialog").close(); });
   $("mm-recipe").addEventListener("change", () => {
     applyMmRecipeDefaults($("mm-recipe").value);
     updateDeltaOptionsVisibility();
