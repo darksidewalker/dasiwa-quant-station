@@ -889,8 +889,8 @@ def _run_h3_graviton(
     meta: Dict[str, str],
 ) -> Iterable[Dict[str, str]]:
     """
-    GRAVITON merge (Geodesic Rank-Adaptive Vector Interpolation &
-    Tangential Orthogonal Normalization), streamed tensor-by-tensor:
+    GRAVITON merge (Geodesic Rank-Adaptive Variance-Isolated Tensor
+    Orthogonal Normalization), streamed tensor-by-tensor:
     W = GRAVITON(A, B) with strength = weight of B. Derived from the
     OliviaRossi PRISM community recipe (HF card, no paper), with
     Gavish-Donoho auto rank and pre-geodesic sign mediation added.

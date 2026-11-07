@@ -67,8 +67,8 @@ merges.
 
 ## GRAVITON MiniMax H3 (`h3_graviton`)
 
-**GRAVITON** — Geodesic Rank-Adaptive Vector Interpolation &
-Tangential Orthogonal Normalization. Spectral/polar merge of any two
+**GRAVITON** — Geodesic Rank-Adaptive Variance-Isolated Tensor
+Orthogonal Normalization. Spectral/polar merge of any two
 **unquantized** (F16/BF16/F32) H3 checkpoints with identical key sets.
 Derived from the community PRISM recipe
 (`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM`, HF model
@@ -120,6 +120,14 @@ Gavish-Donoho auto threshold; N ≥ min(shape) degrades to a pure polar
 merge. Output carries `minimax_h3_graviton=baked`,
 `h3_graviton_{rank,strength,variant}` and an `h3_graviton_energy` per-family report (avg captured energy + avg γ), plus
 the companion `.txt`. Quantized sources fail closed — dequantize first.
+
+Rejected variants on record: wavelet/frequency-band splits (weight matrices
+have no frequency axis), calibration-based metric tensors (different feature
+class), and Gram-Schmidt parallel/orthogonal delta splits with α⊥>1 defaults
+(the "KERR" spec) — per-row collinearity of generic high-dim weight pairs is
+O(1/√d), and α>1 on AdaLN/timestep deltas is the documented black-video
+failure mode. `svd_lowrank` top-k spectra cannot feed the Gavish-Donoho median
+estimator (no Marchenko-Pastur bulk in the top-k window).
 
 This is a **research recipe**: the upstream author claims quality
 gains for skin texture/detail, but there are no published ablations.
