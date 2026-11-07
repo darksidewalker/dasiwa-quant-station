@@ -770,8 +770,37 @@ function updateDeltaOptionsVisibility() {
   if (allowQuantWrap) allowQuantWrap.style.display = $("mm-recipe").value === "h3_graviton" ? "" : "none";
 }
 
+const MM_INFO_TEXTS = {
+  rank: {
+    h3_graviton: "Rank: -1 = Gavish-Donoho auto threshold per tensor (recommended; adapts cutoff to aspect ratio + spectrum, docs recommend it; forced for W6A8 inputs). 64 = community PRISM default. 0 = no spectral filter (pure polar merge). Higher N keeps more of the delta.",
+    h3_delta: "Rank: 0 = exact full delta (recommended; ref2va-equivalent, ~full size). N = randomized-SVD rank cap on trunk deltas - approximation, smaller and faster; norms/biases/timestep stay exact either way.",
+  },
+  strength: {
+    h3_graviton: "Strength t = weight of B (clamped to 0-1; 0 = unset -> 0.5). Docs guidance: Base+Turbo 0.45-0.55 | Turbo+Base (8-step lock) 0.20-0.30 | Base+Base 0.30-0.70 | Turbo+Turbo 0.40-0.60 | Float+W6A8 0.35-0.50. Guidance only - A/B renders against BOTH parents are the acceptance test.",
+    h3_delta: "Strength scales the fused delta (1.0 = full delta; 0.5 blends halfway back to base; 0 counts as 1.0). Values above 1.0 extrapolate the delta - not recommended (AdaLN/timestep over-scaling caused black-video regressions).",
+  },
+};
+
+function refreshMmInfoHints() {
+  const recipe = $("mm-recipe").value;
+  for (const [key, hintId] of [["rank", "mm-rank-hint"], ["strength", "mm-str-hint"]]) {
+    const el = $(hintId);
+    if (el) el.textContent = MM_INFO_TEXTS[key][recipe] || MM_INFO_TEXTS[key].h3_graviton;
+  }
+}
+
+function toggleMmInfoHint(btnId, hintId) {
+  const btn = $(btnId), hint = $(hintId);
+  if (!btn || !hint) return;
+  refreshMmInfoHints();
+  const show = hint.classList.contains("hidden");
+  hint.classList.toggle("hidden", !show);
+  btn.classList.toggle("active", show);
+}
+
 function updateModelMergeVisibility() {
   refreshModelMergeHint();
+  refreshMmInfoHints();
 }
 
 function updateExtractRecipeVisibility() {
@@ -1131,6 +1160,8 @@ function wireEvents() {
   // Model Merge (model-level) — base reuses the Source panel; only overlay is picked here
   $("mm-pick-overlay").addEventListener("click", () => openBrowser("mm-overlay"));
   wireDropTarget($("mm-pick-overlay"), "mm-overlay");
+  $("mm-rank-info").addEventListener("click", () => toggleMmInfoHint("mm-rank-info", "mm-rank-hint"));
+  $("mm-str-info").addEventListener("click", () => toggleMmInfoHint("mm-str-info", "mm-str-hint"));
   $("mm-recipe").addEventListener("change", () => {
     updateDeltaOptionsVisibility();
     refreshModelMergeHint();
