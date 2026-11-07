@@ -770,6 +770,21 @@ function updateDeltaOptionsVisibility() {
   if (allowQuantWrap) allowQuantWrap.style.display = $("mm-recipe").value === "h3_graviton" ? "" : "none";
 }
 
+const MM_RECIPE_DEFAULTS = {
+  h3_hybrid:   { rank: 1024, strength: 1 },   // rank/strength ignored by hybrid
+  h3_delta:    { rank: 0,    strength: 1 },   // 0 = exact full delta
+  h3_graviton: { rank: -1,   strength: 0.5 }, // docs-recommended auto GD threshold, balanced mix
+};
+
+function applyMmRecipeDefaults(recipe) {
+  const d = MM_RECIPE_DEFAULTS[recipe];
+  if (!d) return;
+  $("mm-rank").value = d.rank;
+  $("mm-strength").value = d.strength;
+  if ($("mm-allow-quant")) $("mm-allow-quant").checked = false;
+  refreshMmInfoHints();
+}
+
 const MM_INFO_TEXTS = {
   rank: {
     h3_graviton: "Rank: -1 = Gavish-Donoho auto threshold per tensor (recommended; adapts cutoff to aspect ratio + spectrum, docs recommend it; forced for W6A8 inputs). 64 = community default. 0 = no spectral filter (pure polar merge). Higher N keeps more of the delta.",
@@ -1163,6 +1178,7 @@ function wireEvents() {
   $("mm-rank-info").addEventListener("click", () => toggleMmInfoHint("mm-rank-info", "mm-rank-hint"));
   $("mm-str-info").addEventListener("click", () => toggleMmInfoHint("mm-str-info", "mm-str-hint"));
   $("mm-recipe").addEventListener("change", () => {
+    applyMmRecipeDefaults($("mm-recipe").value);
     updateDeltaOptionsVisibility();
     refreshModelMergeHint();
     saveSettings();
