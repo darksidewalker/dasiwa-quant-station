@@ -772,7 +772,7 @@ function updateDeltaOptionsVisibility() {
 
 const MM_INFO_TEXTS = {
   rank: {
-    h3_graviton: "Rank: -1 = Gavish-Donoho auto threshold per tensor (recommended; adapts cutoff to aspect ratio + spectrum, docs recommend it; forced for W6A8 inputs). 64 = community PRISM default. 0 = no spectral filter (pure polar merge). Higher N keeps more of the delta.",
+    h3_graviton: "Rank: -1 = Gavish-Donoho auto threshold per tensor (recommended; adapts cutoff to aspect ratio + spectrum, docs recommend it; forced for W6A8 inputs). 64 = community default. 0 = no spectral filter (pure polar merge). Higher N keeps more of the delta.",
     h3_delta: "Rank: 0 = exact full delta (recommended; ref2va-equivalent, ~full size). N = randomized-SVD rank cap on trunk deltas - approximation, smaller and faster; norms/biases/timestep stay exact either way.",
   },
   strength: {

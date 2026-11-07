@@ -743,7 +743,8 @@ def _graviton_merge_matrix(a: torch.Tensor, b: torch.Tensor, t: float, rank: int
     """
     GRAVITON pipeline for one 2-D SVD-eligible matrix (fp32 in, fp32 out).
     Geodesic Rank-Adaptive Variance-Isolated Tensor Orthogonal
-    Normalization — extended reimplementation of the community PRISM card.
+    Normalization — extended reimplementation of the original community
+    recipe card (OliviaRossi HF model card; no published paper).
     Order here: spectral denoise → sign mediation → polar geodesic →
     re-anchor. Mediation runs on the DENOISED overlay before the SLERP
     (deviation from the upstream card's order): flipping elements after
@@ -985,7 +986,7 @@ def _run_h3_graviton(
     GRAVITON merge (Geodesic Rank-Adaptive Variance-Isolated Tensor
     Orthogonal Normalization), streamed tensor-by-tensor:
     W = GRAVITON(A, B) with strength = weight of B. Derived from the
-    OliviaRossi PRISM community recipe (HF card, no paper), with
+    original community recipe (OliviaRossi HF model card, no paper), with
     Gavish-Donoho auto rank and pre-geodesic sign mediation added.
 
     allow_quantized: accept QuantStation W6A8-packed layers (I8 +

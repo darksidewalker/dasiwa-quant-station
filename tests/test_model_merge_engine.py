@@ -882,7 +882,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
         t["adaln_t_table"] = torch.full((32, 8), 1.5)
         return t
 
-    def _payload(self, out_name="out_prism.safetensors", **extra):
+    def _payload(self, out_name="out_graviton.safetensors", **extra):
         return {
             "base_path": str(self.a),
             "overlay_path": str(self.b),
@@ -902,14 +902,14 @@ class H3GravitonRecipeTests(unittest.TestCase):
         self.assertIn("h3_graviton", [r["id"] for r in list_recipes()])
 
     def test_order_dependent_no_filename_role_detection(self):
-        # Filenames carry no fl2va/ref2va markers — prism must still run,
+        # Filenames carry no fl2va/ref2va markers — graviton must still run,
         # and swapping A/B must change the trunk result (order matters).
         self._run()
         swapped = list(run_model_merge(self._payload(
             base_path=str(self.b), overlay_path=str(self.a),
             output_name="out_swapped.safetensors")))
         assert any("finished" in str(e.get("status", "")) for e in swapped)
-        out_ab = _read_safetensors_tensor(Path(self.dir) / "out_prism.safetensors",
+        out_ab = _read_safetensors_tensor(Path(self.dir) / "out_graviton.safetensors",
                                           "blocks.0.attn.qkv_proj.weight")
         out_ba = _read_safetensors_tensor(Path(self.dir) / "out_swapped.safetensors",
                                           "blocks.0.attn.qkv_proj.weight")
@@ -918,7 +918,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
     def test_exact_families_are_linear(self):
         # norms/biases/timestep-table: W = A + t*(B - A), untouched by SVD/polar
         self._run(rank=2, strength=0.5)
-        out = Path(self.dir) / "out_prism.safetensors"
+        out = Path(self.dir) / "out_graviton.safetensors"
         expected_norm = 2.0 + 0.5 * (4.0 - 2.0)
         got = _read_safetensors_tensor(out, "blocks.0.norm1.weight")
         self.assertTrue(torch.allclose(got, torch.full((4,), expected_norm)))
@@ -933,7 +933,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
         self._run(rank=2, strength=0.5)
         a = self._a_tensors()["blocks.0.attn.qkv_proj.weight"]
         b = self._b_tensors()["blocks.0.attn.qkv_proj.weight"]
-        out = _read_safetensors_tensor(Path(self.dir) / "out_prism.safetensors",
+        out = _read_safetensors_tensor(Path(self.dir) / "out_graviton.safetensors",
                                        "blocks.0.attn.qkv_proj.weight")
         target = (a.norm(dim=1) ** 0.5) * (b.norm(dim=1) ** 0.5)
         self.assertTrue(torch.allclose(out.norm(dim=1), target, rtol=1e-4))
@@ -948,7 +948,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
         save_file(base, a)
         save_file(other, b)
         list(run_model_merge(self._payload(base_path=str(a), overlay_path=str(b), strength=0.5)))
-        out = _read_safetensors_tensor(Path(self.dir) / "out_prism.safetensors",
+        out = _read_safetensors_tensor(Path(self.dir) / "out_graviton.safetensors",
                                        "blocks.0.attn.qkv_proj.weight")
         # |D|=[5,3,1,1], median=2 → cols 0,1 salient conflicts; winners: B(-3), A(+2)
         self.assertLess(out[0, 0].item(), 0)
@@ -956,7 +956,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
 
     def test_metadata_and_energy_report(self):
         self._run(rank=4, strength=0.6)
-        with open(Path(self.dir) / "out_prism.safetensors", "rb") as f:
+        with open(Path(self.dir) / "out_graviton.safetensors", "rb") as f:
             n = struct.unpack("<Q", f.read(8))[0]
             header = json.loads(f.read(n))
         md = header["__metadata__"]
@@ -973,7 +973,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
 
     def test_companion_recipe_written(self):
         self._run(rank=64, strength=0.5)
-        txt = Path(self.dir) / "out_prism.txt"
+        txt = Path(self.dir) / "out_graviton.txt"
         self.assertTrue(txt.exists())
         body = txt.read_text()
         self.assertIn("Recipe: h3_graviton", body)
@@ -981,8 +981,8 @@ class H3GravitonRecipeTests(unittest.TestCase):
 
     def test_dry_run_writes_nothing(self):
         self._run(dry_run=True)
-        self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
-        self.assertFalse((Path(self.dir) / "out_prism.txt").exists())
+        self.assertFalse((Path(self.dir) / "out_graviton.safetensors").exists())
+        self.assertFalse((Path(self.dir) / "out_graviton.txt").exists())
 
     def test_quantized_source_rejected(self):
         # Same int8 key in BOTH files so the keyset-shape gate passes and
@@ -999,7 +999,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
             base_path=str(base_a), overlay_path=str(q))))
         text = " ".join(e.get("text", "") for e in out)
         self.assertIn("unquantized", text)
-        self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
+        self.assertFalse((Path(self.dir) / "out_graviton.safetensors").exists())
 
     def test_missing_key_fails_closed(self):
         partial = Path(self.dir) / "partial_b.safetensors"
@@ -1008,7 +1008,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
         save_file(tensors, partial)
         out = list(run_model_merge(self._payload(overlay_path=str(partial))))
         self.assertTrue(any(e.get("status") == "failed" for e in out))
-        self.assertFalse((Path(self.dir) / "out_prism.safetensors").exists())
+        self.assertFalse((Path(self.dir) / "out_graviton.safetensors").exists())
 
 
     def test_gd_auto_lowrank_unit(self):
@@ -1027,7 +1027,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
 
     def test_gd_auto_recipe_end_to_end(self):
         self._run(rank=-1, strength=0.5)
-        out = Path(self.dir) / "out_prism.safetensors"
+        out = Path(self.dir) / "out_graviton.safetensors"
         with open(out, "rb") as f:
             n = struct.unpack("<Q", f.read(8))[0]
             md = json.loads(f.read(n))["__metadata__"]
@@ -1039,7 +1039,7 @@ class H3GravitonRecipeTests(unittest.TestCase):
         got = _read_safetensors_tensor(out, "blocks.0.attn.qkv_proj.weight")
         target = (a.norm(dim=1) ** 0.5) * (b.norm(dim=1) ** 0.5)
         self.assertTrue(torch.allclose(got.norm(dim=1), target, rtol=1e-4))
-        body = (Path(self.dir) / "out_prism.txt").read_text()
+        body = (Path(self.dir) / "out_graviton.txt").read_text()
         self.assertIn("auto (Gavish-Donoho)", body)
 
 

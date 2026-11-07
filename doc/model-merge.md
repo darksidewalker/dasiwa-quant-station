@@ -70,7 +70,7 @@ merges.
 **GRAVITON** — Geodesic Rank-Adaptive Variance-Isolated Tensor
 Orthogonal Normalization. Spectral/polar merge of any two
 **unquantized** (F16/BF16/F32) H3 checkpoints with identical key sets.
-Derived from the community PRISM recipe
+Derived from the original community recipe card
 (`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM`, HF model
 card; no published paper) and extended beyond it: per-tensor
 Gavish-Donoho rank selection and sign mediation applied before the

@@ -5,7 +5,7 @@
 Consolidated micro-whitepaper. Every statement below matches the
 `h3_graviton` implementation in `core/model_merge_engine.py` (commit
 `69412c0` or later). Lineage: reimplemented and extended from the
-community PRISM recipe (`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM`
+original community recipe (`OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM`
 HF card, no published paper); the pre-geodesic mediation order, the
 Gavish-Donoho auto rank, the quantization floor and the float-output
 decision are this implementation's, not the card's.
@@ -52,7 +52,7 @@ group-quantized checkpoints — shows four failure modes:
    under-fits wide layers and leaks noise from narrow projections.
 2. **Post-geodesic trajectory warping.** Element-wise sign-conflict
    mediation applied *after* SLERP flips components off the
-   hypersphere and destroys the interpolated angle (the upstream PRISM
+   hypersphere and destroys the interpolated angle (the upstream community
    card orders its steps this way; GRAVITON does not).
 3. **Timestep conditioning instability.** Scaling weight deltas by
    `alpha > 1.0` inside adaptive layer norm (`adaln`) and timestep
@@ -148,7 +148,7 @@ W_i   = u_i * exp((1−t) ln|A_i| + t ln|B'_i|) / |u_i|
 
 Each row is rescaled to the geometric norm target of the **original**
 pair, `|A_i|^(1−t) · |B_i|^t` with B's pre-denoise row norms
-(RegMean-style norm preservation — this step is PRISM's fourth and is
+(RegMean-style norm preservation — this step is the upstream recipe's fourth and is
 part of GRAVITON). Output is always floating point (BF16 for
 dequantized inputs); a completed run instructs a follow-up W6A8
 conversion job for packed targets. Companion tensors never leak into the
@@ -182,5 +182,5 @@ bulk edge `(√m+√n)σ_q`; Halko et al. 2011 (randomized SVD, fixed-rank
 mode); DARE arXiv:2311.03099 (soft rescale analogue behind gamma);
 TIES arXiv:2306.01708 / EMR arXiv:2405.17461 (sign mediation, weighted
 winner); mergekit SLERP arXiv:2403.13257 / 2406.16768; RegMean
-(Jin et al. 2023, norm preservation); upstream recipe: OliviaRossi PRISM
+(Jin et al. 2023, norm preservation); upstream community recipe: OliviaRossi
 HF model card (four described steps, no code, no paper).
