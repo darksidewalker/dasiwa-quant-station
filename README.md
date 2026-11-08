@@ -292,4 +292,12 @@ The full endpoint table (config, system, browse/search, metadata, quantize, merg
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) — GGUF format reference
 - [City96 ComfyUI-GGUF tools](https://github.com/city96/ComfyUI-GGUF/tree/main/tools) — GGUF tooling
 - [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen) — TensorCore ConvRot W4A4 layout for INT4 ConvRot, and the AsymW4A8Int8 layout for W4A8 (MiniMax H3)
+
+---
+
+## License
+
+- **Code** (Go web backend/UI, Python quantization and merge engines, incl. GRAVITON `core/model_merge_engine.py`): [GPL-3.0-or-later](https://www.gnu.org/licenses/gpl-3.0.html) — see `LICENSE` and `NOTICE`.
+- **Docs & mathematical specifications** (`doc/`, incl. the [GRAVITON whitepaper](doc/graviton-whitepaper.md)): [CC-BY-SA-4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+
 - Upstream MiniMax H3 NVFP4 analysis (deep structural + mixed-profile analysis, incl. the NVFP4 HQ layer plan): [lilcheaty/MiniMax-H3-NVFP4](https://huggingface.co/lilcheaty/MiniMax-H3-NVFP4), [coolthor/MiniMax-H3-pruned-NVFP4](https://huggingface.co/coolthor/MiniMax-H3-pruned-NVFP4), [Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot](https://huggingface.co/Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot), [DmitryDB/MiniMax-H3-ComfyUI-Quants](https://huggingface.co/DmitryDB/MiniMax-H3-ComfyUI-Quants)

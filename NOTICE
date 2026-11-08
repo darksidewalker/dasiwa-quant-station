@@ -1,0 +1,18 @@
+DaSiWa Quant Station & GRAVITON Weight-Space Fusion Architecture
+Copyright (C) 2026 Darksidewalker (https://github.com/darksidewalker/dasiwa-quant-station)
+
+This software and its associated documentation contain original intellectual
+property designed and engineered by Darksidewalker, including:
+1. GRAVITON (`h3_graviton` in `core/model_merge_engine.py`): Geodesic
+   Rank-Adaptive Variance-Isolated Tensor Orthogonal Normalization,
+   featuring full-spectrum RMT Gavish-Donoho rank selection, analytical
+   Marchenko-Pastur W6A8 quantization noise floors (`tau_quant`),
+   pre-geodesic TIES/EMR sign mediation, and AdaLN anti-alignment guards.
+2. Verified diffusion quantization preservation/rescue profiles for
+   MiniMax H3 (including NVFP4 HQ mixed profile and W6A8 integration),
+   WAN 2.2, LTX-2.3, and Krea 2.
+3. Elliptic-curve (`modelspec.watermark`) provenance watermarking.
+
+Licensed under the GNU General Public License v3.0 or later (GPL-3.0-or-later).
+Documentation and mathematical specifications in `doc/` are licensed under
+CC-BY-SA-4.0.

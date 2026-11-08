@@ -1,3 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Darksidewalker [https://github.com/darksidewalker](https://github.com/darksidewalker)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# GRAVITON (Geodesic Rank-Adaptive Variance-Isolated Tensor Orthogonal Normalization)
+# Original mathematical formulation and reference implementation by Darksidewalker.
+
 """
 Model-level merge engine (NOT LoRA math).
 

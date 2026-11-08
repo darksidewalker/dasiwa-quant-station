@@ -1,6 +1,7 @@
 [project]
 name = "dasiwa-quant-station"
-version = "0.1.0"
+version = "0.1.1"
+license = "GPL-3.0-or-later"
 description = "Python runtime dependencies for DaSiWa Quant Station"
 requires-python = ">=3.12,<3.14"
 dependencies = [

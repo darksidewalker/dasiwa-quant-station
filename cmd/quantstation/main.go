@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Darksidewalker [https://github.com/darksidewalker](https://github.com/darksidewalker)
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package main
 
 import (

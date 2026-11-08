@@ -1,5 +1,8 @@
 # GRAVITON: Geodesic Rank-Adaptive Variance-Isolated Tensor Orthogonal Normalization
 
+**Author & Architect:** Darksidewalker ([dasiwa-quant-station](https://github.com/darksidewalker/dasiwa-quant-station))  
+**Specification License:** [CC-BY-SA-4.0](https://creativecommons.org/licenses/by-sa/4.0/) | **Reference Engine (`core/model_merge_engine.py`) License:** [GPL-3.0-or-later](https://www.gnu.org/licenses/gpl-3.0.html)
+
 **A data-free weight-space fusion architecture for diffusion / DiT checkpoints**
 
 Consolidated micro-whitepaper. Every statement below matches the

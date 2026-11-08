@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use DaSiWa Quant Station or the GRAVITON merge architecture in your work, please cite it as below."
+authors:
+  - alias: "Darksidewalker"
+    name: "Darksidewalker"
+title: "DaSiWa Quant Station & GRAVITON: Geodesic Rank-Adaptive Variance-Isolated Tensor Orthogonal Normalization"
+version: 1.0.0
+date-released: 2026-11-08
+url: "https://github.com/darksidewalker/dasiwa-quant-station"
+repository-code: "https://github.com/darksidewalker/dasiwa-quant-station"
+license: GPL-3.0-or-later
