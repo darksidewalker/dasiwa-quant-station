@@ -76,9 +76,12 @@ case "$ARCH" in
         ;;
 esac
 
-GGUFY_RELEASE_URL=$(curl -LsS --fail -o /dev/null -w '%{url_effective}' \
-    "https://github.com/qskousen/ggufy/releases/latest")
+# GitHub hiccups (504s) must not fail the whole update: a failed release
+# check skips the refresh and keeps the validated local binary.
+GGUFY_RELEASE_URL=$(curl -LsS --fail --retry 2 --retry-delay 2 -o /dev/null -w '%{url_effective}' \
+    "https://github.com/qskousen/ggufy/releases/latest") || true
 GGUFY_LATEST_VERSION="${GGUFY_RELEASE_URL##*/}"
+[ "$GGUFY_LATEST_VERSION" = "latest" ] && GGUFY_LATEST_VERSION=""
 GGUFY_INSTALLED_VERSION=""
 [ -f "$GGUFY_VERSION_FILE" ] && GGUFY_INSTALLED_VERSION=$(<"$GGUFY_VERSION_FILE")
 
@@ -90,15 +93,35 @@ if [ -f "$GGUFY_BIN" ]; then
     fi
 fi
 
-if [ "$GGUFY_VALID" != true ] || [ "$GGUFY_INSTALLED_VERSION" != "$GGUFY_LATEST_VERSION" ]; then
+if [ "$GGUFY_VALID" != true ] || { [ -n "$GGUFY_LATEST_VERSION" ] && [ "$GGUFY_INSTALLED_VERSION" != "$GGUFY_LATEST_VERSION" ]; }; then
+    if [ -z "$GGUFY_LATEST_VERSION" ]; then
+        echo "❌ GGUFY binary missing/corrupt and the GitHub release check failed (network?)."
+        exit 1
+    fi
     echo "📥 Updating GGUFY ${GGUFY_INSTALLED_VERSION:-unknown} → $GGUFY_LATEST_VERSION..."
     rm -rf "$GGUFY_STAGE"
     mkdir -p "$GGUFY_STAGE"
     GGUFY_ARCHIVE="$GGUFY_STAGE/${GGUFY_ASSET}.zip"
 
-    curl -L --fail --retry 3 --retry-delay 2 -o "$GGUFY_ARCHIVE" \
-        "https://github.com/qskousen/ggufy/releases/download/${GGUFY_LATEST_VERSION}/${GGUFY_ASSET}.zip"
-    unzip -q -o "$GGUFY_ARCHIVE" -d "$GGUFY_STAGE/extracted"
+    GGUFY_DOWNLOAD_OK=true
+    if ! curl -L --fail --retry 3 --retry-delay 2 -o "$GGUFY_ARCHIVE" \
+        "https://github.com/qskousen/ggufy/releases/download/${GGUFY_LATEST_VERSION}/${GGUFY_ASSET}.zip"; then
+        GGUFY_DOWNLOAD_OK=false
+    fi
+    if [ "$GGUFY_DOWNLOAD_OK" = true ] && ! unzip -q -o "$GGUFY_ARCHIVE" -d "$GGUFY_STAGE/extracted"; then
+        GGUFY_DOWNLOAD_OK=false
+    fi
+    if [ "$GGUFY_DOWNLOAD_OK" != true ]; then
+        rm -rf "$GGUFY_STAGE"
+        if [ "$GGUFY_VALID" = true ]; then
+            echo "⚠️ GGUFY download failed (network); keeping local binary ${GGUFY_INSTALLED_VERSION:-unknown}."
+            GGUFY_SKIP_UPDATE=true
+        else
+            echo "❌ GGUFY binary missing/corrupt and the download failed."
+            exit 1
+        fi
+    fi
+    if [ "${GGUFY_SKIP_UPDATE:-false}" != true ]; then
     GGUFY_CANDIDATE=$(find "$GGUFY_STAGE/extracted" -type f \
         \( -name "ggufy" -o -name "$GGUFY_ASSET" \) -print -quit)
 
@@ -121,6 +144,9 @@ if [ "$GGUFY_VALID" != true ] || [ "$GGUFY_INSTALLED_VERSION" != "$GGUFY_LATEST_
     printf '%s\n' "$GGUFY_LATEST_VERSION" > "$GGUFY_VERSION_FILE"
     rm -rf "$GGUFY_STAGE"
     echo "✅ GGUFY $GGUFY_LATEST_VERSION installed."
+    fi
+elif [ -z "$GGUFY_LATEST_VERSION" ]; then
+    echo "⚠️ Could not reach the ggufy release check; keeping local ggufy ${GGUFY_INSTALLED_VERSION:-unknown}."
 else
     echo "✅ GGUFY $GGUFY_INSTALLED_VERSION is current."
 fi
