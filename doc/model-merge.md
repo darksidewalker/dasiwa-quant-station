@@ -160,8 +160,14 @@ Compare renders against both parents under identical conditioning,
 prompt, seed and sampler before trusting any setting — the same rule as
 hybrid and delta.
 
-Both files must share the same key set (same shape + dtype per key); the
-delta recipe fails closed otherwise. Output keeps the base key/shape/dtype
+Both files must share the same key set (same shape; any F16/BF16/F32 dtype
+combination — both recipes compute in fp32 and cast back to the base
+dtype, which wins in the output); the full-keyset recipes fail closed
+otherwise. Community overlays that wrap every key in the standard
+`model.diffusion_model.` prefix are unwrapped automatically (all-or-nothing
+wrap only; partially wrapped files stay rejected), logged as an unwrap
+status line and read through the original file keys. Output keeps the base
+key/shape/dtype
 set and carries `minimax_h3_delta=baked` + `h3_delta_{mode,rank,strength,variant}`
 + provenance. All runs stream tensor-by-tensor (SVD mode does one
 deterministic energy pre-pass first so the header is complete before any

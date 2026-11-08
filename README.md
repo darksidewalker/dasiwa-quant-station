@@ -213,7 +213,7 @@ For **LoRA Merge** (checkpoint baking), choose **Additive** to sum scaled deltas
 
 ## Model Merge (model-level)
 
-A model-level merge — not LoRA math. Three recipes: **Hybrid MiniMax H3** (fl2va base + ref2va overlay, roles auto-detected), **Delta-fused MiniMax H3** (full ref2va − fl2va delta fused, rank-cappable), and **GRAVITON MiniMax H3** (geodesic rank-adaptive vector interpolation: spectral denoise incl. Gavish-Donoho auto rank + pre-geodesic sign mediation + polar per-row rows, order-dependent A×B, unquantized sources — or QuantStation W6A8 packs dequantized in-engine via comfy_kitchen behind an opt-in flag). Full details: [doc/model-merge.md](doc/model-merge.md).
+A model-level merge — not LoRA math. Three recipes: **Hybrid MiniMax H3** (fl2va base + ref2va overlay, roles auto-detected), **Delta-fused MiniMax H3** (full ref2va − fl2va delta fused, rank-cappable), and **GRAVITON MiniMax H3** (geodesic rank-adaptive vector interpolation: spectral denoise incl. Gavish-Donoho auto rank + pre-geodesic sign mediation + polar per-row rows, order-dependent A×B, unquantized sources — or QuantStation W6A8 packs dequantized in-engine via comfy_kitchen behind an opt-in flag). Community overlays wrapped in the standard `model.diffusion_model.` prefix (and F16/BF16/F32 dtype mixes between the two files) are accepted automatically; the base dtype wins in the output. Full details: [doc/model-merge.md](doc/model-merge.md).
 
 ---
 

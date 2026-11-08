@@ -64,7 +64,7 @@ import os
 import re
 import struct
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import torch
@@ -579,6 +579,7 @@ def _run_h3_delta(
     strength: float,
     dry_run: bool,
     meta: Dict[str, str],
+    overlay_key_map: Optional[Dict[str, str]] = None,
 ) -> Iterable[Dict[str, str]]:
     """
     Compute W = fl + s * Δ (Δ = ref − fl, optionally rank-capped) for
@@ -650,7 +651,7 @@ def _run_h3_delta(
         out_f.write(struct.pack("<Q", header_size))
         out_f.write(header_bytes)
         with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
-             safe_open(ref2va_path, framework="pt", device="cpu") as of:
+             _OverlayReader(ref2va_path, overlay_key_map) as of:
             for i, key in enumerate(keys):
                 base_t = bf.get_tensor(key)
                 ref_t = of.get_tensor(key)
@@ -943,6 +944,59 @@ def _logical_shape(info: Any, recognized_w6a8: bool) -> Tuple[int, ...]:
     return tuple(info.shape)
 
 
+# Community H3 checkpoints (HF/ComfyUI packaging) commonly wrap EVERY key
+# in the standard model.diffusion_model. prefix, which makes their key set
+# look disjoint from bare-key pruned checkpoints at the full-keyset gate.
+_OVERLAY_WRAPPER_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
+# Both delta and graviton compute in fp32 and cast back to the base dtype,
+# so F16/BF16/F32 mixing between the two files is a packaging difference,
+# not an incompatibility (base dtype wins in the output).
+_FLOAT_DTYPES = ("F16", "BF16", "F32")
+
+
+def _unwrap_overlay_manifest(overlay_manifest: Dict[str, Any]) -> Dict[str, str]:
+    """Rename fully-wrapped overlay keys in place to the bare base keys.
+
+    Returns {bare_key: actual_file_key} (empty when nothing was unwrapped).
+    Only an all-or-nothing wrap is accepted; a partially wrapped file stays
+    fail-closed so the keyset gate reports it instead of guessing.
+    """
+    wrapped: Dict[str, str] = {}
+    for key in overlay_manifest:
+        bare = next((key[len(p):] for p in _OVERLAY_WRAPPER_PREFIXES
+                     if key.startswith(p)), None)
+        if bare is not None:
+            wrapped[key] = bare
+    if not wrapped or len(wrapped) != len(overlay_manifest) or \
+            len(set(wrapped.values())) != len(wrapped):
+        return {}
+    key_map: Dict[str, str] = {}
+    for actual, bare in wrapped.items():
+        if bare == actual:
+            continue
+        info = overlay_manifest.pop(actual)
+        overlay_manifest[bare] = replace(info, key=bare)
+        key_map[bare] = actual
+    return key_map
+
+
+class _OverlayReader:
+    """safe_open handle that resolves bare keys through the unwrap map."""
+
+    def __init__(self, path: str, key_map: Optional[Dict[str, str]]):
+        self._f = safe_open(path, framework="pt", device="cpu")
+        self._map = key_map or {}
+
+    def get_tensor(self, key: str) -> torch.Tensor:
+        return self._f.get_tensor(self._map.get(key, key))
+
+    def __enter__(self) -> "_OverlayReader":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._f.__exit__(*exc)
+
+
 def _dequant_w6a8(handle: Any, key: str) -> Tuple[torch.Tensor, float]:
     """Dequantize a recognized W6A8 layer via comfy_kitchen's own layout.
     Returns (fp32 canonical weight, per-element quant noise variance)."""
@@ -981,6 +1035,7 @@ def _run_h3_graviton(
     meta: Dict[str, str],
     allow_quantized: bool = False,
     overlay_manifest: Optional[Dict[str, Any]] = None,
+    overlay_key_map: Optional[Dict[str, str]] = None,
 ) -> Iterable[Dict[str, Any]]:
     """
     GRAVITON merge (Geodesic Rank-Adaptive Variance-Isolated Tensor
@@ -1059,7 +1114,7 @@ def _run_h3_graviton(
         out_f.write(struct.pack("<Q", header_size))
         out_f.write(header_bytes)
         with safe_open(a_path, framework="pt", device="cpu") as bf, \
-             safe_open(b_path, framework="pt", device="cpu") as of:
+             _OverlayReader(b_path, overlay_key_map) as of:
             for i, key in enumerate(keys):
                 noise_var = 0.0
                 a_w6 = allow_quantized and _w6a8_recognized(key, base_manifest[key], base_keys)
@@ -1308,6 +1363,17 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     base_keys = set(base_manifest)
     overlay_keys_available = set(overlay_manifest)
 
+    # Community H3 releases commonly wrap every overlay key in the
+    # model.diffusion_model. prefix; unwrap once so gate and reads work
+    # against the base's bare keys. The unwrap map is threaded to every
+    # overlay read so the actual file keys resolve.
+    overlay_key_map = _unwrap_overlay_manifest(overlay_manifest)
+    if overlay_key_map:
+        overlay_keys_available = set(overlay_manifest)
+        yield _status(
+            f"Overlay keys unwrapped from '{_OVERLAY_WRAPPER_PREFIXES[0]}' "
+            f"wrapper ({len(overlay_key_map)} tensors)")
+
     yield _status(f"Inspected checkpoints: base {len(base_keys)} tensors, overlay {len(overlay_keys_available)} tensors")
 
     # ------------------------------------------------------------------
@@ -1323,7 +1389,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         missing = logical_b - (overlay_keys_available - aux_o)
         if missing:
             yield _log(
-                f"ERROR: delta recipe needs every base tensor in the overlay; "
+                f"ERROR: {recipe_name} needs every base tensor in the overlay; "
                 f"overlay is missing {len(missing)} key(s): "
                 f"{sorted(missing)[:5]}\n"
             )
@@ -1336,7 +1402,8 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             o_w6 = allow_q and _w6a8_recognized(k, oi, overlay_keys_available)
             if _logical_shape(bi, b_w6) != _logical_shape(oi, o_w6):
                 mismatched.append(k)
-            elif not (b_w6 or o_w6) and bi.dtype != oi.dtype:
+            elif not (b_w6 or o_w6) and bi.dtype != oi.dtype and not (
+                    bi.dtype in _FLOAT_DTYPES and oi.dtype in _FLOAT_DTYPES):
                 mismatched.append(k)
         if mismatched:
             k = mismatched[0]
@@ -1425,6 +1492,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             events = _run_h3_delta(
                 fl2va_path, ref2va_path, base_manifest,
                 output_path, rank, strength, dry_run, delta_meta,
+                overlay_key_map=overlay_key_map,
             )
             sidecar_details = [
                 f"Delta rank: {max(0, rank)}",
@@ -1442,6 +1510,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 fl2va_path, ref2va_path, base_manifest,
                 output_path, rank, strength, dry_run, delta_meta,
                 allow_quantized=allow_quantized, overlay_manifest=overlay_manifest,
+                overlay_key_map=overlay_key_map,
             )
             sidecar_details = [
                 f"GRAVITON rank: {rank if rank >= 0 else 'auto (Gavish-Donoho)'}",
@@ -1733,7 +1802,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         out_f.write(header)
 
         with safe_open(fl2va_path, framework="pt", device="cpu") as bf, \
-             safe_open(ref2va_path, framework="pt", device="cpu") as of:
+             _OverlayReader(ref2va_path, overlay_key_map) as of:
             for i, key in enumerate(base_manifest):
                 if blend_mode == "binary":
                     if key in modality_keys:

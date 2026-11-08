@@ -19,10 +19,9 @@ from unittest.mock import patch
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from safetensors import safe_open
-from safetensors.torch import save_file
 from utils.lora_inspector import read_safetensors_manifest
 from core.model_merge_engine import (
     _dequant_w6a8,
@@ -1145,6 +1144,84 @@ class H3GravitonW6A8InputTests(unittest.TestCase):
         manifest = read_safetensors_manifest(str(Path(self.dir) / "out_wq.safetensors"))
         self.assertEqual(manifest["blocks.0.attn.qkv_proj.weight"].shape, (96, 512))
         self.assertEqual(manifest["blocks.0.attn.qkv_proj.weight"].dtype, "BF16")
+
+
+class H3WrappedOverlayTests(unittest.TestCase):
+    """Community H3 checkpoints wrap every key in model.diffusion_model.;
+    the manifest unwrap must make gate + reads agree with the base's bare
+    keys without rewriting the source file."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.fl = Path(self.dir) / "minimax_h3_fl2va_wrap_test.safetensors"
+        self.ref = Path(self.dir) / "minimax_h3_ref2va_wrap_test.safetensors"
+        self.ref_plain = Path(self.dir) / "minimax_h3_ref2va_plain_test.safetensors"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _wrapped(ref):
+        return {f"model.diffusion_model.{k}": v for k, v in ref.items()}
+
+    def test_delta_wrapped_overlay_matches_plain_output(self):
+        fl, ref = _delta_pair_tensors()
+        save_file(fl, self.fl)
+        save_file(ref, self.ref_plain)
+        save_file(self._wrapped(ref), self.ref)
+        plain = _events(_delta_payload(str(self.fl), str(self.ref_plain), str(self.dir),
+                                       out_name="out_plain.safetensors"))
+        wrapped = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir),
+                                         out_name="out_wrapped.safetensors"))
+        self.assertEqual(plain[-1]["status"], "finished")
+        self.assertEqual(wrapped[-1]["status"], "finished")
+        self.assertTrue(any("unwrapped" in (ev.get("status") or "") for ev in wrapped))
+        a = load_file(Path(self.dir) / "out_plain.safetensors")
+        b = load_file(Path(self.dir) / "out_wrapped.safetensors")
+        self.assertEqual(set(a), set(b))
+        for k in a:
+            self.assertTrue(torch.equal(a[k], b[k]), k)
+
+    def test_graviton_wrapped_overlay_matches_plain_output(self):
+        fl, ref = _delta_pair_tensors()
+        save_file(fl, self.fl)
+        save_file(ref, self.ref_plain)
+        save_file(self._wrapped(ref), self.ref)
+        outs = {}
+        for tag, overlay in (("plain", self.ref_plain), ("wrapped", self.ref)):
+            events = _events({
+                "base_path": str(self.fl), "overlay_path": str(overlay),
+                "architecture": "MiniMax H3", "recipe": "h3_graviton",
+                "output_dir": str(self.dir), "output_name": f"out_g_{tag}.safetensors",
+                "watermark": False, "rank": 2, "strength": 0.5,
+            })
+            self.assertEqual(events[-1]["status"], "finished", tag)
+            outs[tag] = load_file(Path(self.dir) / f"out_g_{tag}.safetensors")
+        for k in outs["plain"]:
+            self.assertTrue(torch.equal(outs["plain"][k], outs["wrapped"][k]), k)
+
+    def test_partially_wrapped_overlay_stays_fail_closed(self):
+        fl, ref = _delta_pair_tensors()
+        save_file(fl, self.fl)
+        mixed = self._wrapped(ref)
+        mixed["rope.inv_freq"] = mixed.pop("model.diffusion_model.rope.inv_freq")
+        save_file(mixed, self.ref)
+        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir)))
+        self.assertEqual(events[-1]["status"], "failed")
+        self.assertFalse((Path(self.dir) / "out_delta.safetensors").exists())
+
+    def test_float_dtype_mix_is_accepted(self):
+        fl, ref = _delta_pair_tensors()
+        fl["blocks.0.adaln_proj.linear.weight"] = fl["blocks.0.adaln_proj.linear.weight"].half()
+        fl["blocks.0.adaln_proj.linear.bias"] = fl["blocks.0.adaln_proj.linear.bias"].bfloat16()
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir)))
+        self.assertEqual(events[-1]["status"], "finished")
+        _, header = _read_meta(Path(self.dir) / "out_delta.safetensors")
+        self.assertEqual(header["blocks.0.adaln_proj.linear.weight"]["dtype"], "F16")
+        self.assertEqual(header["blocks.0.adaln_proj.linear.bias"]["dtype"], "BF16")
 
 
 if __name__ == "__main__":
