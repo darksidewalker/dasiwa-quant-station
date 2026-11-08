@@ -668,8 +668,9 @@ function refreshModelMergeHint() {
   if (!hint) return;
   const base = state.sourcePath;
   const overlay = state.mmOverlayPath;
-  const recipe = $("mm-recipe").value;
-  let text, warn = false;
+  // Recipe descriptions live in the field info dialogs; this slot carries
+  // only selection warnings.
+  let text = "", warn = false;
   if (state.architecture !== "MiniMax H3") {
     warn = true;
     text = "MiniMax H3 model merge requires two MiniMax H3 checkpoints. " +
@@ -682,32 +683,6 @@ function refreshModelMergeHint() {
   } else if (base === overlay) {
     warn = true;
     text = "Base (Source panel) and second checkpoint must be two different files.";
-  } else if (recipe === "h3_delta") {
-    const rank = parseInt($("mm-rank").value, 10) || 0;
-    text = "Delta recipe: fuses the full ref2va − fl2va weight delta into the base " +
-      (rank === 0
-        ? "(exact mode — output ≈ ref2va-equivalent, largest file)."
-        : `(SVD rank ${rank} — trunk deltas compressed, norms/biases/timestep exact).`) +
-      " Works on pruned and full key sets (auto-detected).";
-  } else if (recipe === "h3_graviton") {
-    const rank = parseInt($("mm-rank").value, 10);
-    const rankText = Number.isFinite(rank) && rank < 0
-      ? "auto (Gavish-Donoho optimal hard threshold per tensor)"
-      : `spectral rank ${Number.isFinite(rank) && rank >= 0 ? rank : 64}`;
-    text = "GRAVITON: spectral denoise (" + rankText + "), sign-conflict mediation before the " +
-      "per-row SLERP (geodesic stays final), geometric magnitudes and row-norm re-anchor on " +
-      "trunk matrices; norms/biases/timestep conditioning stay exact linear fusion. " +
-      "Order matters: base = A, second checkpoint = B; strength is B's weight (0..1, 0 → 0.5). " +
-      "Requires unquantized F16/BF16/F32 sources with identical key sets - or QuantStation W6A8 "
-      "packs via the Allow W6A8 inputs checkbox (dequantized in-engine, merged output stays float). "
-      "Auto rank costs one " +
-      "Gram eigh per tensor (slower on CPU). Research recipe — compare renders against both parents. " +
-      "Preserve structural layers (default on) copies the conditioning-critical keys (adaln table/projections, norms, rope, final head, refiner, patch/conditioning projs) from the base instead of blending them.";
-  } else {
-    const split = $("mm-modality-mode").value === "split";
-    text = split
-      ? "Experimental modality split: grid/range chooses Ref2VA video AdaLN rows; audio and text rows have independent policies. Compare every output against full Ref2VA for audio and visual references."
-      : "Binary hybrid: selected blocks use exact Ref2VA AdaLN tensors; others use FL2VA. This does not guarantee full reference-audio fidelity.";
   }
   hint.textContent = text;
   hint.classList.toggle("warn", warn);
