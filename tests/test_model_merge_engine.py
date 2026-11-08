@@ -601,7 +601,9 @@ class H3DeltaRecipeTests(unittest.TestCase):
     # -- exact delta ---------------------------------------------------------
     def test_exact_delta_applies_shift(self):
         self._write_delta_pair()
-        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir)))
+        # legacy blend-everything: exact delta must also hit structural keys
+        events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir),
+                                        preserve_structural=False))
         self.assertEqual(events[-1]["status"], "finished")
         out = Path(self.dir) / "out_delta.safetensors"
         # shifted trunk tensor: 1.0 + 1.0 = 2.0
@@ -654,7 +656,8 @@ class H3DeltaRecipeTests(unittest.TestCase):
         self._write_delta_pair()
         out_name = "out_svd.safetensors"
         events = _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir),
-                                        out_name=out_name, rank=256))
+                                        out_name=out_name, rank=256,
+                                        preserve_structural=False))
         self.assertEqual(events[-1]["status"], "finished")
         out = Path(self.dir) / out_name
         # cap non-binding on 8x8 deltas → same result as exact
@@ -773,7 +776,8 @@ class H3DeltaRecipeTests(unittest.TestCase):
         save_file(fl, self.fl)
         save_file(ref, self.ref)
         out_name = "out_full.safetensors"
-        _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir), out_name=out_name))
+        _events(_delta_payload(str(self.fl), str(self.ref), str(self.dir),
+                               out_name=out_name, preserve_structural=False))
         meta, _ = _read_meta(Path(self.dir, out_name))
         self.assertEqual(meta.get("h3_delta_variant"), "full")
         # time_embedder applied exactly
@@ -916,7 +920,8 @@ class H3GravitonRecipeTests(unittest.TestCase):
 
     def test_exact_families_are_linear(self):
         # norms/biases/timestep-table: W = A + t*(B - A), untouched by SVD/polar
-        self._run(rank=2, strength=0.5)
+        # (opt out of the structural-preserve default to exercise the blend)
+        self._run(rank=2, strength=0.5, preserve_structural=False)
         out = Path(self.dir) / "out_graviton.safetensors"
         expected_norm = 2.0 + 0.5 * (4.0 - 2.0)
         got = _read_safetensors_tensor(out, "blocks.0.norm1.weight")
@@ -1222,6 +1227,68 @@ class H3WrappedOverlayTests(unittest.TestCase):
         _, header = _read_meta(Path(self.dir) / "out_delta.safetensors")
         self.assertEqual(header["blocks.0.adaln_proj.linear.weight"]["dtype"], "F16")
         self.assertEqual(header["blocks.0.adaln_proj.linear.bias"]["dtype"], "BF16")
+
+
+class H3StructuralPreserveTests(unittest.TestCase):
+    """h3_delta and h3_graviton must never blend conditioning-critical keys:
+    community overlays with foreign fold-mode tables (Singularity v2 et al.)
+    pass the key/shape/dtype gate but poison conditioning at any strength.
+    Default on; explicit False restores legacy blend-everything."""
+
+    # norm1.weight and adaln bias are the shifted keys in _delta_pair_tensors
+    # that are ALSO structural: equality with base proves the copy path ran.
+    STRUCTURAL = ("adaln_t_table", "blocks.0.adaln_proj.linear.weight",
+                  "blocks.0.adaln_proj.linear.bias", "blocks.0.norm1.weight",
+                  "rope.inv_freq", "video_patch_proj.weight")
+    TRUNK = "blocks.0.attn.qkv_proj.weight"  # shifted + not structural
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.fl = Path(self.dir) / "minimax_h3_fl2va_pres_test.safetensors"
+        self.ref = Path(self.dir) / "minimax_h3_ref2va_pres_test.safetensors"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run(self, recipe, out_name, **extra):
+        fl, ref = _delta_pair_tensors()
+        save_file(fl, self.fl)
+        save_file(ref, self.ref)
+        payload = {**_delta_payload(str(self.fl), str(self.ref), str(self.dir),
+                                    out_name=out_name),
+                   "recipe": recipe, "rank": 2, "strength": 0.5, **extra}
+        events = _events(payload)
+        self.assertEqual(events[-1]["status"], "finished",
+                         msg="".join(e.get("text", "") for e in events if e["type"] == "log"))
+        return fl, load_file(Path(self.dir) / out_name)
+
+    def test_graviton_default_preserves_structural(self):
+        fl, out = self._run("h3_graviton", "out_pres_on.safetensors")
+        for k in self.STRUCTURAL:
+            self.assertTrue(torch.equal(out[k], fl[k]), f"{k} must equal base")
+        self.assertFalse(torch.equal(out[self.TRUNK], fl[self.TRUNK]),
+                         "trunk must still blend")
+
+    def test_explicit_opt_out_blends_structural(self):
+        fl, out = self._run("h3_graviton", "out_pres_off.safetensors",
+                            preserve_structural=False)
+        self.assertFalse(torch.equal(out["blocks.0.norm1.weight"],
+                                     fl["blocks.0.norm1.weight"]),
+                         "opt-out must blend the shifted structural key")
+
+    def test_delta_default_preserves_structural(self):
+        fl, out = self._run("h3_delta", "out_delta_pres.safetensors")
+        for k in self.STRUCTURAL:
+            self.assertTrue(torch.equal(out[k], fl[k]), f"{k} must equal base")
+        self.assertFalse(torch.equal(out[self.TRUNK], fl[self.TRUNK]))
+
+    def test_metadata_and_sidecar_report_preserve(self):
+        self._run("h3_graviton", "out_pres_meta.safetensors")
+        meta, _ = _read_meta(Path(self.dir) / "out_pres_meta.safetensors")
+        self.assertEqual(meta.get("h3_graviton_preserve_structural"), "1")
+        self.assertIn("Preserve structural layers: yes",
+                      (Path(self.dir) / "out_pres_meta.txt").read_text())
 
 
 if __name__ == "__main__":

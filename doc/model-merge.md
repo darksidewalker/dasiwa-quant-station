@@ -63,7 +63,8 @@ W = fl2va + strength · Δ, with Δ = ref2va − fl2va:
 
 **Strength** scales the delta (1.0 = full delta; 0.5 blends halfway back to
 the base; 0 is treated as unset → 1.0). Cap it at ±3.0 like LoRA
-merges.
+merges. Structural-layer preserve (default on, see the GRAVITON section) also
+applies here: preserved keys skip the delta entirely and copy from the base.
 
 ## GRAVITON MiniMax H3 (`h3_graviton`)
 
@@ -78,6 +79,28 @@ geodesic rotation.
 
 **Order-dependent**: base (Source panel) = A, second checkpoint = B —
 unlike hybrid/delta there is no fl2va/ref2va filename auto-swap.
+
+### Structural-layer preserve (`preserve_structural`, default on)
+
+The key/shape/dtype gate proves the two files are structurally identical —
+it cannot see conditioning expressed in a **different coordinate system**.
+Community releases have shipped invented `adaln_t_table` fold modes (their
+metadata declares an `h3_fold_mode` and a custom coordinate-table hash; on
+Singularity v2 the table sits at relative distance ~3.5 from the official
+one). Blending that table plus its `adaln_proj` rows poisons the merged
+model's conditioning even at strength 0.3 — output numbers look fine,
+renders do not.
+
+With preserve on (both `h3_delta` and `h3_graviton`), the conditioning-critical
+keys are **copied from the base, never blended** — exactly the key list the
+quantize side never lossifies: `adaln_t_table` / `time_embedder.*`,
+`adaln_proj.linear.*`, per-block norms and q/k norms, `rope.inv_freq`,
+`final_layer.*`, `token_refiner.*`, patch/conditioning projections. Trunk and
+embedding weights blend as usual. Opt out via the "Preserve structural layers"
+checkbox (payload `preserve_structural: false`) only to reproduce legacy
+blend-everything outputs. The output header records
+`h3_graviton_preserve_structural=1` (also `h3_delta_preserve_structural`) and
+the recipe sidecar states the mode.
 
 ### Quantized inputs (W6A8, opt-in)
 

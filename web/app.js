@@ -105,6 +105,7 @@ function currentSettings() {
       rank: $("mm-rank").value,
       strength: $("mm-strength").value,
       allowQuant: $("mm-allow-quant").checked,
+      preserveStructural: $("mm-preserve-structural").checked,
       blockRangeStart: $("mm-block-start").value,
       blockRangeEnd: $("mm-block-end").value,
       blockSelection: $("mm-block-selection").value,
@@ -223,6 +224,7 @@ function loadSettings() {
   $("mm-rank").value = modelMerge.rank ?? s.mmRank ?? 1024;
   $("mm-strength").value = modelMerge.strength ?? s.mmStrength ?? 1;
   $("mm-allow-quant").checked = modelMerge.allowQuant ?? s.mmAllowQuant ?? false;
+  $("mm-preserve-structural").checked = modelMerge.preserveStructural ?? s.mmPreserveStructural ?? true;
   $("mm-block-start").value = modelMerge.blockRangeStart ?? 30;
   $("mm-block-end").value = modelMerge.blockRangeEnd ?? 49;
   $("mm-block-selection").value = modelMerge.blockSelection === "custom" ? "custom" : "range";
@@ -699,7 +701,8 @@ function refreshModelMergeHint() {
       "Requires unquantized F16/BF16/F32 sources with identical key sets - or QuantStation W6A8 "
       "packs via the Allow W6A8 inputs checkbox (dequantized in-engine, merged output stays float). "
       "Auto rank costs one " +
-      "Gram eigh per tensor (slower on CPU). Research recipe — compare renders against both parents.";
+      "Gram eigh per tensor (slower on CPU). Research recipe — compare renders against both parents. " +
+      "Preserve structural layers (default on) copies the conditioning-critical keys (adaln table/projections, norms, rope, final head, refiner, patch/conditioning projs) from the base instead of blending them.";
   } else {
     const split = $("mm-modality-mode").value === "split";
     text = split
@@ -949,6 +952,7 @@ async function startModelMerge() {
   let textBlocks = "all";
   let audioOutFromOverlay = false;
   const allowQuantized = recipe === "h3_graviton" && $("mm-allow-quant").checked;
+  const preserveStructural = $("mm-preserve-structural").checked;
   if (recipe === "h3_delta" || recipe === "h3_graviton") {
     const r = parseInt($("mm-rank").value, 10);
     const minRank = recipe === "h3_graviton" ? -1 : 0;
@@ -994,6 +998,7 @@ async function startModelMerge() {
         rank,
         strength,
         allow_quantized_inputs: allowQuantized,
+        preserve_structural: preserveStructural,
         block_range_start: blockRangeStart,
         block_range_end: blockRangeEnd,
         ...(overlayBlocks !== undefined ? {overlay_blocks: overlayBlocks} : {}),

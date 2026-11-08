@@ -69,6 +69,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import torch
 from safetensors import safe_open
+
+from core.layer_config_builder import PRESERVE_PATTERNS
 from safetensors.torch import save_file
 
 from utils.lora_inspector import read_safetensors_manifest
@@ -580,6 +582,7 @@ def _run_h3_delta(
     dry_run: bool,
     meta: Dict[str, str],
     overlay_key_map: Optional[Dict[str, str]] = None,
+    preserve_structural: bool = True,
 ) -> Iterable[Dict[str, str]]:
     """
     Compute W = fl + s * Δ (Δ = ref − fl, optionally rank-capped) for
@@ -605,7 +608,8 @@ def _run_h3_delta(
     if dry_run:
         yield _log(
             f"h3_delta dry run: {total_keys} tensors, mode={mode}, "
-            f"strength={strength}, variant={_h3_variant(base_manifest)}\n"
+            f"strength={strength}, structural-preserve={'on' if preserve_structural else 'off'}, "
+            f"variant={_h3_variant(base_manifest)}\n"
         )
         yield {"type": "done", "status": "dry-run complete"}
         return
@@ -625,9 +629,11 @@ def _run_h3_delta(
     meta["h3_delta_rank"] = str(rank)
     meta["h3_delta_strength"] = f"{strength:.6f}"
     meta["h3_delta_variant"] = _h3_variant(base_manifest)
+    meta["h3_delta_preserve_structural"] = "1" if preserve_structural else "0"
 
     svd_counts = 0
     zero_delta_keys = 0
+    preserved_keys = 0
     exact_family_counts: Dict[str, int] = {}
     energy_scratch: Dict[str, Dict[str, float]] = {}
 
@@ -654,30 +660,36 @@ def _run_h3_delta(
              _OverlayReader(ref2va_path, overlay_key_map) as of:
             for i, key in enumerate(keys):
                 base_t = bf.get_tensor(key)
-                ref_t = of.get_tensor(key)
-                # fp32 delta for numerical stability; cast back to base dtype.
-                base32 = base_t.to(torch.float32)
-                ref32 = ref_t.to(torch.float32)
-                delta = ref32 - base32
+                if preserve_structural and _h3_structural_key(key):
+                    # copy from base: see _h3_structural_key for the why
+                    preserved_keys += 1
+                    out = base_t
+                else:
+                    ref_t = of.get_tensor(key)
+                    # fp32 delta for numerical stability; cast back to base dtype.
+                    base32 = base_t.to(torch.float32)
+                    ref32 = ref_t.to(torch.float32)
+                    delta = ref32 - base32
 
-                if rank > 0 and _is_svd_eligible(key, tuple(base_t.shape)):
-                    approx, cap_frac, _ach = _randomized_svd_cap(delta, rank)
-                    delta = approx
-                    svd_counts += 1
-                    fam = _classify_h3_family(key)
-                    rec = energy_scratch.setdefault(fam, {"cap": 0.0, "n": 0})
-                    rec["cap"] += cap_frac
-                    rec["n"] += 1
-                elif rank > 0:
-                    exact_family_counts[_classify_h3_family(key)] = \
-                        exact_family_counts.get(_classify_h3_family(key), 0) + 1
+                    if rank > 0 and _is_svd_eligible(key, tuple(base_t.shape)):
+                        approx, cap_frac, _ach = _randomized_svd_cap(delta, rank)
+                        delta = approx
+                        svd_counts += 1
+                        fam = _classify_h3_family(key)
+                        rec = energy_scratch.setdefault(fam, {"cap": 0.0, "n": 0})
+                        rec["cap"] += cap_frac
+                        rec["n"] += 1
+                    elif rank > 0:
+                        exact_family_counts[_classify_h3_family(key)] = \
+                            exact_family_counts.get(_classify_h3_family(key), 0) + 1
 
-                if torch.equal(ref32, base32):
-                    zero_delta_keys += 1
+                    if torch.equal(ref32, base32):
+                        zero_delta_keys += 1
 
-                out = (base32 + strength * delta).to(base_t.dtype)
+                    out = (base32 + strength * delta).to(base_t.dtype)
+                    del ref_t, base32, ref32, delta
                 _write_tensor_bytes(out_f, out)
-                del out, base_t, ref_t, base32, ref32, delta
+                del out, base_t
 
                 done = i + 1
                 if done % progress_every == 0 or done == total_keys:
@@ -686,6 +698,7 @@ def _run_h3_delta(
                     progress_msg = (
                         f"h3_delta {done}/{total_keys} tensors "
                         f"(svd={svd_counts}, zero-delta={zero_delta_keys}, "
+                        f"preserved={preserved_keys}, "
                         f"elapsed {_format_duration(elapsed)}, "
                         f"eta {_format_duration(eta)})"
                     )
@@ -948,6 +961,22 @@ def _logical_shape(info: Any, recognized_w6a8: bool) -> Tuple[int, ...]:
 # in the standard model.diffusion_model. prefix, which makes their key set
 # look disjoint from bare-key pruned checkpoints at the full-keyset gate.
 _OVERLAY_WRAPPER_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
+# Mirror of the quantize side's preserve list (layer_config_builder.
+# PRESERVE_PATTERNS["MiniMax H3"]). The key/shape/dtype gate proves the
+# two files are STRUCTURALLY identical but cannot see conditioning
+# expressed in a foreign coordinate system: community releases have
+# shipped invented adaln_t_table fold modes (own h3_fold_mode metadata)
+# and blending that table plus its adaln_proj rows destroys the merged
+# model's conditioning even at strength 0.3 (verified on Singularity v2:
+# table distance 3.5, output distance 0.3*3.5). With preserve on
+# (default), these keys copy from the base; only trunk/embedding weights
+# blend. Opt out with payload preserve_structural=false.
+_H3_STRUCTURAL_RES = tuple(re.compile(p) for p in PRESERVE_PATTERNS["MiniMax H3"])
+
+
+def _h3_structural_key(key: str) -> bool:
+    return any(r.fullmatch(key) for r in _H3_STRUCTURAL_RES)
+
 # Both delta and graviton compute in fp32 and cast back to the base dtype,
 # so F16/BF16/F32 mixing between the two files is a packaging difference,
 # not an incompatibility (base dtype wins in the output).
@@ -1036,6 +1065,7 @@ def _run_h3_graviton(
     allow_quantized: bool = False,
     overlay_manifest: Optional[Dict[str, Any]] = None,
     overlay_key_map: Optional[Dict[str, str]] = None,
+    preserve_structural: bool = True,
 ) -> Iterable[Dict[str, Any]]:
     """
     GRAVITON merge (Geodesic Rank-Adaptive Variance-Isolated Tensor
@@ -1084,7 +1114,8 @@ def _run_h3_graviton(
         yield _log(
             f"h3_graviton dry run: {total_keys} tensors, rank={rank}"
             f"{' (Gavish-Donoho auto)' if rank < 0 else ''}, "
-            f"strength={t}, variant={_h3_variant(manifest_out)} "
+            f"strength={t}, structural-preserve={'on' if preserve_structural else 'off'}, "
+            f"variant={_h3_variant(manifest_out)} "
             f"(A={os.path.basename(a_path)}, B={os.path.basename(b_path)})\n"
         )
         yield {"type": "done", "status": "dry-run complete"}
@@ -1093,11 +1124,13 @@ def _run_h3_graviton(
     meta["h3_graviton_rank"] = str(rank)
     meta["h3_graviton_strength"] = f"{t:.6f}"
     meta["h3_graviton_variant"] = _h3_variant(manifest_out)
+    meta["h3_graviton_preserve_structural"] = "1" if preserve_structural else "0"
     if "__spacer" not in meta:
         meta["__spacer"] = " " * 4096
 
     svd_counts = 0
-    exact_family_counts: Dict[str, int] = {}
+    preserved_keys = 0
+    exact_family_counts: Dict[str, Dict[str, float]] = {}
     scratch: Dict[str, Dict[str, float]] = {}
     quant_diag: Dict[str, Dict[str, Any]] = {}
 
@@ -1120,46 +1153,52 @@ def _run_h3_graviton(
                 a_w6 = allow_quantized and _w6a8_recognized(key, base_manifest[key], base_keys)
                 b_w6 = (allow_quantized and overlay_manifest is not None
                         and _w6a8_recognized(key, overlay_manifest[key], set(overlay_manifest)))
-                if a_w6:
-                    a32, var_a = _dequant_w6a8(bf, key)
-                    noise_var += var_a
+                if preserve_structural and not a_w6 and _h3_structural_key(key):
+                    # copy from base, never blend: see _h3_structural_key for the why
+                    preserved_keys += 1
+                    out = bf.get_tensor(key)
                 else:
-                    a32 = bf.get_tensor(key).to(torch.float32)
-                if b_w6:
-                    b32, var_b = _dequant_w6a8(of, key)
-                    noise_var += var_b
-                else:
-                    b32 = of.get_tensor(key).to(torch.float32)
-                if a_w6 or b_w6:
-                    d = quant_diag.setdefault("w6a8", {"layers": 0, "sv": 0, "kept_gd": 0,
-                                                       "kept_eff": 0, "floor_hits": 0})
-                    d["layers"] += 1
+                    if a_w6:
+                        a32, var_a = _dequant_w6a8(bf, key)
+                        noise_var += var_a
+                    else:
+                        a32 = bf.get_tensor(key).to(torch.float32)
+                    if b_w6:
+                        b32, var_b = _dequant_w6a8(of, key)
+                        noise_var += var_b
+                    else:
+                        b32 = of.get_tensor(key).to(torch.float32)
+                    if a_w6 or b_w6:
+                        d = quant_diag.setdefault("w6a8", {"layers": 0, "sv": 0, "kept_gd": 0,
+                                                           "kept_eff": 0, "floor_hits": 0})
+                        d["layers"] += 1
 
-                if a32.ndim == 2 and _is_svd_eligible(key, tuple(a32.shape)):
-                    fam = _classify_h3_family(key)
-                    merged, cap_frac, gamma, gd_stats = _graviton_merge_matrix(
-                        a32, b32, t, rank, polar=(fam != "ada"), noise_var=noise_var)
-                    svd_counts += 1
-                    rec = scratch.setdefault(fam, {"cap": 0.0, "gam": 0.0, "n": 0})
-                    rec["cap"] += cap_frac
-                    rec["gam"] += gamma
-                    rec["n"] += 1
-                    if gd_stats is not None and (a_w6 or b_w6):
-                        d = quant_diag["w6a8"]
-                        d["sv"] += gd_stats["sv"]
-                        d["kept_gd"] += gd_stats["kept_gd"]
-                        d["kept_eff"] += gd_stats["kept_eff"]
-                        d["floor_hits"] += int(gd_stats["floor_hit"])
-                else:
-                    exact_family_counts[_classify_h3_family(key)] = \
-                        exact_family_counts.get(_classify_h3_family(key), 0) + 1
-                    merged = a32 + t * (b32 - a32)
+                    if a32.ndim == 2 and _is_svd_eligible(key, tuple(a32.shape)):
+                        fam = _classify_h3_family(key)
+                        merged, cap_frac, gamma, gd_stats = _graviton_merge_matrix(
+                            a32, b32, t, rank, polar=(fam != "ada"), noise_var=noise_var)
+                        svd_counts += 1
+                        rec = scratch.setdefault(fam, {"cap": 0.0, "gam": 0.0, "n": 0})
+                        rec["cap"] += cap_frac
+                        rec["gam"] += gamma
+                        rec["n"] += 1
+                        if gd_stats is not None and (a_w6 or b_w6):
+                            d = quant_diag["w6a8"]
+                            d["sv"] += gd_stats["sv"]
+                            d["kept_gd"] += gd_stats["kept_gd"]
+                            d["kept_eff"] += gd_stats["kept_eff"]
+                            d["floor_hits"] += int(gd_stats["floor_hit"])
+                    else:
+                        exact_family_counts[_classify_h3_family(key)] = \
+                            exact_family_counts.get(_classify_h3_family(key), 0) + 1
+                        merged = a32 + t * (b32 - a32)
 
-                src_dtype = base_manifest[key].dtype
-                out = merged.to({"F16": torch.float16, "BF16": torch.bfloat16,
-                                 "F32": torch.float32}.get(src_dtype, torch.bfloat16))
+                    src_dtype = base_manifest[key].dtype
+                    out = merged.to({"F16": torch.float16, "BF16": torch.bfloat16,
+                                     "F32": torch.float32}.get(src_dtype, torch.bfloat16))
+                    del a32, b32, merged
                 _write_tensor_bytes(out_f, out)
-                del out, a32, b32, merged
+                del out
 
                 done = i + 1
                 if done % progress_every == 0 or done == total_keys:
@@ -1168,6 +1207,7 @@ def _run_h3_graviton(
                     yield _progress(
                         f"h3_graviton {done}/{total_keys} tensors "
                         f"(graviton-svd={svd_counts}, exact={sum(exact_family_counts.values())}, "
+                        f"preserved={preserved_keys}, "
                         f"elapsed {_format_duration(elapsed)}, "
                         f"eta {_format_duration(eta)})"
                     )
@@ -1465,6 +1505,11 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             if strength > 1.0:   # GRAVITON interpolates, never extrapolates
                 strength = 1.0
 
+        # Structural-key preserve (delta + graviton): default on, matching
+        # the quantize side's preserve list; only explicit falsy opts out.
+        preserve_structural = payload.get("preserve_structural", True) not in (
+            False, 0, "0", "false", "False", "off")
+
         # Build metadata before the header (the runner writes it in).
         base_meta = _read_base_metadata(fl2va_path, preserve_loader_metadata)
         delta_meta: Dict[str, str] = dict(base_meta)
@@ -1487,15 +1532,18 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             yield _log(
                 f"h3_delta init: mode=rank {rank} "
                 f"({'exact' if rank == 0 else 'SVD-capped'}), strength={strength}, "
+                f"structural-preserve={'on' if preserve_structural else 'off'}, "
                 f"variant auto-detect from base\n"
             )
             events = _run_h3_delta(
                 fl2va_path, ref2va_path, base_manifest,
                 output_path, rank, strength, dry_run, delta_meta,
                 overlay_key_map=overlay_key_map,
+                preserve_structural=preserve_structural,
             )
             sidecar_details = [
                 f"Delta rank: {max(0, rank)}",
+                f"Preserve structural layers: {'yes (adaln timestep table + projections, norms, rope, final output head, token refiner, patch/conditioning projections copied from base — protects conditioning against overlays with foreign fold modes)' if preserve_structural else 'no (every key blended)'}",
                 f"Delta mode: {'exact' if rank <= 0 else f'svd-r{rank}'}",
                 f"Delta strength: {strength}",
             ]
@@ -1504,6 +1552,7 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 f"h3_graviton init: rank={rank}, strength={strength} (weight of B), "
                 f"order A=base({os.path.basename(fl2va_path)}) B=overlay"
                 f"({os.path.basename(ref2va_path)}), "
+                f"structural-preserve={'on' if preserve_structural else 'off'}, "
                 f"variant auto-detect from base\n"
             )
             events = _run_h3_graviton(
@@ -1511,11 +1560,13 @@ def run_model_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                 output_path, rank, strength, dry_run, delta_meta,
                 allow_quantized=allow_quantized, overlay_manifest=overlay_manifest,
                 overlay_key_map=overlay_key_map,
+                preserve_structural=preserve_structural,
             )
             sidecar_details = [
                 f"GRAVITON rank: {rank if rank >= 0 else 'auto (Gavish-Donoho)'}",
                 f"GRAVITON strength (weight of B): {strength}",
                 "GRAVITON steps: spectral denoise, sign mediation (pre-geodesic), polar rows, re-anchor",
+                f"Preserve structural layers: {'yes (adaln timestep table + projections, norms, rope, final output head, token refiner, patch/conditioning projections copied from base — protects conditioning against overlays with foreign fold modes)' if preserve_structural else 'no (every key blended)'}",
             ]
             if allow_quantized:
                 sidecar_details.append(

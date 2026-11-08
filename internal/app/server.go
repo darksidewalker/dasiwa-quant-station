@@ -834,6 +834,10 @@ type ModelMergeRequest struct {
 	// accepts QuantStation W6A8-packed inputs (dequantized in-engine, merged
 	// output stays float). Ignored by other recipes.
 	AllowQuantizedInputs bool `json:"allow_quantized_inputs,omitempty"`
+	// Structural-key preserve for h3_delta/h3_graviton (default on). Pointer
+	// so an explicit false survives re-marshal to Python (omitempty would
+	// drop a plain bool false and silently restore the default).
+	PreserveStructural *bool `json:"preserve_structural,omitempty"`
 	Strength float64 `json:"strength"`
 	// h3_hybrid recipe options (ignored by delta recipes):
 	// Block range for adaln_proj overlay (0-indexed, inclusive).
