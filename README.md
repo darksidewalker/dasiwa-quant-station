@@ -16,6 +16,7 @@ Built around the practical pain points of WAN 2.2, LTX-2.3, Krea 2, and MiniMax 
 - [Quantization Workflow](#quantization-workflow)
 - [MiniMax H3 NVFP4 HQ mixed profile](#minimax-h3-nvfp4-hq-mixed-profile)
 - [LoRA Merge Workflow](#lora-merge-workflow)
+- [Diffusers → H3 LoRA conversion](#diffusers--h3-lora-conversion)
 - [Model Merge (model-level)](#model-merge-model-level)
 - [Architecture And Preservation](#architecture-and-preservation)
 - [Diagnostic Tools](#diagnostic-tools)
@@ -36,7 +37,8 @@ Detailed reference material lives in the [doc/](doc/) folder — linked from eac
 |------|-------------|
 | Safetensors quantization | FP8, NVFP4, **NVFP4 HQ** (H3 per-block mixed profile), MXFP8, Hybrid MXFP8, INT8 Tensor-wise, INT8 Row-wise ConvRot Runtime, **INT4 ConvRot**, **W4A8 (asym_w4a8_int8)** and **W6A8 (w6a8_int8)** via `silveroxides/convert_to_quant` and `comfy-kitchen` |
 | GGUF conversion | F32/BF16/F16/Q8_0/Q6_K/Q5_K/Q4_K/Q3_K/Q2_K via `ggufy` with sensitivity maps for video tensor preservation |
-| LoRA merge | Architecture-aware additive or consensus checkpoint baking plus base-free LoRA-to-LoRA composition with standard LoRA or direct LoKr output; MiniMax H3, LTX-2.3, WAN 2.2, and Krea 2 profiles, per-adapter strength, dry-run, and strict matching |
+| H3 LoRA conversion | **Diffusers → H3**: converts Diffusers-format MiniMax H3 LoRAs (`transformer_blocks.N.attn.to_q`…) to ComfyUI-native H3 keys, exactly or SVD re-ranked |
+| LoRA merge | Architecture-aware additive, consensus, or opt-in GRAVITON checkpoint baking plus base-free LoRA-to-LoRA composition with standard LoRA or direct LoKr output; MiniMax H3, LTX-2.3, WAN 2.2, and Krea 2 profiles, per-adapter strength, dry-run, and strict matching |
 | Layer safety | Verified preserve/rescue tables for WAN 2.2, LTX-2.3, and Krea 2. Baked VAE/text/audio companion preservation for full checkpoints |
 | Metadata tools | Preview, read, inject modelspec metadata. In-place header rewrite (avoids GB-scale full rewrites). EC-based `modelspec.watermark` provenance (only-you-can-decode). Stale source hashes (`civitai.hash.*`, `modelspec.hash_sha256`) are dropped from generated outputs — they describe the source checkpoint, not the quant/merge result. **Loader metadata preservation** — per-run checkbox (on by default) that keeps loader-critical `__metadata__` (config, architecture, implementation, runtime quant layout) from the source checkpoint through quantization, LoRA merge, and model merge; the generated layout always wins over stale source layout, and unsupported quantized merge sources fail closed |
 | Diagnostics | 5D tensor scanner, pattern audit, LoRA shape-mismatch detection with ratio analysis |
@@ -116,6 +118,19 @@ An architecture marked with 🔒 has locally verified preserve/rescue tables. Ot
 | NeRF Large | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 | NeRF Small | &#x2705; | &#x2705; | &#x274C; | &#x2705; | &#x2705; | &#x274C; | &#x274C; | &#x274C; | &#x2705; | &#x2705; | &#x2705; |
 
+### Workflow modes
+
+| Mode | Input → output | Architectures |
+|------|----------------|---------------|
+| Quantize | checkpoint → quantized checkpoint (formats above) | per Support Matrix |
+| LoRA Merge | checkpoint + adapters → baked checkpoint | GRAVITON: all listed architecture presets; four dedicated preservation/strategy profiles: WAN 2.2, LTX-2.3, Krea 2, MiniMax H3 |
+| Merge LoRAs | adapters → one reusable LoRA/LoKr | any |
+| LoRA Extract | two checkpoints → LoRA | any; H3 adds full/pruned recipes |
+| H3 Prune | full H3 checkpoint → pruned H3 checkpoint | MiniMax H3 only |
+| Convert Adapter | full-width H3 adapter → pruned-gauge adapter | MiniMax H3 only |
+| Diffusers → H3 | Diffusers-format H3 LoRA → ComfyUI-native H3 LoRA (exact or SVD re-rank) | MiniMax H3 only |
+| Model Merge | two H3 checkpoints → merged checkpoint | MiniMax H3 only |
+
 If an INT8 model produces pixel clutter, first try **INT8 Tensor-wise**. W4A8, W6A8 and NVFP4 HQ are MiniMax H3 only.
 
 W6A8 requires `comfy-kitchen>=0.2.37` and a W6-capable ComfyUI runtime. It uses upstream symmetric uniform INT6 with scale search, FP8 group scales (32), FP32 channel scales and ConvRot 256. Only block qkv/out/fc1/fc2 weights are packed; AdaLN, norms, conditioning, token refiner, final layers and baked VAE/text/audio companions stay unchanged. Sources must be unquantized BF16/FP16 (FP32 is accepted); packed/FP8 sources are rejected. Outputs contain native `.comfy_quant` tensors and a companion recipe; existing outputs are never overwritten. This conservative final-layer policy differs from Kijai’s reference, which also packs `final_layer.video_out`. W6 inference quality is not implied by weight reconstruction tests.
@@ -170,6 +185,18 @@ The pattern audit detects which profile an H3 NVFP4 file actually uses — `nvfp
 
 ## LoRA Merge Workflow
 
+### GRAVITON adapter release 2026.11.13-graviton.1
+
+Select **GRAVITON** in either existing algorithm selector; additive/consensus defaults are unchanged. See [CHANGELOG.md](CHANGELOG.md). Runtime versioning remains the SHA-256 prefix of the rebuilt executable (rebuild before running the new API).
+
+- **Checkpoint baking, all listed architectures:** reconstruct each adapter's logical delta (`B @ A × alpha/rank`, direct `kron(w1,w2)`, or `.diff`/`.diff_b`), apply signed global/per-adapter/strategy scales, and sum in stable order. Set `B = base + sum(delta)` and invoke the existing GRAVITON kernel at `t=1`, automatic Gavish–Donoho spectral rank. This does **not** separately transform LoRA factors or reinterpret negative strengths as interpolation fractions. Trunk matrices use spectral/polar geometry and original-target row norms; conditioning-like matrices (AdaLN, modulation, norm, time/embed, caption/condition, rope, gate, refiner, text fusion) use spectral-linear treatment, never SLERP. Non-2D patches are ordinary additive updates; no flattening into invented matrix geometry.
+- **Reusable adapter composition, no base:** choose **GRAVITON (base-free spectral)** in **Merge LoRAs**. Sum signed effective deltas first, then run the kernel's spectral-linear branch against zero (`polar=False`, `t=1`, GD-auto). A zero tensor is **not** used as a fictitious checkpoint for polar geometry. This is a base-free adaptation, not full-checkpoint geodesic merging. Bias patches remain additive. Existing LoRA/LoKr/Auto output serialization, energy and rank controls apply; choose **LoRA** for standard reusable A/B output. `output_rank=0` still means largest-input-rank auto cap, not unlimited. Reported relative error includes spectral filtering plus BF16 storage/rank compression; retained energy describes factorization of the filtered delta.
+- **Safety:** native FP16/BF16/FP32/FP64 safetensors weights only; packed/quantized checkpoint baking remains rejected. Existing supported adapter representations/key mappings apply; this does not add new convolutional or factorized-LoKr support. Incompatible/unmatched/ambiguous targets, unsupported tensors and non-finite results fail closed in GRAVITON, even with skip/lenient matching selected. Explicit preservation/strategy exclusions remain reported. Zero strength is a no-op, and input order does not select an anchor adapter. Adaptive scaling, Krea unchain and complete-Turbo baking cannot be combined with GRAVITON.
+- **Architecture policy:** the four dedicated bake profiles retain their existing preservation/strategy rules. Other listed presets use shared companion preservation and existing generic strategy classification; there are no newly validated architecture-specific preservation tables or inference-quality claims for those presets.
+- **Execution:** existing per-target CUDA/headroom checks, CPU/OOM fallback, streaming atomic publication, cancellation and no-overwrite policy are retained. GRAVITON needs a dense logical delta plus spectral workspace **per touched layer**, not an entire checkpoint; large matrices can be substantially more expensive than additive merging. GD spectra above 8192 use the kernel's existing rank-64 fallback. Dry runs validate and report the plan without materializing/factorizing tensors or writing artifacts. Settings and recipe reload retain the algorithm; composition metadata/recipes state its base-free semantics.
+
+This is an experimental community-derived method, not an inference-validated quality improvement. Compare matching prompt/seed renders before using or distributing an output.
+
 1. Switch to **LoRA Merge** mode in the topbar mode switch (Quantize | LoRA Merge | Model Merge)
 2. Select a base checkpoint in the Source panel
 3. Add one or more LoRAs (multi-select, drag-and-drop supported). Each LoRA gets its own strategy type and independent strength multiplier
@@ -208,6 +235,21 @@ Switch to **Merge LoRAs**, add at least two LoRA, direct-LoKr, or `.diff` adapte
 Adapter composition rejects any input with no recognized LoRA/LoKr pairs or `.diff` patches before writing output, including standalone conditioning bridges with `fc1/fc2/fc3` weights and biases. Load those modules separately with a compatible runtime loader; full weights cannot safely be treated as LoRA deltas. Mixed adapters explicitly report every unsupported/unhandled tensor in logs, dry-run output, and the companion recipe; those tensors are not composed.
 
 For **LoRA Merge** (checkpoint baking), choose **Additive** to sum scaled deltas or **Consensus** to blend contributors targeting the same tensor before adding the result to the base. The consensus preset is used only with Consensus. Per-adapter strength, global strength, and architecture strategy apply before consensus; effective strength is limited to ±3. Adaptive scaling and Krea 2 Unchain are unavailable in checkpoint consensus mode. Preset thresholds and detailed input/output limitations: [LoRA merge strategies](doc/lora-merge-strategies.md).
+
+### Diffusers → H3 LoRA conversion
+
+ComfyUI loads MiniMax H3 LoRAs only under its native module names, and has no slice targets for them. **Diffusers → H3** rewrites a Diffusers-format H3 LoRA (`transformer.`/`base_model.model.` prefixes, `lora_A/B` or `lora_down/up`, optional `.alpha`) as `diffusion_model.*` keys:
+
+| Diffusers module | Native H3 module | Transform |
+|---|---|---|
+| `transformer_blocks.N.attn.to_q/to_k/to_v` | `blocks.N.attn.qkv_proj` | fused: A = [A_q; A_k; A_v], B = block-diagonal (rank r_q+r_k+r_v) |
+| `attn.to_out.0` | `attn.out_proj` | copied |
+| `ff.net.0.proj` | `mlp.fc1` | B row halves swapped (Diffusers `[value, gate]` → native `[gate, value]`) |
+| `ff.net.2` | `mlp.fc2` | copied |
+| `token_refiner.refiner_blocks.N.*` | `token_refiner.blocks.N.*` | same rules |
+| curve file `adaln_proj.linear.curve_A/curve_B` | `blocks.N.adaln_proj.linear` | only when the target checkpoint is curve-form (`adaln_t_table`), otherwise skipped with a reason |
+
+Pick the **Diffusers LoRA**, optionally the native **Target checkpoint** (verifies every output name/shape and decides curve applicability; reads the small AdaLN table to bind emitted curve updates to its canonical F32 SHA-256) and **Curve branches** (requires the checkpoint). `alpha/rank` is folded into B, so the output has no `.alpha`; strength 1.0 applies the mapped source update subject to BF16 factor-storage rounding. Unknown keys, orphan factors, missing q/k/v siblings and already-native input are errors listed in the dry-run report; nothing is silently dropped. **Exact** fuses without rank truncation but still rounds the stored factors to BF16 (the block-diagonal qkv B is about two thirds zeros); **SVD re-rank** factorizes each converted delta (Energy, Max rank; CPU) and reports per-module retained energy, median/worst relative error and modules above 5 % error in the console and `.txt` recipe. Outputs are never overwritten. Converted files remain MiniMax H3 derivatives under the MiniMax H3 Community License (and any adapter licence); compare renders with the same seed before relying on an SVD variant.
 
 ---
 

@@ -181,6 +181,9 @@ def _compose_layer(contributors, handles, device, algorithm, settings, actual, a
         down, up, report = factorize_additive_lora(pairs, max_rank=cap, energy=energy)
         tensors = {'.lora_A.weight': down.cpu().to(torch.bfloat16), '.lora_B.weight': up.cpu().to(torch.bfloat16)}
         return tensors, _serialized_report(contributors, handles, algorithm, settings, tensors, report), ConsensusStats()
+    if algorithm == "graviton":
+        from core.graviton_adapter import compose_layer
+        return compose_layer(contributors, handles, device, actual, anchor, cap, energy)
     merged = torch.empty(shape, dtype=torch.float32)
     stats = ConsensusStats()
     for start, end, rows, batch_stats in _merged_row_batches(contributors, handles, device, algorithm, settings):
@@ -205,8 +208,8 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         raise ValueError("LoRA composition requires at least two adapters")
     architecture = payload.get("architecture") or "LTX-2.3"
     algorithm = str(payload.get('merge_algorithm') or 'consensus').lower()
-    if algorithm not in {'consensus', 'additive'}:
-        raise ValueError('merge_algorithm must be consensus or additive')
+    if algorithm not in {'consensus', 'additive', 'graviton'}:
+        raise ValueError('merge_algorithm must be consensus, additive, or graviton')
     settings = resolve_consensus_preset(payload.get("consensus_preset"), architecture)
     output_kind = str(payload.get("output_adapter") or "auto").lower()
     if output_kind not in {"auto", "lora", "lokr"}:
@@ -232,12 +235,17 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         strength = float(spec.get("strength", 1.0))
         global_strength = float(1.0 if payload.get("global_strength") is None else payload["global_strength"])
         effective = strength * global_strength
+        if not math.isfinite(effective):
+            raise ValueError("adapter strengths must be finite")
         if abs(effective) > MAX_EFFECTIVE_LORA_STRENGTH:
             raise ValueError(f"{os.path.basename(path)} effective strength {effective:g} exceeds safe limit ±3")
         manifest = read_safetensors_manifest(path)
         manifests[path] = manifest
         pairs = discover_lora_pairs(manifest)
         patches = discover_diff_patches(manifest)
+        if algorithm == "graviton":
+            from core.graviton_adapter import validate_pairs
+            validate_pairs(pairs)
         supported_pairs = [pair for pair in pairs if pair.kind != "lokr_decomposed"]
         if not supported_pairs and not patches:
             raise ValueError(
@@ -251,6 +259,8 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                     (pair.down_key, pair.up_key, pair.alpha_key) if key}
         consumed.update(patch.diff_key for patch in patches)
         unhandled = sorted(set(manifest) - consumed)
+        if unhandled and algorithm == "graviton":
+            raise ValueError("GRAVITON unsupported/unhandled input tensors: " + ", ".join(unhandled))
         if unhandled:
             report = {"path": path, "count": len(unhandled), "keys": unhandled}
             unsupported_inputs.append(report)
@@ -307,6 +317,8 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         if len(shapes) != 1 or len(next(iter(shapes))) != 2:
             invalid.append(logical)
             continue
+        if algorithm == "graviton":
+            contributors = [item for item in contributors if item['scale'] != 0.] or contributors
         anchors = [item["lokr_shapes"] for item in contributors if item["lokr_shapes"]]
         actual = "lokr" if output_kind == "lokr" or (output_kind == "auto" and anchors) else "lora"
         if actual == "lokr" and not anchors:
@@ -316,7 +328,7 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
             invalid.append(logical + " (incompatible LoKr anchors)")
             continue
         plans.append((logical, contributors, actual, anchors[0] if anchors else None))
-    if invalid and mismatch == "error":
+    if invalid and (mismatch == "error" or algorithm == "graviton"):
         detail = ", ".join(invalid[:5])
         if any("missing LoKr anchor" in item for item in invalid):
             raise ValueError(f"LoKr anchor required for forced LoKr output: {detail}")
@@ -332,17 +344,21 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
          for _, contributors, _, _ in plans),
         default=0,
     )
+    if algorithm == "graviton":
+        estimated_bytes *= 8
     device = _device(payload, estimated_bytes)
 
+    from core.graviton_adapter import COMPOSE_SEMANTICS
     actual_kinds = sorted({actual for _, _, actual, _ in plans})
     yield _log(
-        f"LoRA composition init\nArchitecture: {architecture}\nPreset: {settings.name}\n"
+        f"LoRA composition init\nAlgorithm: {algorithm}\nArchitecture: {architecture}\nPreset: {settings.name}\n"
         f"Output adapter request: {output_kind}\nWill write: {', '.join(actual_kinds)}\n"
         f"Layers: {len(plans)} skipped={len(invalid)}\nDevice: {device}\n"
+        + (COMPOSE_SEMANTICS + "\n" if algorithm == "graviton" else "")
     )
     if dry_run:
         yield _log(json.dumps({"layers": len(plans), "skipped": invalid, "output_adapter": output_kind,
-                               "consensus_preset": settings.name, "unsupported_inputs": unsupported_inputs}, indent=2) + "\n")
+                               "merge_algorithm": algorithm, "consensus_preset": settings.name, "unsupported_inputs": unsupported_inputs}, indent=2) + "\n")
         yield _status("Dry run complete")
         yield {"type": "done", "status": "dry-run complete"}
         return
@@ -386,6 +402,8 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
 
         metadata = {"modelspec.architecture": architecture, "dasiwa.adapter_merge": algorithm,
                     "dasiwa.adapter_types": ",".join(sorted({item["kind"] for item in reports}))}
+        if algorithm == "graviton":
+            metadata["dasiwa.graviton_semantics"] = COMPOSE_SEMANTICS
         if output_gauge:
             metadata['adaln_coordinate_table_sha256'] = output_gauge
         recap = _reconstruction_recap(reports, max_rank=max_rank, energy=energy)
@@ -394,9 +412,12 @@ def run_lora_compose(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
                  f'Consensus preset: {settings.name}', f'Output adapter: {output_kind}',
                  f'Output rank: {max_rank}', f'Frobenius energy: {energy}',
                  f'Merge algorithm: {algorithm}',
+                 *([COMPOSE_SEMANTICS] if algorithm == 'graviton' else []),
                  'Output rank 0: legacy largest-input-rank auto cap (not unlimited)',
                  'Relative error: serialized BF16 factors versus original merged delta; bounded-row measurement',
                  'Retained energy: pre-storage SVD retained energy (not BF16 accuracy)']
+        if algorithm == "graviton":
+            lines.append("GRAVITON settings: " + json.dumps(dict(payload, output_path=output_path)))
         for index, spec in enumerate(specs, 1):
             lines.extend([f"{index}. {os.path.realpath(os.path.expanduser(spec['path']))}",
                           f"   Strength: {spec.get('strength', 1.0)}"])

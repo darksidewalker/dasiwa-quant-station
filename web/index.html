@@ -85,11 +85,18 @@
         <h2>H3 options</h2>
         <label class="field" id="h3-fold-label"><span>Fold coordinates</span><select id="h3-fold-mode" title="Reference uses the exact compatible pruned gauge; independent SVD is not portable to arbitrary ecosystem adapters"><option value="reference">Compatible reference (default)</option><option value="independent">Independent SVD (advanced)</option></select></label>
         <button id="h3-pick-reference" class="picker-button" type="button" title="Exact compatible pruned checkpoint supplying fold coordinates"><span>Pruned reference</span><strong id="h3-reference-label">Pick…</strong></button>
-        <button id="h3-pick-target" class="picker-button" type="button" title="Exact pruned checkpoint the converted adapter will target"><span>Pruned target</span><strong id="h3-target-label">Pick…</strong></button>
-        <button id="h3-pick-adapter" class="picker-button" type="button" title="Original full-width H3 adapter; time-changing adapters are rejected"><span>Full adapter</span><strong id="h3-adapter-label">Pick…</strong></button>
+        <button id="h3-pick-target" class="picker-button" type="button" title="Native H3 checkpoint the adapter targets (header checks; curve conversion also reads the small AdaLN table for its coordinate hash). Required pruned target for Convert Adapter; optional name/shape check and curve-form detection for Diffusers → H3"><span id="h3-target-hint">Pruned target</span><strong id="h3-target-label">Pick…</strong></button>
+        <button id="h3-pick-adapter" class="picker-button" type="button" title="Adapter to convert: a full-width H3 adapter (Convert Adapter) or a Diffusers-format H3 LoRA (Diffusers → H3)"><span id="h3-adapter-hint">Full adapter</span><strong id="h3-adapter-label">Pick…</strong></button>
+        <button id="h3-pick-curve" class="picker-button" type="button" title="Optional curve-branch file (adaln_proj.linear curve_A/curve_B); needs the target checkpoint and applies only when it is curve-form (adaln_t_table)"><span>Curve branches (optional)</span><strong id="h3-curve-label">Pick…</strong></button>
+        <div class="merge-option-fields" id="h3-diffusers-options">
+          <label class="field compact"><span title="Exact keeps the fused block-diagonal q/k/v factors; SVD re-rank factorizes each converted module's delta">Output</span><select id="h3-representation" title="Exact: fused block-diagonal qkv, no rank truncation; BF16 storage rounding still applies. SVD re-rank: smaller file, reports per-module error"><option value="exact">Exact</option><option value="svd">SVD</option></select></label>
+          <label class="field compact" id="h3-energy-label"><span title="Fraction of squared singular-value energy kept per module">Energy</span><input id="h3-energy" type="number" min="0.5" max="1" step="0.001" value="0.999" title="SVD energy target per module (default 0.999)"></label>
+          <label class="field compact" id="h3-max-rank-label"><span title="0 means no explicit rank cap">Max rank</span><input id="h3-max-rank" type="number" min="0" step="1" value="0" title="Rank cap per module; 0 = no cap"></label>
+        </div>
+        <button class="secondary" id="h3-clear-optional" type="button" title="Unset the optional target checkpoint and curve-branch file">Clear checkpoint &amp; curve</button>
         <div id="shared-compute"></div>
         <p class="hint" id="h3-variant-status">Source compatibility is checked by the backend; inference remains unverified.</p>
-        <button class="secondary" id="h3-load-recipe" type="button" title="Reload a H3 prune, adapter conversion or extraction sidecar recipe">Load Recipe</button>
+        <button class="secondary" id="h3-load-recipe" type="button" title="Reload a H3 prune, adapter conversion, Diffusers LoRA conversion or extraction sidecar recipe">Load Recipe</button>
       </section>
 
       <section class="panel mm-side-panel hidden" id="mm-side-panel">
@@ -236,6 +243,7 @@
             <button data-mode="extract" type="button" title="Extract a LoRA from the difference between two matching checkpoints">LoRA Extract</button>
             <button data-mode="h3-prune" type="button" title="Explicitly prune a full floating MiniMax H3 checkpoint">H3 Prune</button>
             <button data-mode="h3-adapter-convert" type="button" title="Convert a full H3 adapter into an exact pruned target gauge">Convert Adapter</button>
+            <button data-mode="h3-diffusers-lora" type="button" title="Convert a Diffusers-format MiniMax H3 LoRA to ComfyUI-native H3 LoRA keys">Diffusers → H3</button>
             <button data-mode="model" type="button" title="Model-level merge (e.g. MiniMax H3 fl2va/ref2va hybrid)">Model Merge</button>
           </div>
           <div class="workflow-heading" aria-live="polite">
@@ -276,7 +284,7 @@
 
         <section class="lora-card hidden" data-workflow-panel="lora">
           <div class="lora-controls" id="compose-controls" style="display:none">
-            <label class="field compact"><span>Algorithm</span><select id="compose-merge-algorithm" title="Consensus blends directions; additive reproduces a weighted live adapter stack before compression"><option value="consensus">Consensus</option><option value="additive">Additive</option></select></label>
+            <label class="field compact"><span>Algorithm</span><select id="compose-merge-algorithm" title="Consensus blends directions; additive reproduces a weighted live adapter stack before compression"><option value="consensus">Consensus</option><option value="additive">Additive</option><option value="graviton" title="Base-free spectral denoising of the signed delta sum; GD-auto rank, no checkpoint geodesic">GRAVITON (base-free spectral)</option></select></label>
             <label class="field compact" title="Consensus weighting: Balanced adds diversity filtering and comfort bandpass; Conservative rejects weakly aligned rows; Neutral uses similarity weights without diversity."><span>Consensus preset</span><select id="compose-preset" title="Choose Balanced, Conservative, or Neutral consensus weighting"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
             <label class="field compact"><span>Output adapter</span><select id="compose-output-adapter" title="Auto writes LoKr on layers with compatible direct-LoKr anchors and LoRA elsewhere; LoRA writes SVD factors; Direct LoKr needs anchors and may be lossy."><option value="auto">Auto</option><option value="lora">LoRA</option><option value="lokr">Direct LoKr</option></select></label>
             <label class="field compact"><span title="Maximum SVD rank for LoRA output. 0 removes the explicit cap but defaults to the largest input rank per layer; higher ranks increase size and compute.">Max rank (0 = auto)</span><input id="compose-output-rank" type="number" min="0" step="1" value="0" title="0 uses the largest input rank per layer; a positive value caps the output rank and may miss the energy target"></label>
@@ -288,7 +296,7 @@
           <div class="lora-controls bake-options" id="lora-bake-controls">
             <fieldset class="merge-option-group"><legend>Merge</legend>
               <div class="merge-option-fields">
-                <label class="field compact"><span title="Additive sums scaled adapter deltas; Consensus blends contributors for each target tensor before baking into the checkpoint.">Merge algorithm</span><select id="lora-merge-algorithm" title="Choose conventional addition or consensus-weighted blending"><option value="additive">Additive</option><option value="consensus">Consensus</option></select></label>
+                <label class="field compact"><span title="Additive sums scaled adapter deltas; Consensus blends contributors for each target tensor before baking into the checkpoint.">Merge algorithm</span><select id="lora-merge-algorithm" title="Choose conventional addition or consensus-weighted blending"><option value="additive">Additive</option><option value="consensus">Consensus</option><option value="graviton" title="Base to base + summed signed deltas; GD-auto spectral/polar merge at t=1; conditioning stays spectral-linear">GRAVITON</option></select></label>
                 <label class="field compact"><span title="Balanced uses diversity and comfort bandpass; Conservative rejects weakly aligned rows; Neutral similarity-weights without diversity. Used only with Consensus.">Consensus preset</span><select id="lora-consensus-preset" title="Consensus only: choose Balanced, Conservative, or Neutral weighting"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="neutral">Neutral</option></select></label>
                 <label class="field compact">
                   <span title="Multiplier applied to all LoRA strengths (0=none, 1=full, >1=boosted)">Global Strength</span>

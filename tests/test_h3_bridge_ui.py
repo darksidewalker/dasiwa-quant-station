@@ -9,7 +9,7 @@ class H3BridgeContract(unittest.TestCase):
     def test_new_commands_stream_backend_generators(self):
         tree = ast.parse((ROOT / 'scripts/go_bridge.py').read_text())
         functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-        for command in ('h3_prune', 'h3_adapter_convert'):
+        for command in ('h3_prune', 'h3_adapter_convert', 'h3_diffusers_lora'):
             self.assertIn('cmd_' + command, functions)
             text = ast.unparse(functions['cmd_' + command])
             self.assertIn('run_' + command + '(payload)', text)

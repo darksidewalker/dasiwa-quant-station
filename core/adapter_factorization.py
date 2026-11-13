@@ -76,7 +76,8 @@ def factorize_lora(
         rank = 1
     else:
         cumulative = torch.cumsum(singular.square(), dim=0) / total
-        rank = int(torch.searchsorted(cumulative, torch.tensor(energy, device=cumulative.device)).item()) + 1
+        # Rounding can leave cumulative[-1] just below 1.0, so energy=1.0 must not overrun the spectrum.
+        rank = min(int(torch.searchsorted(cumulative, torch.tensor(energy, device=cumulative.device)).item()) + 1, singular.numel())
     if max_rank:
         rank = min(rank, max_rank)
     root = torch.sqrt(singular[:rank])

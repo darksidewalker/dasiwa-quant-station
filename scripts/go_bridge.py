@@ -349,6 +349,13 @@ def cmd_h3_adapter_convert(args):
         _emit(event)
 
 
+def cmd_h3_diffusers_lora(args):
+    from core.h3_diffusers_lora_engine import run_h3_diffusers_lora
+    payload = _load_payload(args)
+    for event in run_h3_diffusers_lora(payload):
+        _emit(event)
+
+
 def cmd_lora_merge(args):
     ensure_dirs()
     payload = _load_payload(args)
@@ -464,6 +471,10 @@ def main():
     p = sub.add_parser("h3-adapter-convert", help="Convert a full H3 adapter into an exact target pruned gauge.")
     p.add_argument("--json", required=True)
     p.set_defaults(func=cmd_h3_adapter_convert)
+
+    p = sub.add_parser("h3-diffusers-lora", help="Convert a Diffusers MiniMax H3 LoRA to ComfyUI-native H3 keys.")
+    p.add_argument("--json", required=True)
+    p.set_defaults(func=cmd_h3_diffusers_lora)
 
     p = sub.add_parser("lora-merge")
     p.add_argument("--json")

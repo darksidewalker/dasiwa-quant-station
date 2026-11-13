@@ -17,11 +17,12 @@ streams.
 | POST | `/api/metadata/read` | Read metadata from safetensors/GGUF |
 | POST | `/api/metadata/inject` | Inject metadata into safetensors |
 | POST | `/api/quantize` | Start quantization job |
-| POST | `/api/lora/merge` | Start checkpoint baking; `h3_turbo_complete` is default-OFF and requires additive H3 application |
-| POST | `/api/lora/compose` | Compose adapters; `merge_algorithm` is `consensus` (default) or `additive` |
+| POST | `/api/lora/merge` | Start checkpoint baking; `merge_algorithm`: `additive` (default), `consensus`, or `graviton`; `h3_turbo_complete` remains additive H3 only |
+| POST | `/api/lora/compose` | Compose adapters; `merge_algorithm`: `consensus` (default), `additive`, or `graviton` (base-free spectral sum, not checkpoint polar geometry) |
 | POST | `/api/lora/extract` | Extract weight factors and bias patches from compatible checkpoints |
 | POST | `/api/h3/prune` | Fold a full floating H3 checkpoint using reference coordinates or independent SVD |
 | POST | `/api/h3/adapter-convert` | Convert a full-trained H3 adapter into the exact target pruned coordinates |
+| POST | `/api/h3/diffusers-lora` | Convert a Diffusers-format H3 LoRA to ComfyUI-native H3 keys (exact or SVD re-rank) |
 | POST | `/api/model-merge` | Start model-level merge job (e.g. H3 hybrid) |
 | POST | `/api/update` | Pull source, update dependencies, and restart |
 | POST | `/api/memory/clean` | Release RAM/VRAM caches |
@@ -34,10 +35,12 @@ streams.
 
 ## H3 request contract
 
-Both H3 jobs accept `base_path`, `architecture: "MiniMax H3"`, `output_path` or `output_dir`/`output_name`, `merge_device: "auto"|"cpu"|"cuda"`, `cuda_device`, `vram_headroom_mb`, and `dry_run`. Destinations must not overwrite an input, existing output or its exact `output.safetensors.txt` sidecar. Successful jobs return a `job_id`; consume the existing SSE endpoint for preparation, progress and final status. Stop cancels the job and cleans its owned staging files, not unrelated directories.
+Prune and adapter conversion accept `base_path`, `architecture: "MiniMax H3"`, `output_path` or `output_dir`/`output_name`, `merge_device: "auto"|"cpu"|"cuda"`, `cuda_device`, `vram_headroom_mb`, and `dry_run`. Destinations must not overwrite an input, existing output or its exact `output.safetensors.txt` sidecar. Successful jobs return a `job_id`; consume the existing SSE endpoint for preparation, progress and final status. Stop cancels the job and cleans its owned staging files, not unrelated directories.
 
 Pruning defaults to `fold_mode: "reference"` and requires `reference_path`. `fold_mode: "independent"` derives new SVD coordinates and does not promise compatibility with existing pruned adapters. Conversion requires `adapter_path` and `pruned_target_path`, plus the matching original full `base_path`.
 
 `GET /api/config` includes `h3_ctq.supported` and `h3_ctq.detail` from an installed-converter capability check. This is converter availability, not inference validation. Quantization accepts `h3_quant_policy: "preserve_structural"` (default) or `"upstream_int8_convrot"`; the latter is restricted to H3, Simple strategy and `INT8 Row-wise ConvRot Runtime`. `verbose_level` accepts `DEBUG`, `VERBOSE`, `NORMAL` or `MINIMAL`.
+
+`/api/h3/diffusers-lora` takes no `base_path`: it requires `adapter_path` (the Diffusers LoRA) and accepts an optional `checkpoint_path` (native H3 checkpoint; header checks, plus the small AdaLN table for coordinate hashing when curve updates are emitted), an optional `curve_path` (requires `checkpoint_path`), `representation: "exact"|"svd"`, and for SVD `energy` (default 0.999) and `max_rank` (0 = no cap). It shares the destination, `dry_run`, SSE and staging-cleanup rules above; the output directory defaults to the adapter's folder.
 
 See [H3 pruning and adapters](h3-pruning-and-adapters.md) for coordinate binding, affine bias offsets and verified execution scope.

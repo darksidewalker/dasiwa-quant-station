@@ -93,15 +93,25 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     if merge_algorithm == "consensus" and krea2_unchain:
         raise ValueError("Krea 2 unchain cannot be combined with consensus merge")
 
+    if merge_algorithm == "graviton" and (adaptive or krea2_unchain):
+        raise ValueError("GRAVITON cannot use adaptive scaling or Krea 2 unchain")
     _validate_lora_strengths(loras, global_strength)
 
     is_preserved, classify_key, strat_mult = _get_profile(architecture)
+    if merge_algorithm == "graviton":
+        from core.graviton_adapter import preserved_key
+        preserved_key("", architecture, lambda key: False)
+        profile_preserved = is_preserved
+        is_preserved = lambda key: preserved_key(key, architecture, profile_preserved)
     if turbo_complete:
         from utils.minimax_h3_layer_profiles import is_h3_turbo_update_key
         default_preserved = is_preserved
         is_preserved = lambda key: default_preserved(key) and not is_h3_turbo_update_key(key)
 
     yield _log(f"LoRA merge init\nBase: {base_path}\nArchitecture: {architecture}\nStrategy: {strategy}\nAlgorithm: {merge_algorithm}\nConsensus preset: {consensus_settings.name}\nAdaptive: {'yes' if adaptive else 'no'}\nDry run: {'yes' if dry_run else 'no'}\nMerge device: requested={merge_device} cuda_device={cuda_device} headroom={vram_headroom_mb}MB\n")
+    if merge_algorithm == "graviton":
+        from core.graviton_adapter import BAKE_SEMANTICS
+        yield _log(BAKE_SEMANTICS + "\n")
     yield _log(f"Protect Token Refiner: {'yes' if protect_token_refiner else 'no'} (checkpoint baking only)\n")
     reject_quantized_merge_source(base_path)
     base_metadata = read_source_metadata(base_path)
@@ -134,11 +144,16 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         lora_manifest = read_safetensors_manifest(lora_path)
         pairs = discover_lora_pairs(lora_manifest)
         diff_patches = discover_diff_patches(lora_manifest)
-        if turbo_complete:
+        if merge_algorithm == "graviton":
+            from core.graviton_adapter import validate_pairs
+            validate_pairs(pairs)
+        if turbo_complete or merge_algorithm == "graviton":
             accounted = {key for pair in pairs for key in
                          (pair.down_key, pair.up_key, pair.alpha_key) if key}
             accounted.update(dp.diff_key for dp in diff_patches)
             for key in sorted(set(lora_manifest) - accounted):
+                if merge_algorithm == "graviton":
+                    raise ValueError(f"GRAVITON unsupported/unhandled input tensor: {key}")
                 unmatched += 1
                 reports.append(_report(key, None, 'unhandled_source_tensor', lora_path))
         kind_counts: Dict[str, int] = {}
@@ -281,6 +296,9 @@ def run_lora_merge(payload: Dict[str, Any]) -> Iterable[Dict[str, str]]:
         else:
             yield _log(f"Skipping unchain: {unchain_target} not found in base checkpoint\n")
 
+    if merge_algorithm == "graviton" and (unmatched or ambiguous):
+        raise ValueError("GRAVITON incompatible/unmatched adapter targets: " + json.dumps(
+            [r for r in reports if r["status"].startswith(("unmatched", "ambiguous", "shape_mismatch"))]))
     if turbo_complete:
         omissions = [r for r in reports if r['status'] not in {'matched', 'matched_diff', 'skipped_token_refiner'}]
         if strict and omissions:
@@ -574,8 +592,8 @@ def _tensor_was_altered(before: torch.Tensor, after: torch.Tensor) -> bool:
 
 def _normalize_merge_algorithm(value: str | None) -> str:
     algorithm = (value or "additive").strip().lower()
-    if algorithm not in {"additive", "consensus"}:
-        raise ValueError(f"merge_algorithm must be additive or consensus; got {value!r}")
+    if algorithm not in {"additive", "consensus", "graviton"}:
+        raise ValueError(f"merge_algorithm must be additive, consensus, or graviton; got {value!r}")
     return algorithm
 
 
@@ -598,6 +616,8 @@ def _validate_lora_strengths(loras: List[Dict[str, Any]], global_strength: float
         lora_path = os.path.realpath(os.path.expanduser(spec.get("path", "")))
         strength = float(spec.get("strength", 1.0))
         effective = global_strength * strength
+        if not math.isfinite(effective):
+            raise ValueError("adapter strengths must be finite")
         if abs(effective) > MAX_EFFECTIVE_LORA_STRENGTH:
             name = os.path.basename(lora_path) or "LoRA"
             raise ValueError(
@@ -771,6 +791,9 @@ def _merge_target_consensus(base: torch.Tensor, ops: List[Dict[str, Any]], lora_
 
 def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lora_handles: Dict[str, Any], adaptive: bool, policy: str, device: str, headroom_mb: int, algorithm: str = "additive", consensus_settings: Any = None) -> Tuple[torch.Tensor, str, str | None]:
     def merge_on(target_device: str) -> torch.Tensor:
+        if algorithm == "graviton":
+            from core.graviton_adapter import bake_target
+            return bake_target(base, ops, lora_handles, target_device)
         if algorithm == "consensus":
             return _merge_target_consensus(base, ops, lora_handles, consensus_settings, target_device)
         if target_device == "cpu":
@@ -793,6 +816,9 @@ def _merge_target_with_policy(base: torch.Tensor, ops: List[Dict[str, Any]], lor
         up_shape = tuple(lf.get_slice(op["up_key"]).get_shape())
         estimate = _estimate_lora_merge_peak_bytes(tuple(base.shape), down_shape, up_shape)
         estimated = estimated + estimate if algorithm == "consensus" else max(estimated, estimate)
+    if algorithm == "graviton":
+        # Smaller-Gram eigh plus dense delta/overlay and polar intermediates.
+        estimated += base.numel() * 4 * 32
     if not _has_cuda_headroom(device, estimated, headroom_mb):
         return merge_on("cpu"), "cpu", "insufficient_vram"
 
@@ -940,6 +966,9 @@ def _write_recipe(output_path: str, payload: Dict[str, Any],
         "=" * 64,
     ])
 
+    if payload.get('merge_algorithm') == 'graviton':
+        from core.graviton_adapter import BAKE_SEMANTICS
+        lines.append(BAKE_SEMANTICS)
     if payload.get('_h3_turbo_audit'):
         lines.extend(['H3 Turbo source audit:', json.dumps(payload['_h3_turbo_audit'], indent=2)])
     text = '\n'.join(lines) + '\n'

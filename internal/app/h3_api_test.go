@@ -18,7 +18,7 @@ func TestH3RoutesRejectInvalidBeforeJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, route := range []string{"/api/h3/prune", "/api/h3/adapter-convert"} {
+	for _, route := range []string{"/api/h3/prune", "/api/h3/adapter-convert", "/api/h3/diffusers-lora"} {
 		r := httptest.NewRecorder()
 		s.http.Handler.ServeHTTP(r, httptest.NewRequest("POST", route, strings.NewReader(`{}`)))
 		if r.Code != 400 {
@@ -26,6 +26,119 @@ func TestH3RoutesRejectInvalidBeforeJob(t *testing.T) {
 		}
 	}
 }
+func TestH3DiffusersLoraValidation(t *testing.T) {
+	d := t.TempDir()
+	lora, ckpt := filepath.Join(d, "lora.safetensors"), filepath.Join(d, "ckpt.safetensors")
+	os.WriteFile(lora, []byte("fixture"), 0600)
+	os.WriteFile(ckpt, []byte("fixture"), 0600)
+	s := &Server{modelsDir: d}
+	for name, req := range map[string]H3Request{
+		"curve without checkpoint": {AdapterPath: lora, CurvePath: lora, DryRun: true},
+		"base path":                {AdapterPath: lora, BasePath: ckpt, DryRun: true},
+		"representation":           {AdapterPath: lora, Representation: "lokr", DryRun: true},
+		"energy":                   {AdapterPath: lora, Energy: 1.5, DryRun: true},
+		"negative rank":            {AdapterPath: lora, MaxRank: -1, DryRun: true},
+		"missing adapter":          {CheckpointPath: ckpt, DryRun: true},
+		"output aliases input":     {AdapterPath: lora, OutputPath: ckpt},
+	} {
+		if err := s.validateH3Request(&req, "h3-diffusers-lora"); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	if err := s.validateH3Request(&H3Request{CheckpointPath: ckpt, BasePath: ckpt, FoldMode: "independent"}, "h3-prune"); err == nil {
+		t.Fatal("prune accepted a Diffusers checkpoint_path")
+	}
+	req := H3Request{AdapterPath: lora, CheckpointPath: ckpt, CurvePath: lora, OutputName: "native"}
+	if err := s.validateH3Request(&req, "h3-diffusers-lora"); err != nil {
+		t.Fatal(err)
+	}
+	if req.OutputPath != filepath.Join(d, "native.safetensors") || req.Representation != "exact" || req.Energy != 0.999 {
+		t.Fatalf("defaults not applied: %+v", req)
+	}
+}
+func TestH3DiffusersRestoredRecipeDryRunExistingDestination(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := t.TempDir()
+	s := &Server{rootDir: root, modelsDir: d, python: filepath.Join(root, ".venv", "bin", "python"), jobs: NewJobStore()}
+	adapter, output := filepath.Join(d, "adapter.safetensors"), filepath.Join(d, "out.safetensors")
+	script := "import sys,torch;sys.path.insert(0," + strconv.Quote(root) + ");from safetensors.torch import save_file;from core.h3_diffusers_lora_engine import run_h3_diffusers_lora;save_file({'transformer_blocks.0.attn.to_out.0.lora_A.weight':torch.ones(1,2),'transformer_blocks.0.attn.to_out.0.lora_B.weight':torch.ones(2,1)},sys.argv[1]);list(run_h3_diffusers_lora(dict(adapter_path=sys.argv[1],output_path=sys.argv[2])))"
+	if out, err := exec.Command(s.python, "-c", script, adapter, output).CombinedOutput(); err != nil {
+		t.Fatalf("fixture: %v %s", err, out)
+	}
+	original, _ := os.ReadFile(output)
+	recipe, err := os.ReadFile(output + ".txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored struct {
+		Settings H3Request `json:"settings"`
+	}
+	if err := json.Unmarshal(recipe[strings.IndexByte(string(recipe), '{'):], &restored); err != nil {
+		t.Fatal(err)
+	}
+	restored.Settings.DryRun = true
+	payload, _ := json.Marshal(restored.Settings)
+	r := httptest.NewRecorder()
+	s.handleH3DiffusersLora(r, httptest.NewRequest("POST", "/api/h3/diffusers-lora", strings.NewReader(string(payload))))
+	if r.Code != 200 {
+		t.Fatalf("restored dry run rejected: %s", r.Body.String())
+	}
+	var response map[string]string
+	json.Unmarshal(r.Body.Bytes(), &response)
+	job := s.jobs.Get(response["job_id"])
+	if job == nil {
+		t.Fatal("missing job")
+	}
+	t.Cleanup(job.cancel)
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	completed := false
+	for {
+		select {
+		case event, ok := <-job.Events:
+			if !ok {
+				goto finished
+			}
+			if event.Type == "error" {
+				t.Fatal(event.Text)
+			}
+			if event.Type == "done" && event.Status == "dry-run complete" {
+				completed = true
+			}
+		case <-timer.C:
+			t.Fatal("dry run timed out")
+		}
+	}
+finished:
+	if !completed {
+		t.Fatal("missing dry-run completion")
+	}
+	for path, want := range map[string]string{output: string(original), output + ".txt": string(recipe)} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("dry run changed %s: %v", path, err)
+		}
+	}
+	restored.Settings.DryRun = false
+	if err := s.validateH3Request(&restored.Settings, "h3-diffusers-lora"); err == nil {
+		t.Fatal("write accepted existing output")
+	}
+	if err := os.Remove(output); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.validateH3Request(&restored.Settings, "h3-diffusers-lora"); err == nil {
+		t.Fatal("write accepted existing sidecar")
+	}
+	restored.Settings.DryRun = true
+	restored.Settings.OutputPath = adapter
+	if err := s.validateH3Request(&restored.Settings, "h3-diffusers-lora"); err == nil {
+		t.Fatal("dry run accepted input alias")
+	}
+}
+
 func TestH3TurboValidation(t *testing.T) {
 	s := &Server{modelsDir: t.TempDir(), jobs: NewJobStore()}
 	for _, payload := range []string{
@@ -61,13 +174,13 @@ func TestH3ExactRecipeDestination(t *testing.T) {
 	os.WriteFile(out+".txt", []byte("owned recipe"), 0600)
 	s := &Server{modelsDir: d}
 	req := H3Request{BasePath: src, FoldMode: "independent", OutputPath: out}
-	if err := s.validateH3Request(&req, false); err == nil {
+	if err := s.validateH3Request(&req, "h3-prune"); err == nil {
 		t.Fatal("accepted existing exact writer sidecar")
 	}
 	os.Remove(out + ".txt")
 	os.WriteFile(filepath.Join(d, "out.txt"), []byte("unrelated"), 0600)
 	req = H3Request{BasePath: src, FoldMode: "independent", OutputPath: out}
-	if err := s.validateH3Request(&req, false); err != nil {
+	if err := s.validateH3Request(&req, "h3-prune"); err != nil {
 		t.Fatalf("unrelated sidecar blocked output: %v", err)
 	}
 	if req.OutputPath != out {
@@ -714,12 +827,12 @@ func TestH3DestinationSafety(t *testing.T) {
 	s := &Server{modelsDir: d}
 	for _, name := range []string{"../escape", "base.safetensors"} {
 		req := H3Request{BasePath: src, FoldMode: "independent", OutputName: name}
-		if err := s.validateH3Request(&req, false); err == nil {
+		if err := s.validateH3Request(&req, "h3-prune"); err == nil {
 			t.Fatalf("unsafe destination accepted: %s", name)
 		}
 	}
 	req := H3Request{BasePath: src, FoldMode: "independent", OutputName: "out", MergeDevice: "cpu"}
-	if err := s.validateH3Request(&req, false); err != nil {
+	if err := s.validateH3Request(&req, "h3-prune"); err != nil {
 		t.Fatal(err)
 	}
 	if req.Architecture != "MiniMax H3" || req.OutputPath != filepath.Join(d, "out.safetensors") {

@@ -83,6 +83,7 @@ func NewServer() (*Server, error) {
 	mux.HandleFunc("POST /api/model-merge", s.handleModelMerge)
 	mux.HandleFunc("POST /api/h3/prune", s.handleH3Prune)
 	mux.HandleFunc("POST /api/h3/adapter-convert", s.handleH3AdapterConvert)
+	mux.HandleFunc("POST /api/h3/diffusers-lora", s.handleH3DiffusersLora)
 	mux.HandleFunc("POST /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/memory/clean", s.handleMemoryClean)
 	mux.HandleFunc("GET /api/jobs/{id}/events", s.handleJobEvents)
@@ -529,22 +530,27 @@ func (s *Server) handleMetadataInject(w http.ResponseWriter, r *http.Request) {
 }
 
 type H3Request struct {
-	BasePath         string `json:"base_path"`
-	ReferencePath    string `json:"reference_path"`
-	PrunedTargetPath string `json:"pruned_target_path"`
-	AdapterPath      string `json:"adapter_path"`
-	OutputPath       string `json:"output_path"`
-	OutputDir        string `json:"output_dir"`
-	OutputName       string `json:"output_name"`
-	Architecture     string `json:"architecture"`
-	FoldMode         string `json:"fold_mode"`
-	MergeDevice      string `json:"merge_device"`
-	CUDADevice       string `json:"cuda_device"`
-	VRAMHeadroomMB   int    `json:"vram_headroom_mb"`
-	DryRun           bool   `json:"dry_run"`
+	BasePath         string  `json:"base_path"`
+	ReferencePath    string  `json:"reference_path"`
+	PrunedTargetPath string  `json:"pruned_target_path"`
+	AdapterPath      string  `json:"adapter_path"`
+	CheckpointPath   string  `json:"checkpoint_path"`
+	CurvePath        string  `json:"curve_path"`
+	Representation   string  `json:"representation"`
+	Energy           float64 `json:"energy"`
+	MaxRank          int     `json:"max_rank"`
+	OutputPath       string  `json:"output_path"`
+	OutputDir        string  `json:"output_dir"`
+	OutputName       string  `json:"output_name"`
+	Architecture     string  `json:"architecture"`
+	FoldMode         string  `json:"fold_mode"`
+	MergeDevice      string  `json:"merge_device"`
+	CUDADevice       string  `json:"cuda_device"`
+	VRAMHeadroomMB   int     `json:"vram_headroom_mb"`
+	DryRun           bool    `json:"dry_run"`
 }
 
-func (s *Server) validateH3Request(req *H3Request, convert bool) error {
+func (s *Server) validateH3Request(req *H3Request, command string) error {
 	if req.Architecture == "" {
 		req.Architecture = "MiniMax H3"
 	}
@@ -557,16 +563,46 @@ func (s *Server) validateH3Request(req *H3Request, convert bool) error {
 	if req.FoldMode != "reference" && req.FoldMode != "independent" {
 		return fmt.Errorf("fold_mode must be reference or independent")
 	}
-	if req.BasePath == "" {
-		return fmt.Errorf("full source checkpoint is required")
+	var paths []*string
+	if command != "h3-diffusers-lora" && (req.CheckpointPath != "" || req.CurvePath != "") {
+		return fmt.Errorf("checkpoint/curve paths are only valid for Diffusers LoRA conversion")
 	}
-	paths := []*string{&req.BasePath}
-	if convert {
+	switch command {
+	case "h3-diffusers-lora":
+		if req.AdapterPath == "" || req.BasePath != "" || req.ReferencePath != "" || req.PrunedTargetPath != "" {
+			return fmt.Errorf("Diffusers LoRA conversion takes adapter_path plus optional checkpoint_path/curve_path only")
+		}
+		if req.CurvePath != "" && req.CheckpointPath == "" {
+			return fmt.Errorf("curve branches require the target checkpoint")
+		}
+		if req.Representation == "" {
+			req.Representation = "exact"
+		}
+		if req.Energy == 0 {
+			req.Energy = 0.999
+		}
+		if (req.Representation != "exact" && req.Representation != "svd") || req.Energy < 0 || req.Energy > 1 || req.MaxRank < 0 {
+			return fmt.Errorf("representation must be exact or svd, energy in (0, 1], max_rank >= 0")
+		}
+		paths = append(paths, &req.AdapterPath)
+		for _, optional := range []*string{&req.CheckpointPath, &req.CurvePath} {
+			if *optional != "" {
+				paths = append(paths, optional)
+			}
+		}
+	case "h3-adapter-convert":
+		if req.BasePath == "" {
+			return fmt.Errorf("full source checkpoint is required")
+		}
 		if req.FoldMode != "reference" || req.PrunedTargetPath == "" || req.AdapterPath == "" || req.ReferencePath != "" {
 			return fmt.Errorf("conversion requires target and adapter, reference fold mode only")
 		}
-		paths = append(paths, &req.PrunedTargetPath, &req.AdapterPath)
-	} else {
+		paths = append(paths, &req.BasePath, &req.PrunedTargetPath, &req.AdapterPath)
+	default:
+		if req.BasePath == "" {
+			return fmt.Errorf("full source checkpoint is required")
+		}
+		paths = append(paths, &req.BasePath)
 		if req.AdapterPath != "" || req.PrunedTargetPath != "" {
 			return fmt.Errorf("adapter/target paths are only valid for conversion")
 		}
@@ -611,9 +647,9 @@ func (s *Server) validateH3Request(req *H3Request, convert bool) error {
 		req.VRAMHeadroomMB = 1024
 	}
 	if req.OutputDir == "" {
-		req.OutputDir = filepath.Dir(req.BasePath)
+		req.OutputDir = filepath.Dir(*paths[0])
 	}
-	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(req.BasePath))
+	req.OutputDir = cleanPath(req.OutputDir, filepath.Dir(*paths[0]))
 	if req.OutputName != "" && (filepath.Base(req.OutputName) != req.OutputName || strings.ContainsAny(req.OutputName, "/\\") || req.OutputName == "." || req.OutputName == "..") {
 		return fmt.Errorf("output_name must be a filename, not a path")
 	}
@@ -634,11 +670,13 @@ func (s *Server) validateH3Request(req *H3Request, convert bool) error {
 	if !strings.EqualFold(filepath.Ext(req.OutputPath), ".safetensors") {
 		return fmt.Errorf("output must be safetensors")
 	}
-	if _, err := os.Lstat(req.OutputPath); !os.IsNotExist(err) {
-		return fmt.Errorf("output already exists or cannot be accessed")
-	}
-	if _, err := os.Lstat(req.OutputPath + ".txt"); !os.IsNotExist(err) {
-		return fmt.Errorf("recipe destination already exists or cannot be accessed")
+	if !req.DryRun {
+		if _, err := os.Lstat(req.OutputPath); !os.IsNotExist(err) {
+			return fmt.Errorf("output already exists or cannot be accessed")
+		}
+		if _, err := os.Lstat(req.OutputPath + ".txt"); !os.IsNotExist(err) {
+			return fmt.Errorf("recipe destination already exists or cannot be accessed")
+		}
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(req.OutputPath))
 	if err != nil {
@@ -684,23 +722,22 @@ func (s *Server) runH3Command(ctx context.Context, cmd *exec.Cmd, job *Job, outp
 	return err
 }
 
-func (s *Server) handleH3Prune(w http.ResponseWriter, r *http.Request) { s.handleH3(w, r, false) }
+func (s *Server) handleH3Prune(w http.ResponseWriter, r *http.Request) { s.handleH3(w, r, "h3-prune") }
 func (s *Server) handleH3AdapterConvert(w http.ResponseWriter, r *http.Request) {
-	s.handleH3(w, r, true)
+	s.handleH3(w, r, "h3-adapter-convert")
 }
-func (s *Server) handleH3(w http.ResponseWriter, r *http.Request, convert bool) {
+func (s *Server) handleH3DiffusersLora(w http.ResponseWriter, r *http.Request) {
+	s.handleH3(w, r, "h3-diffusers-lora")
+}
+func (s *Server) handleH3(w http.ResponseWriter, r *http.Request, command string) {
 	var req H3Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
-	if err := s.validateH3Request(&req, convert); err != nil {
+	if err := s.validateH3Request(&req, command); err != nil {
 		writeError(w, 400, err.Error())
 		return
-	}
-	command := "h3-prune"
-	if convert {
-		command = "h3-adapter-convert"
 	}
 	id := newID()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -829,7 +866,7 @@ type ModelMergeRequest struct {
 	// h3_delta recipe options (ignored by splice recipes):
 	// Rank 0 = exact delta; Rank N = SVD rank cap on SVD-eligible matrices.
 	// Strength scales the delta (0 → treated as 1.0).
-	Rank     int     `json:"rank"`
+	Rank int `json:"rank"`
 	// h3_graviton: Rank -1 = Gavish-Donoho auto threshold. AllowQuantizedInputs
 	// accepts QuantStation W6A8-packed inputs (dequantized in-engine, merged
 	// output stays float). Ignored by other recipes.
@@ -837,8 +874,8 @@ type ModelMergeRequest struct {
 	// Structural-key preserve for h3_delta/h3_graviton (default on). Pointer
 	// so an explicit false survives re-marshal to Python (omitempty would
 	// drop a plain bool false and silently restore the default).
-	PreserveStructural *bool `json:"preserve_structural,omitempty"`
-	Strength float64 `json:"strength"`
+	PreserveStructural *bool   `json:"preserve_structural,omitempty"`
+	Strength           float64 `json:"strength"`
 	// h3_hybrid recipe options (ignored by delta recipes):
 	// Block range for adaln_proj overlay (0-indexed, inclusive).
 	// FinalAdalnFromOverlay adds final_layer.adaln_proj to the overlay set.
@@ -1066,8 +1103,12 @@ func (s *Server) handleLoraMerge(w http.ResponseWriter, r *http.Request) {
 	if req.MergeAlgorithm == "" {
 		req.MergeAlgorithm = "additive"
 	}
-	if req.MergeAlgorithm != "additive" && req.MergeAlgorithm != "consensus" {
-		writeError(w, http.StatusBadRequest, "merge_algorithm must be additive or consensus")
+	if req.MergeAlgorithm != "additive" && req.MergeAlgorithm != "consensus" && req.MergeAlgorithm != "graviton" {
+		writeError(w, http.StatusBadRequest, "merge_algorithm must be additive, consensus, or graviton")
+		return
+	}
+	if req.MergeAlgorithm == "graviton" && (req.Adaptive || req.Krea2Unchain) {
+		writeError(w, 400, "GRAVITON cannot use adaptive scaling or Krea 2 unchain")
 		return
 	}
 	if req.H3TurboComplete && (req.Architecture != "MiniMax H3" || req.MergeAlgorithm != "additive" || req.Adaptive) {
@@ -1144,8 +1185,8 @@ func (s *Server) handleLoraCompose(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !containsString([]string{"consensus", "additive"}, req.MergeAlgorithm) {
-		writeError(w, 400, "merge_algorithm must be consensus or additive")
+	if !containsString([]string{"consensus", "additive", "graviton"}, req.MergeAlgorithm) {
+		writeError(w, 400, "merge_algorithm must be consensus, additive, or graviton")
 		return
 	}
 	if len(req.Loras) < 2 {
