@@ -176,6 +176,18 @@ PRESERVE_PATTERNS = {
         r"^(.*\.)?audio_patch_proj($|\..*)",    # audio patchify embedding
         r"^(.*\.)?condition_proj($|\..*)",      # conditioning projection
         r"^(.*\.)?rope($|\..*)",                # rope.inv_freq (16,)
+
+        # --- HyperFlow H3 Flash checkpoints (two-time (t,r), low-rank factored) ---
+        # HyperFlowLoader installs the step-endpoint embedder and every
+        # .down/.up low-rank factor as plain bf16 ops; quantizing these
+        # breaks the two-time (t, r) recipe. Keys without .weight
+        # (hyperflow_gate/sigmas) already pass through untouched, the
+        # patterns keep audit/recipe reports honest about them.
+        r"^(.*\.)?endpoint_time_embedder($|\..*)",
+        r"^(.*\.)?hyperflow_gate($|\..*)",
+        r"^(.*\.)?hyperflow_sigmas($|\..*)",
+        r"^.*(^|\.)down($|\..*)",
+        r"^.*(^|\.)up($|\..*)",
     ],
 }
 

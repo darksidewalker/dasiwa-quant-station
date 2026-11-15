@@ -206,6 +206,18 @@ def merge_custom_metadata(architecture, model_name, file_path, bits="BF16",
             if key in source_metadata:
                 base[key] = source_metadata[key]
 
+    # HyperFlow checkpoints carry a JSON "hyperflow" loader-contract entry.
+    # It survives the merge above; rewrite its weights/source fields so it
+    # honestly describes this output's layout instead of the source's.
+    if source_metadata and source_metadata.get("hyperflow"):
+        try:
+            hf = json.loads(source_metadata["hyperflow"])
+            hf["weights"] = str(bits).lower().replace(" ", "_")
+            hf["requantized_by"] = "dasiwa-quant-station"
+            base["hyperflow"] = json.dumps(hf)
+        except (ValueError, TypeError):
+            pass
+
     # EC watermark (X25519 + AES-256-GCM) written into the modelspec.watermark
     # field (no-op if no passphrase is configured).
     wm = watermark_for(architecture, model_name, file_path, bits=bits)
